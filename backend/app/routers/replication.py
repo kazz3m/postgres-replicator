@@ -118,28 +118,69 @@ async def list_publications():
 @router.post("/subscription")
 async def create_or_update_subscription(config: SubscriptionConfig):
     _require_connection()
-    pool = await get_dest_pool(state.dest_dsn)
 
-    async with pool.acquire() as conn:
-        exists = await conn.fetchval(
+    # Validate DSN format and prevent dollar-quoting escape
+    if not re.match(r'^postgres(ql)?://', config.source_dsn):
+        raise HTTPException(400, "source_dsn must start with postgresql:// or postgres://")
+    if "$conn_str$" in config.source_dsn:
+        raise HTTPException(400, "source_dsn contains an illegal sequence.")
+
+    # Fix #1: hard-block when wal_level != logical on source
+    src_pool = await get_source_pool(state.source_dsn)
+    async with src_pool.acquire() as src_conn:
+        wal_level = await src_conn.fetchval("SELECT current_setting('wal_level')")
+        if wal_level != "logical":
+            raise HTTPException(
+                400,
+                f"wal_level is '{wal_level}' on source. Must be 'logical'. "
+                f"Set wal_level = logical in postgresql.conf and restart PostgreSQL."
+            )
+
+        # Fix #5: fetch tables included in this publication so we can verify
+        # they exist on destination before committing — avoids silent error state
+        pub_tables = await src_conn.fetch(
+            "SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = $1",
+            config.publication_name,
+        )
+
+    if not pub_tables:
+        raise HTTPException(
+            400,
+            f"Publication '{config.publication_name}' does not exist on source or contains no tables."
+        )
+
+    # Fix #5: verify every published table exists on destination
+    dest_pool = await get_dest_pool(state.dest_dsn)
+    async with dest_pool.acquire() as dest_conn:
+        missing = []
+        for row in pub_tables:
+            exists_on_dest = await dest_conn.fetchval(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = $1 AND table_name = $2",
+                row["schemaname"], row["tablename"],
+            )
+            if not exists_on_dest:
+                missing.append(f"{row['schemaname']}.{row['tablename']}")
+
+        if missing:
+            raise HTTPException(
+                400,
+                f"Tables missing on destination (apply schema DDL first): {', '.join(missing)}"
+            )
+
+        exists = await dest_conn.fetchval(
             "SELECT 1 FROM pg_subscription WHERE subname = $1", config.subscription_name
         )
         if exists:
-            await conn.execute(
+            await dest_conn.execute(
                 f'ALTER SUBSCRIPTION "{config.subscription_name}" DISABLE'
             )
-            await conn.execute(
+            await dest_conn.execute(
                 f'DROP SUBSCRIPTION IF EXISTS "{config.subscription_name}"'
             )
 
-        # Validate DSN format and prevent dollar-quoting escape
-        if not re.match(r'^postgres(ql)?://', config.source_dsn):
-            raise HTTPException(400, "source_dsn must start with postgresql:// or postgres://")
-        if "$conn_str$" in config.source_dsn:
-            raise HTTPException(400, "source_dsn contains an illegal sequence.")
-
         copy_data_sql = "true" if config.copy_data else "false"
-        await conn.execute(f"""
+        await dest_conn.execute(f"""
             CREATE SUBSCRIPTION "{config.subscription_name}"
             CONNECTION $conn_str${config.source_dsn}$conn_str$
             PUBLICATION "{config.publication_name}"
@@ -157,14 +198,23 @@ async def drop_subscription(name: str):
 
     async with dest_pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT subslotname FROM pg_subscription WHERE subname = $1", name
+            "SELECT subslotname, subenabled FROM pg_subscription WHERE subname = $1", name
         )
-        slot_name = row["subslotname"] if row else None
+        if not row:
+            raise HTTPException(404, f"Subscription '{name}' not found.")
+        slot_name = row["subslotname"]
 
-        try:
-            await conn.execute(f'ALTER SUBSCRIPTION "{name}" DISABLE')
-        except Exception:
-            pass
+        # Fix #6: DISABLE must succeed before DROP when subscription is enabled.
+        # An active replication slot cannot be dropped while the apply worker holds it.
+        if row["subenabled"]:
+            try:
+                await conn.execute(f'ALTER SUBSCRIPTION "{name}" DISABLE')
+            except Exception as e:
+                raise HTTPException(
+                    500,
+                    f"Could not disable subscription '{name}' before dropping: {e}. "
+                    f"The subscription may still be active. Retry or disable it manually."
+                )
         await conn.execute(f'DROP SUBSCRIPTION IF EXISTS "{name}"')
 
     # Drop orphaned slot on source if DROP SUBSCRIPTION didn't clean it up
@@ -298,10 +348,15 @@ async def reset_replication(subscription_name: str):
         publications = row["subpublications"]
         conninfo = row["subconninfo"]
 
+        # Fix #6 (reset path): propagate DISABLE failure instead of swallowing it
         try:
             await conn.execute(f'ALTER SUBSCRIPTION "{subscription_name}" DISABLE')
-        except Exception:
-            pass
+        except Exception as e:
+            raise HTTPException(
+                500,
+                f"Could not disable subscription '{subscription_name}': {e}. "
+                f"Cannot proceed with reset."
+            )
         await conn.execute(f'DROP SUBSCRIPTION IF EXISTS "{subscription_name}"')
 
     if slot_name:
@@ -311,11 +366,14 @@ async def reset_replication(subscription_name: str):
             except Exception:
                 pass
 
+    # Fix #7: use dollar-quoting for conninfo consistently (same as create_or_update_subscription)
+    if "$conn_str$" in conninfo:
+        raise HTTPException(500, "Stored conninfo contains illegal sequence, cannot recreate subscription.")
     pub_list = ", ".join(f'"{p}"' for p in publications)
     async with dest_pool.acquire() as conn:
         await conn.execute(f"""
             CREATE SUBSCRIPTION "{subscription_name}"
-            CONNECTION '{conninfo}'
+            CONNECTION $conn_str${conninfo}$conn_str$
             PUBLICATION {pub_list}
             WITH (copy_data = true)
         """)
