@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react'
+import { WorkspacePicker, WorkspaceSnapshot } from './pages/WorkspacePicker'
 import { ConnectionPage } from './pages/ConnectionPage'
 import { AnalysisPage } from './pages/AnalysisPage'
 import { ReplicationSetupPage } from './pages/ReplicationSetupPage'
 import { StatusPage } from './pages/StatusPage'
 import { connectionsApi, analysisApi, SchemaInfo } from './api/client'
+import { ConnectionProfile, touchProfile, updateProfile } from './utils/profiles'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 
+type AppStage = 'loading' | 'picker' | 'connecting' | 'connected'
 type Tab = 'analysis' | 'setup' | 'status'
 
 const SESSION_TABLES_KEY = 'pg_sync_selected_tables'
@@ -36,11 +39,13 @@ function clearSelection() {
 }
 
 export default function App() {
-  const [connected, setConnected] = useState(false)
+  const [stage, setStage] = useState<AppStage>('loading')
   const [sourceDsn, setSourceDsn] = useState('')
   const [destDsn, setDestDsn] = useState('')
   const [pgMajor, setPgMajor] = useState(0)
   const [tab, setTab] = useState<Tab>('analysis')
+  const [activeProfileId, setActiveProfileId] = useState<string | null>(null)
+  const [initialSnapshot, setInitialSnapshot] = useState<WorkspaceSnapshot | null>(null)
 
   const saved = loadSelection()
   const [selectedTables, setSelectedTables] = useState<Set<string>>(saved.tables)
@@ -49,57 +54,121 @@ export default function App() {
   const { data: schemaData } = useQuery<SchemaInfo[]>({
     queryKey: ['schemas'],
     queryFn: () => analysisApi.schemas().then(r => r.data),
-    enabled: connected,
+    enabled: stage === 'connected',
   })
 
-  // On mount: check if backend already has a saved connection (e.g. after page refresh
-  // or frontend restart). If so, restore connected state and pgMajor without requiring
-  // the user to go through the connection form again.
+  // On mount: check if backend already has a live connection (page refresh scenario).
+  // If yes, skip picker and restore the workspace directly.
   useEffect(() => {
     connectionsApi.status().then(r => {
       if (r.data.connected) {
-        setConnected(true)
         setSourceDsn(r.data.source_dsn ?? '')
         setDestDsn(r.data.dest_dsn ?? '')
-        // Fix: restore pgMajor from the status endpoint so schema-level publication
-        // checkbox and version banners work correctly after a page refresh.
-        if (r.data.pg_major) {
-          setPgMajor(r.data.pg_major)
-        }
+        if (r.data.pg_major) setPgMajor(r.data.pg_major)
+        setStage('connected')
+      } else {
+        setStage('picker')
       }
-    }).catch(() => {})
+    }).catch(() => setStage('picker'))
   }, [])
 
+  // ── Workspace Picker callbacks ────────────────────────────────────────────
+
+  function handleNewWorkspace() {
+    setStage('connecting')
+  }
+
+  function handleLoadWorkspace(profile: ConnectionProfile, snapshot: WorkspaceSnapshot) {
+    setSourceDsn(profile.source_dsn)
+    setDestDsn(profile.dest_dsn)
+    setActiveProfileId(profile.id)
+    setInitialSnapshot(snapshot)
+    touchProfile(profile.id)
+
+    // Restore saved table selection from the profile
+    if (profile.selected_tables || profile.selected_schemas) {
+      const tables = new Set<string>(profile.selected_tables ?? [])
+      const schemas = new Set<string>(profile.selected_schemas ?? [])
+      setSelectedTables(tables)
+      setSelectedSchemas(schemas)
+      persistSelection(tables, schemas)
+    }
+
+    // Switch directly to Status tab to show live replication state
+    setTab('status')
+    setStage('connected')
+  }
+
+  // ── ConnectionPage callback ───────────────────────────────────────────────
+
   function handleConnected(srcDsn: string, dstDsn: string, major: number) {
-    setConnected(true)
     setSourceDsn(srcDsn)
     setDestDsn(dstDsn)
     setPgMajor(major)
+    setInitialSnapshot(null)
+    setStage('connected')
     setTab('analysis')
   }
+
+  // ── Selection change ──────────────────────────────────────────────────────
 
   function handleSelectionChange(tables: Set<string>, schemas: Set<string>) {
     setSelectedTables(tables)
     setSelectedSchemas(schemas)
     persistSelection(tables, schemas)
+    // Keep profile selection in sync so next load restores it
+    if (activeProfileId) {
+      updateProfile(activeProfileId, {
+        selected_tables: [...tables],
+        selected_schemas: [...schemas],
+      })
+    }
   }
 
+  // ── Disconnect ────────────────────────────────────────────────────────────
+
   function handleDisconnect() {
-    setConnected(false)
+    setStage('picker')
     setSelectedTables(new Set())
     setSelectedSchemas(new Set())
     setPgMajor(0)
+    setActiveProfileId(null)
+    setInitialSnapshot(null)
     clearSelection()
   }
 
-  if (!connected) {
+  // ── Render ────────────────────────────────────────────────────────────────
+
+  if (stage === 'loading') {
     return (
-      <ConnectionPage
-        onConnected={(srcDsn, dstDsn, major) => handleConnected(srcDsn, dstDsn, major)}
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="flex items-center gap-3 text-gray-400">
+          <div className="w-5 h-5 border-2 border-gray-600 border-t-blue-400 rounded-full animate-spin" />
+          Connecting...
+        </div>
+      </div>
+    )
+  }
+
+  if (stage === 'picker') {
+    return (
+      <WorkspacePicker
+        onNewWorkspace={handleNewWorkspace}
+        onLoadWorkspace={handleLoadWorkspace}
       />
     )
   }
 
+  if (stage === 'connecting') {
+    return (
+      <ConnectionPage
+        onConnected={(srcDsn, dstDsn, major) => handleConnected(srcDsn, dstDsn, major)}
+        onBack={() => setStage('picker')}
+      />
+    )
+  }
+
+  // stage === 'connected'
   const tabs: { id: Tab; label: string }[] = [
     { id: 'analysis', label: 'Analysis' },
     { id: 'setup', label: 'Setup' },
@@ -109,7 +178,13 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="bg-gray-900 border-b border-gray-700 px-6 py-3 flex items-center justify-between">
-        <span className="text-blue-400 font-bold tracking-wide">PG Replication Manager</span>
+        <button
+          onClick={handleDisconnect}
+          className="text-blue-400 font-bold tracking-wide hover:text-blue-300 transition-colors"
+          title="Back to workspace picker"
+        >
+          PG Replication Manager
+        </button>
         <div className="flex items-center gap-6">
           <nav className="flex gap-1">
             {tabs.map(t => (
@@ -127,6 +202,11 @@ export default function App() {
                     {selectedTables.size + selectedSchemas.size}
                   </span>
                 )}
+                {t.id === 'status' && initialSnapshot && (
+                  <span className="ml-1.5 bg-green-700 text-white rounded-full text-xs px-1.5">
+                    {initialSnapshot.subscriptions.length}
+                  </span>
+                )}
               </button>
             ))}
           </nav>
@@ -134,7 +214,7 @@ export default function App() {
             onClick={handleDisconnect}
             className="text-xs text-gray-500 hover:text-gray-300"
           >
-            Disconnect
+            ← Workspaces
           </button>
         </div>
       </header>
@@ -157,7 +237,9 @@ export default function App() {
             schemaData={schemaData ?? []}
           />
         )}
-        {tab === 'status' && <StatusPage />}
+        {tab === 'status' && (
+          <StatusPage initialSnapshot={initialSnapshot ?? undefined} />
+        )}
       </main>
     </div>
   )

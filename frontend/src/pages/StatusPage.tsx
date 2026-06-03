@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { replicationApi, TableReplicationProgress, ReplicationSlotInfo } from '../api/client'
+import { replicationApi, TableReplicationProgress, ReplicationSlotInfo, SubscriptionInfo } from '../api/client'
 import { Badge } from '../components/Badge'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { Spinner } from '../components/Spinner'
 import { RefreshCw, AlertTriangle } from 'lucide-react'
+import type { WorkspaceSnapshot } from './WorkspacePicker'
 
 function ProgressBar({ pct }: { pct: number | null | undefined }) {
   const v = pct ?? 0
@@ -26,7 +27,11 @@ function statusVariant(s: string): 'green' | 'yellow' | 'blue' | 'red' | 'gray' 
   return 'gray'
 }
 
-export function StatusPage() {
+interface Props {
+  initialSnapshot?: WorkspaceSnapshot
+}
+
+export function StatusPage({ initialSnapshot }: Props) {
   const [interval, setIntervalSecs] = useState(10)
   const [editInterval, setEditInterval] = useState(false)
   const [intervalInput, setIntervalInput] = useState('10')
@@ -39,6 +44,7 @@ export function StatusPage() {
     queryKey: ['progress'],
     queryFn: () => replicationApi.progress().then(r => r.data),
     refetchInterval: interval * 1000,
+    initialData: initialSnapshot?.progress,
   })
 
   const { data: slots, refetch: refetchSlots, isLoading: slotsLoading } = useQuery({
@@ -51,6 +57,7 @@ export function StatusPage() {
     queryKey: ['subscriptions'],
     queryFn: () => replicationApi.listSubscriptions().then(r => r.data),
     refetchInterval: interval * 1000,
+    initialData: initialSnapshot?.subscriptions,
   })
 
   useEffect(() => {

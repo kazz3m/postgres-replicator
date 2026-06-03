@@ -6,7 +6,10 @@ import { ChevronDown, ChevronRight, Trash2, BookOpen, Save } from 'lucide-react'
 import { loadProfiles, saveProfile, deleteProfile, ConnectionProfile } from '../utils/profiles'
 import { shortDsn } from '../utils/maskDsn'
 
-interface Props { onConnected: (srcDsn: string, dstDsn: string, major: number) => void }
+interface Props {
+  onConnected: (srcDsn: string, dstDsn: string, major: number) => void
+  onBack?: () => void
+}
 
 function getConnectionHint(error: string): string | null {
   if (error.includes('pg_hba.conf') || error.includes('no pg_hba.conf entry'))
@@ -46,7 +49,7 @@ function DsnInput({
   )
 }
 
-export function ConnectionPage({ onConnected }: Props) {
+export function ConnectionPage({ onConnected, onBack }: Props) {
   const [sourceDsn, setSourceDsn] = useState('postgresql://user:pass@source-host:5432/dbname')
   const [sourceReplDsn, setSourceReplDsn] = useState('')
   const [destDsn, setDestDsn] = useState('postgresql://user:pass@dest-host:5432/dbname')
@@ -133,7 +136,15 @@ export function ConnectionPage({ onConnected }: Props) {
   return (
     <div className="min-h-screen flex items-center justify-center p-8">
       <div className="w-full max-w-2xl space-y-4">
-        <h1 className="text-2xl font-bold text-blue-400">PostgreSQL Replication Manager</h1>
+        {onBack && (
+          <button
+            onClick={onBack}
+            className="mb-5 text-xs text-gray-500 hover:text-gray-300 flex items-center gap-1"
+          >
+            ← Back to workspaces
+          </button>
+        )}
+        <h1 className="text-2xl font-bold text-blue-400">New Workspace</h1>
 
         {/* ── Saved profiles ── */}
         {profiles.length > 0 && (

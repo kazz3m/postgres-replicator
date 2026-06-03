@@ -37,6 +37,22 @@ export interface TableReplicationProgress {
   copied_rows?: number; total_rows?: number; progress_pct?: number
 }
 
+export interface SubscriptionInfo {
+  subname: string
+  subenabled: boolean
+  subpublications: string[]
+  subslotname: string | null
+}
+
+export interface WorkerStat {
+  subname: string
+  pid: number | null
+  received_lsn: string | null
+  last_msg_receive_time: string | null
+  latest_end_lsn: string | null
+  latest_end_time: string | null
+}
+
 export interface ConnectionState {
   source_dsn: string | null
   source_repl_dsn: string | null
@@ -68,4 +84,6 @@ export const replicationApi = {
   reset: (subscriptionName: string) => api.post(`/replication/reset/${subscriptionName}`),
   getInterval: () => api.get('/replication/stats/interval'),
   setInterval: (interval_seconds: number) => api.put('/replication/stats/interval', { interval_seconds }),
+  workerStats: () => api.get<WorkerStat[]>('/replication/worker-stats'),
+  listSubscriptionsTyped: () => api.get<SubscriptionInfo[]>('/replication/subscriptions'),
 }
