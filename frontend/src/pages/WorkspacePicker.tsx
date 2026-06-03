@@ -1,12 +1,13 @@
 import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { PlusCircle, FolderOpen, Trash2, ChevronRight, Activity, Clock } from 'lucide-react'
-import { sortedProfiles, deleteProfile, ConnectionProfile } from '../utils/profiles'
+import { loadProfiles, deleteProfile, touchProfile, ConnectionProfile } from '../utils/profiles'
 import { shortDsn } from '../utils/maskDsn'
 import { connectionsApi, replicationApi, SubscriptionInfo, TableReplicationProgress, WorkerStat } from '../api/client'
 import { Spinner } from '../components/Spinner'
 import { Badge } from '../components/Badge'
 
-interface WorkspaceSnapshot {
+export interface WorkspaceSnapshot {
   subscriptions: SubscriptionInfo[]
   progress: TableReplicationProgress[]
   workerStats: WorkerStat[]
@@ -49,9 +50,28 @@ function ProgressBar({ pct }: { pct: number | null | undefined }) {
   )
 }
 
+async function fetchSnapshot(): Promise<WorkspaceSnapshot> {
+  const [subsRes, progressRes, workerRes] = await Promise.allSettled([
+    replicationApi.listSubscriptionsTyped(),
+    replicationApi.progress(),
+    replicationApi.workerStats(),
+  ])
+  return {
+    subscriptions: subsRes.status === 'fulfilled' ? subsRes.value.data : [],
+    progress: progressRes.status === 'fulfilled' ? progressRes.value.data : [],
+    workerStats: workerRes.status === 'fulfilled' ? workerRes.value.data : [],
+  }
+}
+
 export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
-  const [profiles, setProfiles] = useState(sortedProfiles)
-  const [loading, setLoading] = useState<string | null>(null)  // profile id being loaded
+  const queryClient = useQueryClient()
+
+  const { data: profiles = [], isLoading: profilesLoading } = useQuery({
+    queryKey: ['profiles'],
+    queryFn: loadProfiles,
+  })
+
+  const [loading, setLoading] = useState<string | null>(null)
   const [error, setError] = useState<{ id: string; msg: string } | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const [preview, setPreview] = useState<{ id: string; snapshot: WorkspaceSnapshot } | null>(null)
@@ -61,32 +81,17 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
     setLoading(profile.id)
     setError(null)
     try {
-      // Connect to the databases stored in the profile
       await connectionsApi.connect({
         source_dsn: profile.source_dsn,
         dest_dsn: profile.dest_dsn,
         source_repl_dsn: profile.source_repl_dsn || undefined,
       })
-
-      // Fetch current replication state from PG
-      const [subsRes, progressRes, workerRes] = await Promise.allSettled([
-        replicationApi.listSubscriptionsTyped(),
-        replicationApi.progress(),
-        replicationApi.workerStats(),
-      ])
-
-      const snapshot: WorkspaceSnapshot = {
-        subscriptions: subsRes.status === 'fulfilled' ? subsRes.value.data : [],
-        progress: progressRes.status === 'fulfilled' ? progressRes.value.data : [],
-        workerStats: workerRes.status === 'fulfilled' ? workerRes.value.data : [],
-      }
-
+      const snapshot = await fetchSnapshot()
+      await touchProfile(profile.id)
+      queryClient.invalidateQueries({ queryKey: ['profiles'] })
       onLoadWorkspace(profile, snapshot)
     } catch (e: any) {
-      setError({
-        id: profile.id,
-        msg: e.response?.data?.detail || e.message || 'Connection failed',
-      })
+      setError({ id: profile.id, msg: e.response?.data?.detail || e.message || 'Connection failed' })
     } finally {
       setLoading(null)
     }
@@ -101,19 +106,8 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
         dest_dsn: profile.dest_dsn,
         source_repl_dsn: profile.source_repl_dsn || undefined,
       })
-      const [subsRes, progressRes, workerRes] = await Promise.allSettled([
-        replicationApi.listSubscriptionsTyped(),
-        replicationApi.progress(),
-        replicationApi.workerStats(),
-      ])
-      setPreview({
-        id: profile.id,
-        snapshot: {
-          subscriptions: subsRes.status === 'fulfilled' ? subsRes.value.data : [],
-          progress: progressRes.status === 'fulfilled' ? progressRes.value.data : [],
-          workerStats: workerRes.status === 'fulfilled' ? workerRes.value.data : [],
-        },
-      })
+      const snapshot = await fetchSnapshot()
+      setPreview({ id: profile.id, snapshot })
     } catch {
       setPreview({ id: profile.id, snapshot: { subscriptions: [], progress: [], workerStats: [] } })
     } finally {
@@ -121,9 +115,9 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
     }
   }
 
-  function handleDelete(id: string) {
-    deleteProfile(id)
-    setProfiles(sortedProfiles())
+  async function handleDelete(id: string) {
+    await deleteProfile(id)
+    queryClient.invalidateQueries({ queryKey: ['profiles'] })
     setDeleteConfirm(null)
     if (preview?.id === id) setPreview(null)
   }
@@ -132,7 +126,6 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
     <div className="min-h-screen flex items-center justify-center p-8 bg-gray-950">
       <div className="w-full max-w-2xl space-y-6">
 
-        {/* Title */}
         <div>
           <h1 className="text-2xl font-bold text-blue-400">PG Replication Manager</h1>
           <p className="text-gray-500 text-sm mt-1">Choose a workspace to continue or start a new one.</p>
@@ -152,7 +145,13 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
         </button>
 
         {/* Saved workspaces */}
-        {profiles.length > 0 && (
+        {profilesLoading && (
+          <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+            <Spinner size={3} /> Loading workspaces...
+          </div>
+        )}
+
+        {!profilesLoading && profiles.length > 0 && (
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-gray-500 px-1">
               <FolderOpen size={12} />
@@ -167,11 +166,10 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
 
               return (
                 <div key={profile.id} className="bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
-                  {/* Profile header row */}
                   <div className="flex items-center gap-3 px-4 py-3">
                     <div className="flex-1 min-w-0">
                       <div className="font-semibold text-gray-200 truncate">{profile.name}</div>
-                      <div className="text-xs text-gray-500 mt-0.5 truncate space-x-3">
+                      <div className="text-xs text-gray-500 mt-0.5 space-x-3">
                         <span>
                           <span className="text-gray-400">src</span> {shortDsn(profile.source_dsn)}
                           {profile.source_repl_dsn && <span className="text-blue-500 ml-1">[+repl]</span>}
@@ -189,7 +187,6 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
                       </div>
                     )}
 
-                    {/* Preview button */}
                     <button
                       onClick={() => handlePreview(profile)}
                       disabled={!!loading || !!previewLoading}
@@ -200,7 +197,6 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
                       Preview
                     </button>
 
-                    {/* Load button */}
                     <button
                       onClick={() => handleLoad(profile)}
                       disabled={!!loading || !!previewLoading}
@@ -210,7 +206,6 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
                       Open
                     </button>
 
-                    {/* Delete */}
                     {deleteConfirm === profile.id ? (
                       <div className="flex items-center gap-1 shrink-0">
                         <button
@@ -238,14 +233,12 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
                     )}
                   </div>
 
-                  {/* Error */}
                   {thisError && (
-                    <div className="px-4 pb-3 text-xs text-red-400 bg-red-950/30 border-t border-red-900 py-2">
+                    <div className="px-4 py-2 text-xs text-red-400 bg-red-950/30 border-t border-red-900">
                       {thisError}
                     </div>
                   )}
 
-                  {/* Replication preview */}
                   {thisPreview && (
                     <div className="border-t border-gray-700 bg-gray-950/50">
                       {thisPreview.subscriptions.length === 0 && thisPreview.progress.length === 0 ? (
@@ -254,7 +247,6 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
                         </div>
                       ) : (
                         <div className="p-4 space-y-3">
-                          {/* Subscriptions summary */}
                           {thisPreview.subscriptions.length > 0 && (
                             <div>
                               <div className="text-xs text-gray-400 font-semibold mb-1.5">Subscriptions</div>
@@ -265,19 +257,11 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
                                   return (
                                     <div key={sub.subname} className="flex items-center gap-2 text-xs">
                                       <span className="font-mono text-gray-300 w-40 truncate">{sub.subname}</span>
-                                      <Badge
-                                        label={sub.subenabled ? 'enabled' : 'disabled'}
-                                        variant={sub.subenabled ? 'green' : 'red'}
-                                      />
+                                      <Badge label={sub.subenabled ? 'enabled' : 'disabled'} variant={sub.subenabled ? 'green' : 'red'} />
                                       {sub.subenabled && (
-                                        <Badge
-                                          label={isAlive ? 'worker running' : 'worker stopped'}
-                                          variant={isAlive ? 'green' : 'red'}
-                                        />
+                                        <Badge label={isAlive ? 'worker running' : 'worker stopped'} variant={isAlive ? 'green' : 'red'} />
                                       )}
-                                      <span className="text-gray-600">
-                                        {sub.subpublications.join(', ')}
-                                      </span>
+                                      <span className="text-gray-600">{sub.subpublications.join(', ')}</span>
                                     </div>
                                   )
                                 })}
@@ -285,7 +269,6 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
                             </div>
                           )}
 
-                          {/* Per-table progress */}
                           {thisPreview.progress.length > 0 && (
                             <div>
                               <div className="text-xs text-gray-400 font-semibold mb-1.5">
@@ -317,7 +300,7 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
           </div>
         )}
 
-        {profiles.length === 0 && (
+        {!profilesLoading && profiles.length === 0 && (
           <p className="text-center text-gray-600 text-sm py-4">
             No saved workspaces yet. Create one by connecting and saving a profile.
           </p>
@@ -326,5 +309,3 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
     </div>
   )
 }
-
-export type { WorkspaceSnapshot }

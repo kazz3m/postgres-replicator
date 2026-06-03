@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { connectionsApi, ConnectionStatus } from '../api/client'
 import { Spinner } from '../components/Spinner'
 import { Badge } from '../components/Badge'
@@ -58,16 +59,13 @@ export function ConnectionPage({ onConnected, onBack }: Props) {
   const [testResult, setTestResult] = useState<ConnectionStatus | null>(null)
   const [error, setError] = useState('')
 
-  const [profiles, setProfiles] = useState<ConnectionProfile[]>(loadProfiles)
-  const [profilesOpen, setProfilesOpen] = useState(profiles.length > 0)
+  const queryClient = useQueryClient()
+  const { data: profiles = [] } = useQuery({ queryKey: ['profiles'], queryFn: loadProfiles })
+  const [profilesOpen, setProfilesOpen] = useState(true)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
 
   const [saveFormOpen, setSaveFormOpen] = useState(false)
   const [profileName, setProfileName] = useState('')
-
-  function refreshProfiles() {
-    setProfiles(loadProfiles())
-  }
 
   function loadProfile(p: ConnectionProfile) {
     setSourceDsn(p.source_dsn)
@@ -77,21 +75,21 @@ export function ConnectionPage({ onConnected, onBack }: Props) {
     setError('')
   }
 
-  function handleDeleteProfile(id: string) {
-    deleteProfile(id)
-    refreshProfiles()
+  async function handleDeleteProfile(id: string) {
+    await deleteProfile(id)
+    queryClient.invalidateQueries({ queryKey: ['profiles'] })
     setDeleteConfirm(null)
   }
 
-  function handleSaveProfile() {
+  async function handleSaveProfile() {
     if (!profileName.trim()) return
-    saveProfile({
+    await saveProfile({
       name: profileName.trim(),
       source_dsn: sourceDsn,
       source_repl_dsn: sourceReplDsn,
       dest_dsn: destDsn,
     })
-    refreshProfiles()
+    queryClient.invalidateQueries({ queryKey: ['profiles'] })
     setProfileName('')
     setSaveFormOpen(false)
     setProfilesOpen(true)

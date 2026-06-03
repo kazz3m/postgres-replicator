@@ -83,7 +83,7 @@ export default function App() {
     setDestDsn(profile.dest_dsn)
     setActiveProfileId(profile.id)
     setInitialSnapshot(snapshot)
-    touchProfile(profile.id)
+    void touchProfile(profile.id)
 
     // Restore saved table selection from the profile
     if (profile.selected_tables || profile.selected_schemas) {
@@ -118,7 +118,7 @@ export default function App() {
     persistSelection(tables, schemas)
     // Keep profile selection in sync so next load restores it
     if (activeProfileId) {
-      updateProfile(activeProfileId, {
+      void updateProfile(activeProfileId, {
         selected_tables: [...tables],
         selected_schemas: [...schemas],
       })

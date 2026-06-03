@@ -6,6 +6,7 @@ services:
       - SOURCE_DSN=${SOURCE_DSN:-}
       - DEST_DSN=${DEST_DSN:-}
       - CONFIG_PATH=/data/config.json
+      - PROFILES_PATH=/data/profiles.json
     volumes:
       - pg_sync_data:/data
     networks:
