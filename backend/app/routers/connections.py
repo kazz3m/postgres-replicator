@@ -292,9 +292,28 @@ async def connect(config: ConnectionConfig):
 
 @router.get("/status")
 async def connection_status():
+    connected = bool(state.source_dsn and state.dest_dsn)
+    pg_major: Optional[int] = None
+
+    if connected:
+        # Re-derive PG version from the stored DSN so the frontend can restore
+        # pgMajor after a backend restart without requiring a full re-connect.
+        try:
+            conn = await asyncpg.connect(state.source_dsn, timeout=5)
+            try:
+                version_num = await conn.fetchval(
+                    "SELECT current_setting('server_version_num')::int"
+                )
+                pg_major = version_num // 10000
+            finally:
+                await conn.close()
+        except Exception:
+            pass  # pg_major stays None; frontend will show 0 and let user reconnect
+
     return {
         "source_dsn": mask_dsn(state.source_dsn) if state.source_dsn else None,
         "source_repl_dsn": mask_dsn(state.source_repl_dsn) if state.source_repl_dsn else None,
         "dest_dsn": mask_dsn(state.dest_dsn) if state.dest_dsn else None,
-        "connected": bool(state.source_dsn and state.dest_dsn),
+        "connected": connected,
+        "pg_major": pg_major,
     }

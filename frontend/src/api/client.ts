@@ -37,10 +37,18 @@ export interface TableReplicationProgress {
   copied_rows?: number; total_rows?: number; progress_pct?: number
 }
 
+export interface ConnectionState {
+  source_dsn: string | null
+  source_repl_dsn: string | null
+  dest_dsn: string | null
+  connected: boolean
+  pg_major: number | null
+}
+
 export const connectionsApi = {
   test: (cfg: ConnectionConfig) => api.post<ConnectionStatus>('/connections/test', cfg),
   connect: (cfg: ConnectionConfig) => api.post('/connections/connect', cfg),
-  status: () => api.get('/connections/status'),
+  status: () => api.get<ConnectionState>('/connections/status'),
 }
 
 export const analysisApi = {
