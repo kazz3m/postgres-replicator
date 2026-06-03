@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { analysisApi, SchemaInfo } from '../api/client'
 import { Spinner } from '../components/Spinner'
 import { ChevronDown, ChevronRight, Database, Table } from 'lucide-react'
+import { Badge } from '../components/Badge'
 import clsx from 'clsx'
 
 interface Props {
@@ -74,6 +75,15 @@ export function AnalysisPage({ selectedTables, selectedSchemas, pgMajor, onSelec
         </div>
       )}
 
+      <div className="text-xs text-orange-400 bg-orange-950 border border-orange-800 rounded px-3 py-2">
+        ⚠️ Sequences (serial/identity columns) are NOT replicated. After failover to destination,
+        auto-increment values may conflict. Manually sync sequences after initial copy.
+      </div>
+      <div className="text-xs text-blue-400 bg-blue-950 border border-blue-800 rounded px-3 py-2">
+        ℹ️ Partitioned tables: leaf partitions must exist on destination with identical structure.
+        Root table selection replicates all partitions.
+      </div>
+
       <div className="space-y-2">
         {data?.map(schema => (
           <div key={schema.schema_name} className="bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
@@ -134,6 +144,11 @@ export function AnalysisPage({ selectedTables, selectedSchemas, pgMajor, onSelec
                           <td className="px-4 py-2 flex items-center gap-2">
                             <Table size={12} className="text-gray-500" />
                             {table.table_name}
+                            {table.replica_identity === 'nothing' && (
+                              <span title="REPLICA IDENTITY NOTHING — UPDATE/DELETE will fail">
+                                <Badge label="NO REPLICATION" variant="red" />
+                              </span>
+                            )}
                           </td>
                           <td className="px-4 py-2 text-right text-gray-400">{table.size_pretty}</td>
                           <td className="px-4 py-2 text-right text-gray-400">{table.row_estimate.toLocaleString()}</td>

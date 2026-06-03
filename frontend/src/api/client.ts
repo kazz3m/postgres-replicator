@@ -15,6 +15,7 @@ export interface ConnectionStatus {
 export interface TableInfo {
   schema_name: string; table_name: string
   size_bytes: number; size_pretty: string; row_estimate: number
+  replica_identity?: string
 }
 export interface SchemaInfo {
   schema_name: string; tables: TableInfo[]

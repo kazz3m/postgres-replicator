@@ -5,6 +5,9 @@ services:
     environment:
       - SOURCE_DSN=${SOURCE_DSN:-}
       - DEST_DSN=${DEST_DSN:-}
+      - CONFIG_PATH=/data/config.json
+    volumes:
+      - pg_sync_data:/data
     networks:
       - app
 
@@ -21,3 +24,6 @@ services:
 networks:
   app:
     driver: bridge
+
+volumes:
+  pg_sync_data:

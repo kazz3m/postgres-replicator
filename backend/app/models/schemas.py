@@ -14,6 +14,7 @@ class TableInfo(BaseModel):
     size_bytes: int
     size_pretty: str
     row_estimate: int
+    replica_identity: str = "default"
 
 
 class SchemaInfo(BaseModel):
@@ -90,3 +91,4 @@ class ConnectionStatus(BaseModel):
     dest_version: Optional[PGVersion]
     source_error: Optional[str]
     dest_error: Optional[str]
+    warnings: List[str] = []

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { replicationApi } from '../api/client'
+import { replicationApi, SchemaInfo } from '../api/client'
 import { Spinner } from '../components/Spinner'
 import { ConfirmModal } from '../components/ConfirmModal'
 
@@ -8,9 +8,18 @@ interface Props {
   selectedSchemas: Set<string>
   sourceDsn: string
   pgMajor: number
+  schemaData: SchemaInfo[]
 }
 
-export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDsn, pgMajor }: Props) {
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  const value = bytes / Math.pow(1024, i)
+  return `${value.toFixed(value >= 10 || i === 0 ? 0 : 1)} ${units[i]}`
+}
+
+export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDsn, pgMajor, schemaData }: Props) {
   const [pubName, setPubName] = useState('pg_sync_pub')
   const [subName, setSubName] = useState('pg_sync_sub')
   const [copyData, setCopyData] = useState(true)
@@ -20,6 +29,14 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
   const [confirmAction, setConfirmAction] = useState<null | 'apply' | 'drop_pub' | 'drop_sub'>(null)
 
   const hasSelection = selectedTables.size > 0 || selectedSchemas.size > 0
+
+  const totalBytes = schemaData.reduce((sum, schema) => {
+    if (selectedSchemas.has(schema.schema_name)) {
+      return sum + schema.total_size_bytes
+    }
+    return sum + schema.tables.reduce((s, t) =>
+      selectedTables.has(`${t.schema_name}.${t.table_name}`) ? s + t.size_bytes : s, 0)
+  }, 0)
 
   async function applyReplication() {
     setLoading(true); setError(''); setResult('')
@@ -123,6 +140,25 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
           />
           <span className="text-gray-300">Copy existing data (initial sync)</span>
         </label>
+      </div>
+
+      {hasSelection && (
+        <div className="text-sm text-gray-300">
+          Total data to sync: <span className="text-white font-semibold">{formatBytes(totalBytes)}</span>
+          {totalBytes > 10 * 1024 * 1024 * 1024 && (
+            <span className="text-yellow-400 ml-2">⚠️ Large dataset — initial sync may take a long time</span>
+          )}
+        </div>
+      )}
+
+      <div className="bg-gray-900 border border-gray-700 rounded-lg p-4">
+        <h3 className="font-semibold text-gray-300 mb-2 text-sm">Schema Synchronization Required</h3>
+        <p className="text-xs text-gray-400 mb-2">
+          Table schemas are NOT replicated automatically. Run this on source before applying replication:
+        </p>
+        <code className="block bg-gray-800 rounded px-3 py-2 text-xs text-green-300 font-mono">
+          pg_dump --schema-only -n schema_name source_db | psql destination_db
+        </code>
       </div>
 
       {error && <div className="text-red-400 text-sm bg-red-950 border border-red-800 rounded p-3">{error}</div>}

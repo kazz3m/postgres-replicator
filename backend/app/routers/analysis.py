@@ -23,14 +23,17 @@ async def list_schemas():
                 t.table_name,
                 COALESCE(pg_total_relation_size(quote_ident(t.table_schema)||'.'||quote_ident(t.table_name)), 0) AS size_bytes,
                 pg_size_pretty(COALESCE(pg_total_relation_size(quote_ident(t.table_schema)||'.'||quote_ident(t.table_name)), 0)) AS size_pretty,
-                COALESCE(c.reltuples::bigint, 0) AS row_estimate
+                COALESCE(c.reltuples::bigint, 0) AS row_estimate,
+                c.relreplident
             FROM information_schema.tables t
             LEFT JOIN pg_class c ON c.relname = t.table_name
-            LEFT JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = t.table_schema
+              AND c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = t.table_schema)
             WHERE t.table_schema NOT IN ('pg_catalog','information_schema','pg_toast')
               AND t.table_type = 'BASE TABLE'
             ORDER BY t.table_schema, t.table_name
         """)
+
+    replident_map = {"d": "default", "f": "full", "i": "index", "n": "nothing"}
 
     schemas: dict[str, SchemaInfo] = {}
     for row in rows:
@@ -41,6 +44,7 @@ async def list_schemas():
             size_bytes=row["size_bytes"],
             size_pretty=row["size_pretty"],
             row_estimate=max(0, row["row_estimate"]),
+            replica_identity=replident_map.get(row["relreplident"], "default"),
         )
         if sname not in schemas:
             schemas[sname] = SchemaInfo(

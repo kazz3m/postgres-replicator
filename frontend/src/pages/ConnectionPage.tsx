@@ -5,6 +5,19 @@ import { Badge } from '../components/Badge'
 
 interface Props { onConnected: (srcDsn: string, dstDsn: string, major: number) => void }
 
+function getConnectionHint(error: string): string | null {
+  if (error.includes('pg_hba.conf') || error.includes('no pg_hba.conf entry')) {
+    return 'Hint: Add a replication entry to pg_hba.conf on source: "host replication user dest_ip/32 md5"'
+  }
+  if (error.includes('password authentication failed')) {
+    return 'Hint: Check username and password in the DSN.'
+  }
+  if (error.includes('Connection refused')) {
+    return 'Hint: Verify host, port, and that PostgreSQL accepts remote connections (listen_addresses).'
+  }
+  return null
+}
+
 export function ConnectionPage({ onConnected }: Props) {
   const [sourceDsn, setSourceDsn] = useState('postgresql://user:pass@source-host:5432/dbname')
   const [destDsn, setDestDsn] = useState('postgresql://user:pass@dest-host:5432/dbname')
@@ -46,23 +59,38 @@ export function ConnectionPage({ onConnected }: Props) {
           <div>
             <label className="block text-gray-400 mb-1 text-xs uppercase tracking-wider">Source DSN</label>
             <input
+              type="text"
               className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
               value={sourceDsn}
               onChange={e => setSourceDsn(e.target.value)}
               placeholder="postgresql://user:pass@host:5432/db"
             />
+            <p className="text-xs text-gray-500 mt-1">
+              DSN is stored in memory only and never logged in plaintext.
+            </p>
           </div>
           <div>
             <label className="block text-gray-400 mb-1 text-xs uppercase tracking-wider">Destination DSN</label>
             <input
+              type="text"
               className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
               value={destDsn}
               onChange={e => setDestDsn(e.target.value)}
               placeholder="postgresql://user:pass@host:5432/db"
             />
+            <p className="text-xs text-gray-500 mt-1">
+              DSN is stored in memory only and never logged in plaintext.
+            </p>
           </div>
 
-          {error && <div className="text-red-400 text-sm bg-red-950 border border-red-800 rounded p-3">{error}</div>}
+          {error && (
+            <div className="text-sm bg-red-950 border border-red-800 rounded p-3 space-y-1">
+              <div className="text-red-400">{error}</div>
+              {getConnectionHint(error) && (
+                <div className="text-yellow-400 text-xs">{getConnectionHint(error)}</div>
+              )}
+            </div>
+          )}
 
           {testResult && (
             <div className="space-y-2 text-sm">

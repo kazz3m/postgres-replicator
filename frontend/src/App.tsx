@@ -3,7 +3,8 @@ import { ConnectionPage } from './pages/ConnectionPage'
 import { AnalysisPage } from './pages/AnalysisPage'
 import { ReplicationSetupPage } from './pages/ReplicationSetupPage'
 import { StatusPage } from './pages/StatusPage'
-import { connectionsApi } from './api/client'
+import { connectionsApi, analysisApi, SchemaInfo } from './api/client'
+import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 
 type Tab = 'analysis' | 'setup' | 'status'
@@ -16,6 +17,12 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('analysis')
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set())
   const [selectedSchemas, setSelectedSchemas] = useState<Set<string>>(new Set())
+
+  const { data: schemaData } = useQuery<SchemaInfo[]>({
+    queryKey: ['schemas'],
+    queryFn: () => analysisApi.schemas().then(r => r.data),
+    enabled: connected,
+  })
 
   useEffect(() => {
     connectionsApi.status().then(r => {
@@ -97,6 +104,7 @@ export default function App() {
             selectedSchemas={selectedSchemas}
             sourceDsn={sourceDsn}
             pgMajor={pgMajor}
+            schemaData={schemaData ?? []}
           />
         )}
         {tab === 'status' && <StatusPage />}
