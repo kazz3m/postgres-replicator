@@ -28,8 +28,8 @@ export default function App() {
     connectionsApi.status().then(r => {
       if (r.data.connected) {
         setConnected(true)
-        setSourceDsn(r.data.source_dsn)
-        setDestDsn(r.data.dest_dsn)
+        setSourceDsn(r.data.source_dsn ?? '')
+        setDestDsn(r.data.dest_dsn ?? '')
       }
     }).catch(() => {})
   }, [])

@@ -6,6 +6,7 @@ CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "/data/config.json"))
 
 _defaults = {
     "source_dsn": "",
+    "source_repl_dsn": "",
     "dest_dsn": "",
     "stats_refresh_interval": 10,
 }

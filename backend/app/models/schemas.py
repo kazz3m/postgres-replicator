@@ -6,6 +6,7 @@ from enum import Enum
 class ConnectionConfig(BaseModel):
     source_dsn: str
     dest_dsn: str
+    source_repl_dsn: str = ""  # dedicated replication user DSN for CREATE SUBSCRIPTION CONNECTION
 
 
 class TableInfo(BaseModel):

@@ -5,12 +5,13 @@ export const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-export interface ConnectionConfig { source_dsn: string; dest_dsn: string }
+export interface ConnectionConfig { source_dsn: string; dest_dsn: string; source_repl_dsn?: string }
 export interface PGVersion { version: string; major: number }
 export interface ConnectionStatus {
   source_ok: boolean; dest_ok: boolean
   source_version?: PGVersion; dest_version?: PGVersion
   source_error?: string; dest_error?: string
+  warnings?: string[]
 }
 export interface TableInfo {
   schema_name: string; table_name: string

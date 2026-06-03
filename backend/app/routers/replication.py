@@ -119,11 +119,14 @@ async def list_publications():
 async def create_or_update_subscription(config: SubscriptionConfig):
     _require_connection()
 
+    # Use dedicated replication DSN if provided, otherwise fall back to admin DSN
+    conn_dsn = state.source_repl_dsn if state.source_repl_dsn else config.source_dsn
+
     # Validate DSN format and prevent dollar-quoting escape
-    if not re.match(r'^postgres(ql)?://', config.source_dsn):
-        raise HTTPException(400, "source_dsn must start with postgresql:// or postgres://")
-    if "$conn_str$" in config.source_dsn:
-        raise HTTPException(400, "source_dsn contains an illegal sequence.")
+    if not re.match(r'^postgres(ql)?://', conn_dsn):
+        raise HTTPException(400, "Connection DSN must start with postgresql:// or postgres://")
+    if "$conn_str$" in conn_dsn:
+        raise HTTPException(400, "Connection DSN contains an illegal sequence.")
 
     # Fix #1: hard-block when wal_level != logical on source
     src_pool = await get_source_pool(state.source_dsn)
@@ -182,7 +185,7 @@ async def create_or_update_subscription(config: SubscriptionConfig):
         copy_data_sql = "true" if config.copy_data else "false"
         await dest_conn.execute(f"""
             CREATE SUBSCRIPTION "{config.subscription_name}"
-            CONNECTION $conn_str${config.source_dsn}$conn_str$
+            CONNECTION $conn_str${conn_dsn}$conn_str$
             PUBLICATION "{config.publication_name}"
             WITH (copy_data = {copy_data_sql})
         """)
