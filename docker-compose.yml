@@ -27,7 +27,7 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 192.168.242.0/24
+        - subnet: 172.251.0.0/24
 
 volumes:
   pg_sync_data:
