@@ -2,162 +2,181 @@
 setlocal EnableDelayedExpansion
 
 :: ============================================================
-::  PG Replication Manager — Windows local runner (no Docker)
-::  Requirements: Python 3.10+, Node.js 18+
-::  Usage: double-click or run from cmd/PowerShell in repo root
+::  PG Replication Manager - Windows local runner (no Docker)
+::  Requirements: Python 3.10-3.12, Node.js 18+
+::  Usage: double-click or run from cmd in repo root
 :: ============================================================
 
 set "ROOT=%~dp0"
-set "BACKEND_DIR=%ROOT%backend"
-set "FRONTEND_DIR=%ROOT%frontend"
-set "VENV_DIR=%ROOT%.venv"
-set "DATA_DIR=%ROOT%data"
+if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
+
+set "BACKEND_DIR=%ROOT%\backend"
+set "FRONTEND_DIR=%ROOT%\frontend"
+set "VENV_DIR=%ROOT%\.venv"
+set "DATA_DIR=%ROOT%\data"
 set "BACKEND_PORT=8000"
 set "FRONTEND_PORT=3000"
 
-:: ── Colour helpers ───────────────────────────────────────────
-:: (uses ANSI — works in Windows Terminal and modern cmd)
-set "C_RESET=[0m"
-set "C_GREEN=[92m"
-set "C_YELLOW=[93m"
-set "C_RED=[91m"
-set "C_BLUE=[94m"
-set "C_BOLD=[1m"
-
 echo.
-echo %C_BLUE%%C_BOLD%  PG Replication Manager — local start%C_RESET%
-echo  ─────────────────────────────────────────
+echo   PG Replication Manager - local start
+echo   =========================================
 echo.
 
-:: ── 1. Check Python ─────────────────────────────────────────
-where python >nul 2>&1
-if errorlevel 1 (
-    where python3 >nul 2>&1
-    if errorlevel 1 (
-        echo %C_RED%[ERROR]%C_RESET% Python not found. Install Python 3.10+ from https://python.org
-        goto :fail
+:: -- 1. Python ------------------------------------------------
+set "PYTHON="
+for %%C in (py python python3) do (
+    if not defined PYTHON (
+        for /f "tokens=2 delims= " %%V in ('%%C --version 2^>^&1') do (
+            for /f "tokens=1,2 delims=." %%A in ("%%V") do (
+                if "%%A"=="3" (
+                    set /a MINOR=%%B
+                    if !MINOR! GEQ 10 if !MINOR! LEQ 12 set "PYTHON=%%C"
+                )
+            )
+        )
     )
-    set "PYTHON=python3"
-) else (
-    set "PYTHON=python"
 )
-
-for /f "tokens=*" %%v in ('!PYTHON! --version 2^>^&1') do set "PY_VER=%%v"
-echo %C_GREEN%[OK]%C_RESET%    !PY_VER!
-
-:: ── 2. Check Node ────────────────────────────────────────────
-where node >nul 2>&1
-if errorlevel 1 (
-    echo %C_RED%[ERROR]%C_RESET% Node.js not found. Install Node 18+ from https://nodejs.org
+if not defined PYTHON (
+    echo   [ERROR] Python 3.10-3.12 not found.
+    echo           Install from https://python.org
+    echo           During install check "Add Python to PATH"
     goto :fail
 )
-for /f "tokens=*" %%v in ('node --version') do set "NODE_VER=%%v"
-echo %C_GREEN%[OK]%C_RESET%    Node.js !NODE_VER!
+for /f "tokens=*" %%V in ('%PYTHON% --version 2^>^&1') do echo   [OK]    %%V
 
-:: ── 3. Create data directory ─────────────────────────────────
-if not exist "%DATA_DIR%" (
+:: -- 2. Node --------------------------------------------------
+node --version >nul 2>&1
+if errorlevel 1 (
+    echo   [ERROR] Node.js not found. Install from https://nodejs.org
+    goto :fail
+)
+for /f "tokens=*" %%V in ('node --version 2^>^&1') do echo   [OK]    Node.js %%V
+
+:: -- 3. Data directory ----------------------------------------
+if not exist "%DATA_DIR%\" (
     mkdir "%DATA_DIR%"
-    echo %C_GREEN%[OK]%C_RESET%    Created data directory: %DATA_DIR%
+    echo   [OK]    Created data directory: %DATA_DIR%
 ) else (
-    echo %C_GREEN%[OK]%C_RESET%    Data directory: %DATA_DIR%
+    echo   [OK]    Data directory: %DATA_DIR%
 )
 
-:: ── 4. Python venv ───────────────────────────────────────────
-if not exist "%VENV_DIR%\Scripts\activate.bat" (
-    echo %C_YELLOW%[SETUP]%C_RESET% Creating Python virtual environment...
-    !PYTHON! -m venv "%VENV_DIR%"
+:: -- 4. Check venv Python version -----------------------------
+set "NEED_VENV=1"
+if exist "%VENV_DIR%\Scripts\python.exe" (
+    set "NEED_VENV=0"
+    for /f "tokens=2 delims= " %%V in ('%VENV_DIR%\Scripts\python.exe --version 2^>^&1') do (
+        for /f "tokens=1,2 delims=." %%A in ("%%V") do (
+            if not "%%A"=="3" set "NEED_VENV=1"
+        )
+    )
+    for /f "tokens=2 delims= " %%V in ('%PYTHON% --version 2^>^&1') do set "WANT_VER=%%V"
+    for /f "tokens=2 delims= " %%V in ('%VENV_DIR%\Scripts\python.exe --version 2^>^&1') do set "HAVE_VER=%%V"
+    if not "!WANT_VER!"=="!HAVE_VER!" (
+        echo   [INFO]  Venv version mismatch - recreating...
+        rmdir /s /q "%VENV_DIR%"
+        set "NEED_VENV=1"
+    )
+)
+
+:: -- 5. Create venv -------------------------------------------
+if "!NEED_VENV!"=="1" (
+    echo   [SETUP] Creating Python virtual environment...
+    %PYTHON% -m venv "%VENV_DIR%"
     if errorlevel 1 (
-        echo %C_RED%[ERROR]%C_RESET% Failed to create venv.
+        echo   [ERROR] Failed to create virtual environment.
         goto :fail
     )
-    echo %C_GREEN%[OK]%C_RESET%    Virtual environment created.
+    echo   [OK]    Virtual environment created.
+) else (
+    echo   [OK]    Virtual environment exists.
 )
 
-:: ── 5. Install / upgrade Python deps ────────────────────────
-echo %C_YELLOW%[SETUP]%C_RESET% Checking Python dependencies...
+:: -- 6. Python deps -------------------------------------------
+echo   [SETUP] Checking Python dependencies...
 call "%VENV_DIR%\Scripts\activate.bat"
 pip install -q -r "%BACKEND_DIR%\requirements.txt"
 if errorlevel 1 (
-    echo %C_RED%[ERROR]%C_RESET% pip install failed.
-    goto :fail
+    echo   [WARN]  pip failed - retrying with --trusted-host...
+    pip install -q -r "%BACKEND_DIR%\requirements.txt" ^
+        --trusted-host pypi.org ^
+        --trusted-host files.pythonhosted.org ^
+        --trusted-host pypi.python.org
+    if errorlevel 1 (
+        echo   [ERROR] pip install failed.
+        goto :fail
+    )
 )
-echo %C_GREEN%[OK]%C_RESET%    Python dependencies ready.
+echo   [OK]    Python dependencies ready.
 
-:: ── 6. Install Node deps ─────────────────────────────────────
-if not exist "%FRONTEND_DIR%\node_modules" (
-    echo %C_YELLOW%[SETUP]%C_RESET% Installing Node dependencies (first run)...
+:: -- 7. Node deps ---------------------------------------------
+if not exist "%FRONTEND_DIR%\node_modules\" (
+    echo   [SETUP] Installing Node dependencies (first run)...
     pushd "%FRONTEND_DIR%"
     npm install --silent
     if errorlevel 1 (
-        echo %C_RED%[ERROR]%C_RESET% npm install failed.
         popd
+        echo   [ERROR] npm install failed.
         goto :fail
     )
     popd
-    echo %C_GREEN%[OK]%C_RESET%    Node dependencies installed.
+    echo   [OK]    Node dependencies installed.
 ) else (
-    echo %C_GREEN%[OK]%C_RESET%    Node dependencies already present.
+    echo   [OK]    Node dependencies already present.
 )
 
-:: ── 7. Launch backend in a new window ────────────────────────
+:: -- 8. Start backend -----------------------------------------
 echo.
-echo %C_BLUE%[START]%C_RESET% Launching backend on http://localhost:%BACKEND_PORT% ...
+echo   [START] Backend  -> http://localhost:%BACKEND_PORT%
+
 set "CONFIG_PATH=%DATA_DIR%\config.json"
 set "PROFILES_PATH=%DATA_DIR%\profiles.json"
-start "PG-Sync Backend" cmd /k ^
-    "cd /d "%BACKEND_DIR%" && call "%VENV_DIR%\Scripts\activate.bat" && ^
-    set CONFIG_PATH=%CONFIG_PATH% && ^
-    set PROFILES_PATH=%PROFILES_PATH% && ^
-    uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT% --reload"
 
-:: ── 8. Wait for backend to be ready ─────────────────────────
-echo %C_YELLOW%[WAIT]%C_RESET%  Waiting for backend...
+start "PG-Sync Backend" cmd /k "cd /d "%BACKEND_DIR%" && call "%VENV_DIR%\Scripts\activate.bat" && set CONFIG_PATH=%CONFIG_PATH% && set PROFILES_PATH=%PROFILES_PATH% && uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT% --reload"
+
+:: -- 9. Wait for backend --------------------------------------
+echo   [WAIT]  Waiting for backend...
 set /a TRIES=0
 :wait_loop
     timeout /t 1 /nobreak >nul
     set /a TRIES+=1
-    curl -sf http://localhost:%BACKEND_PORT%/health >nul 2>&1
+    curl -sf "http://localhost:%BACKEND_PORT%/health" >nul 2>&1
     if not errorlevel 1 goto :backend_ready
-    if !TRIES! geq 20 (
-        echo %C_RED%[ERROR]%C_RESET% Backend did not start within 20 seconds.
-        echo        Check the "PG-Sync Backend" window for errors.
+    if !TRIES! GEQ 30 (
+        echo   [ERROR] Backend did not start within 30 seconds.
+        echo           Check the backend window for errors.
         goto :fail
     )
     goto :wait_loop
 
 :backend_ready
-echo %C_GREEN%[OK]%C_RESET%    Backend ready.
+echo   [OK]    Backend ready.
 
-:: ── 9. Launch frontend in a new window ───────────────────────
-echo %C_BLUE%[START]%C_RESET% Launching frontend on http://localhost:%FRONTEND_PORT% ...
-start "PG-Sync Frontend" cmd /k ^
-    "cd /d "%FRONTEND_DIR%" && ^
-    set VITE_BACKEND_URL=http://localhost:%BACKEND_PORT% && ^
-    npm run dev -- --port %FRONTEND_PORT%"
+:: -- 10. Start frontend ---------------------------------------
+echo   [START] Frontend -> http://localhost:%FRONTEND_PORT%
 
-:: ── 10. Open browser ─────────────────────────────────────────
+start "PG-Sync Frontend" cmd /k "cd /d "%FRONTEND_DIR%" && set VITE_BACKEND_URL=http://localhost:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
+
+:: -- 11. Open browser -----------------------------------------
 timeout /t 3 /nobreak >nul
-echo %C_BLUE%[INFO]%C_RESET%  Opening browser...
-start http://localhost:%FRONTEND_PORT%
+start "" "http://localhost:%FRONTEND_PORT%"
 
-:: ── Done ─────────────────────────────────────────────────────
+:: -- Done -----------------------------------------------------
 echo.
-echo  ─────────────────────────────────────────
-echo  %C_GREEN%%C_BOLD%App is running%C_RESET%
-echo  Frontend : http://localhost:%FRONTEND_PORT%
-echo  Backend  : http://localhost:%BACKEND_PORT%
-echo  API docs : http://localhost:%BACKEND_PORT%/docs
-echo  Data dir : %DATA_DIR%
+echo   =========================================
+echo   App is running!
+echo   Frontend : http://localhost:%FRONTEND_PORT%
+echo   Backend  : http://localhost:%BACKEND_PORT%
+echo   API docs : http://localhost:%BACKEND_PORT%/docs
+echo   Data dir : %DATA_DIR%
+echo   =========================================
 echo.
-echo  Both services run in separate windows.
-echo  Close those windows (or press Ctrl+C in each) to stop.
-echo  ─────────────────────────────────────────
+echo   Both services run in separate windows.
+echo   Close those windows to stop them.
 echo.
 pause
 goto :eof
 
 :fail
 echo.
-echo %C_RED%Startup failed. See error above.%C_RESET%
 pause
 exit /b 1
