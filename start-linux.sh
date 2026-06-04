@@ -83,12 +83,22 @@ mkdir -p "$DATA_DIR"
 ok "Data directory: $DATA_DIR"
 
 # -- 4. Python venv -------------------------------------------
+# Recreate if venv Python version doesn't match selected interpreter
+if [[ -f "$VENV_DIR/bin/python" ]]; then
+    VENV_VER=$("$VENV_DIR/bin/python" --version 2>&1)
+    WANT_VER=$($PYTHON --version 2>&1)
+    if [[ "$VENV_VER" != "$WANT_VER" ]]; then
+        step "Venv is $VENV_VER but selected interpreter is $WANT_VER — recreating..."
+        rm -rf "$VENV_DIR"
+    fi
+fi
+
 if [[ ! -f "$VENV_DIR/bin/activate" ]]; then
     step "Creating Python virtual environment..."
     "$PYTHON" -m venv "$VENV_DIR"
     ok "Virtual environment created."
 else
-    ok "Virtual environment exists."
+    ok "Virtual environment exists ($("$VENV_DIR/bin/python" --version 2>&1))."
 fi
 
 # shellcheck disable=SC1091
