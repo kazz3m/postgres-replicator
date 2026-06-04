@@ -128,10 +128,7 @@ if not exist "%FRONTEND_DIR%\node_modules\" (
 echo.
 echo   [START] Backend  -> http://localhost:%BACKEND_PORT%
 
-set "CONFIG_PATH=%DATA_DIR%\config.json"
-set "PROFILES_PATH=%DATA_DIR%\profiles.json"
-
-start "PG-Sync Backend" cmd /k "cd /d "%BACKEND_DIR%" && call "%VENV_DIR%\Scripts\activate.bat" && set CONFIG_PATH=%CONFIG_PATH% && set PROFILES_PATH=%PROFILES_PATH% && uvicorn app.main:app --host 127.0.0.1 --port %BACKEND_PORT% --reload"
+start "PG-Sync Backend" cmd /k "%ROOT%\run-backend.cmd"
 
 :: -- 9. Wait for backend --------------------------------------
 echo   [WAIT]  Waiting for backend...
@@ -154,7 +151,7 @@ echo   [OK]    Backend ready.
 :: -- 10. Start frontend ---------------------------------------
 echo   [START] Frontend -> http://localhost:%FRONTEND_PORT%
 
-start "PG-Sync Frontend" cmd /k "cd /d "%FRONTEND_DIR%" && set VITE_BACKEND_URL=http://localhost:%BACKEND_PORT% && npm run dev -- --port %FRONTEND_PORT%"
+start "PG-Sync Frontend" cmd /k "%ROOT%\run-frontend.cmd"
 
 :: -- 11. Open browser -----------------------------------------
 timeout /t 3 /nobreak >nul
