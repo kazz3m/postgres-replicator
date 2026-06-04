@@ -106,7 +106,22 @@ source "$VENV_DIR/bin/activate"
 
 # -- 5. Python deps -------------------------------------------
 step "Checking Python dependencies..."
-pip install -q -r "$BACKEND_DIR/requirements.txt"
+PIP_FLAGS="-q -r $BACKEND_DIR/requirements.txt"
+if [[ -n "${PIP_CERT:-}" ]]; then
+    pip install $PIP_FLAGS --cert "$PIP_CERT"
+elif pip install $PIP_FLAGS 2>/dev/null; then
+    : # success
+else
+    # Retry with --trusted-host in case of corporate SSL intercept
+    echo -e "  ${YELLOW}[WARN]${NC}  SSL error detected — retrying with --trusted-host (corporate proxy?)"
+    pip install $PIP_FLAGS \
+        --trusted-host pypi.org \
+        --trusted-host files.pythonhosted.org \
+        --trusted-host pypi.python.org \
+        || fail "pip install failed. If behind a corporate proxy, set:
+    export PIP_CERT=/path/to/corporate-ca.pem
+  then re-run the script."
+fi
 ok "Python dependencies ready."
 
 # -- 6. Node deps ---------------------------------------------
