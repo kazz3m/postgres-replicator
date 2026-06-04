@@ -41,7 +41,7 @@ PYTHON=""
 for cmd in python3 python; do
     if command -v "$cmd" &>/dev/null; then
         ver=$("$cmd" --version 2>&1)
-        minor=$(echo "$ver" | grep -oP '(?<=3\.)\d+' | head -1)
+        minor=$(echo "$ver" | sed 's/Python 3\.\([0-9]*\).*/\1/')
         if [[ -n "$minor" && "$minor" -ge 10 ]]; then
             PYTHON="$cmd"; break
         fi
