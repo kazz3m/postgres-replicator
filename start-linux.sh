@@ -38,18 +38,36 @@ echo ""
 
 # -- 1. Python ------------------------------------------------
 PYTHON=""
-for cmd in python3 python; do
+# Prefer 3.12 or 3.11 — asyncpg/pydantic-core have no wheels for 3.13+ yet
+for cmd in python3.12 python3.11 python3.10 python3 python; do
     if command -v "$cmd" &>/dev/null; then
         ver=$("$cmd" --version 2>&1)
         minor=$(echo "$ver" | sed 's/Python 3\.\([0-9]*\).*/\1/')
-        if [[ -n "$minor" && "$minor" -ge 10 ]]; then
+        if [[ -n "$minor" && "$minor" -ge 10 && "$minor" -le 12 ]]; then
             PYTHON="$cmd"; break
         fi
     fi
 done
-[[ -z "$PYTHON" ]] && fail "Python 3.10+ not found. Install via your package manager:
+if [[ -z "$PYTHON" ]]; then
+    # Check if only 3.13+ is available and warn
+    for cmd in python3 python; do
+        if command -v "$cmd" &>/dev/null; then
+            ver=$("$cmd" --version 2>&1)
+            minor=$(echo "$ver" | sed 's/Python 3\.\([0-9]*\).*/\1/')
+            if [[ -n "$minor" && "$minor" -ge 13 ]]; then
+                fail "Found $ver but asyncpg requires Python 3.10-3.12.
+    Install Python 3.12:
+      macOS:         brew install python@3.12
+      Ubuntu/Debian: sudo apt install python3.12
+      RHEL/Fedora:   sudo dnf install python3.12"
+            fi
+        fi
+    done
+    fail "Python 3.10-3.12 not found.
+    macOS:         brew install python@3.12
     Ubuntu/Debian: sudo apt install python3.12
     RHEL/Fedora:   sudo dnf install python3.12"
+fi
 ok "$($PYTHON --version)"
 
 # -- 2. Node --------------------------------------------------
