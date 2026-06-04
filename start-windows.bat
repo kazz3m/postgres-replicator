@@ -76,20 +76,19 @@ echo   [OK]    Python dependencies ready.
 
 :: -- 6. Node deps ---------------------------------------------
 echo   [DBG] step 6: npm
-if not exist "%FRONTEND_DIR%\node_modules\" (
-    echo   [SETUP] Installing Node dependencies...
-    pushd "%FRONTEND_DIR%"
-    npm install --silent
-    if errorlevel 1 (
-        popd
-        echo   [ERROR] npm install failed.
-        goto :fail
-    )
-    popd
-    echo   [OK]    Node dependencies installed.
-) else (
-    echo   [OK]    Node dependencies already present.
+if exist "%FRONTEND_DIR%\node_modules\" goto :npm_done
+echo   [SETUP] Installing Node dependencies...
+pushd "%FRONTEND_DIR%"
+npm install --silent >"%DATA_DIR%\npm-install.log" 2>&1
+set "NPM_EXIT=%errorlevel%"
+popd
+if %NPM_EXIT% NEQ 0 (
+    echo   [ERROR] npm install failed. See %DATA_DIR%\npm-install.log
+    goto :fail
 )
+echo   [OK]    Node dependencies installed.
+:npm_done
+if exist "%FRONTEND_DIR%\node_modules\" echo   [OK]    Node dependencies already present.
 
 :: -- 7. Start backend -----------------------------------------
 echo   [DBG] step 7: start backend
