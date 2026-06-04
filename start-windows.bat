@@ -1,12 +1,6 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-:: ============================================================
-::  PG Replication Manager - Windows local runner (no Docker)
-::  Requirements: Python 3.10-3.12, Node.js 18+
-::  Usage: double-click or run from cmd in repo root
-:: ============================================================
-
 set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 
@@ -23,17 +17,22 @@ echo   =========================================
 echo.
 
 :: -- 1. Python ------------------------------------------------
+echo   [DBG] step 1: finding python
 set "PYTHON="
-call :find_python
+py --version >nul 2>&1
+if not errorlevel 1 set "PYTHON=py"
 if not defined PYTHON (
-    echo   [ERROR] Python 3.10-3.12 not found.
-    echo           Install from https://python.org
-    echo           During install tick "Add Python to PATH"
+    python --version >nul 2>&1
+    if not errorlevel 1 set "PYTHON=python"
+)
+if not defined PYTHON (
+    echo   [ERROR] Python not found. Install from https://python.org
     goto :fail
 )
 for /f "tokens=*" %%V in ('%PYTHON% --version 2^>^&1') do echo   [OK]    %%V
 
 :: -- 2. Node --------------------------------------------------
+echo   [DBG] step 2: node
 node --version >nul 2>&1
 if errorlevel 1 (
     echo   [ERROR] Node.js not found. Install from https://nodejs.org
@@ -42,15 +41,17 @@ if errorlevel 1 (
 for /f "tokens=*" %%V in ('node --version 2^>^&1') do echo   [OK]    Node.js %%V
 
 :: -- 3. Data directory ----------------------------------------
+echo   [DBG] step 3: data dir
 if not exist "%DATA_DIR%\" mkdir "%DATA_DIR%"
 echo   [OK]    Data directory: %DATA_DIR%
 
 :: -- 4. Python venv -------------------------------------------
+echo   [DBG] step 4: venv
 if not exist "%VENV_DIR%\Scripts\python.exe" (
-    echo   [SETUP] Creating Python virtual environment...
+    echo   [SETUP] Creating virtual environment...
     %PYTHON% -m venv "%VENV_DIR%"
     if errorlevel 1 (
-        echo   [ERROR] Failed to create virtual environment.
+        echo   [ERROR] venv failed.
         goto :fail
     )
     echo   [OK]    Virtual environment created.
@@ -59,11 +60,12 @@ if not exist "%VENV_DIR%\Scripts\python.exe" (
 )
 
 :: -- 5. Python deps -------------------------------------------
-echo   [SETUP] Checking Python dependencies...
+echo   [DBG] step 5: pip
 call "%VENV_DIR%\Scripts\activate.bat"
+echo   [DBG] step 5b: activated
 pip install -q -r "%BACKEND_DIR%\requirements.txt"
 if errorlevel 1 (
-    echo   [WARN]  pip failed - retrying with --trusted-host...
+    echo   [WARN]  Retrying with --trusted-host...
     pip install -q -r "%BACKEND_DIR%\requirements.txt" --trusted-host pypi.org --trusted-host files.pythonhosted.org --trusted-host pypi.python.org
     if errorlevel 1 (
         echo   [ERROR] pip install failed.
@@ -73,8 +75,9 @@ if errorlevel 1 (
 echo   [OK]    Python dependencies ready.
 
 :: -- 6. Node deps ---------------------------------------------
+echo   [DBG] step 6: npm
 if not exist "%FRONTEND_DIR%\node_modules\" (
-    echo   [SETUP] Installing Node dependencies (first run)...
+    echo   [SETUP] Installing Node dependencies...
     pushd "%FRONTEND_DIR%"
     npm install --silent
     if errorlevel 1 (
@@ -89,11 +92,13 @@ if not exist "%FRONTEND_DIR%\node_modules\" (
 )
 
 :: -- 7. Start backend -----------------------------------------
+echo   [DBG] step 7: start backend
 echo.
 echo   [START] Backend  -> http://localhost:%BACKEND_PORT%
 start "PG-Sync Backend" cmd /k "%ROOT%\run-backend.cmd"
 
 :: -- 8. Wait for backend --------------------------------------
+echo   [DBG] step 8: wait backend
 echo   [WAIT]  Waiting for backend...
 set /a TRIES=0
 :wait_loop
@@ -102,8 +107,7 @@ set /a TRIES+=1
 curl -sf "http://localhost:%BACKEND_PORT%/health" >nul 2>&1
 if not errorlevel 1 goto :backend_ready
 if !TRIES! GEQ 30 (
-    echo   [ERROR] Backend did not start within 30 seconds.
-    echo           Check the backend window for errors.
+    echo   [ERROR] Backend did not start in 30s. Check backend window.
     goto :fail
 )
 goto :wait_loop
@@ -112,43 +116,22 @@ goto :wait_loop
 echo   [OK]    Backend ready.
 
 :: -- 9. Start frontend ----------------------------------------
-echo   [START] Frontend -> http://localhost:%FRONTEND_PORT%
+echo   [DBG] step 9: start frontend
 start "PG-Sync Frontend" cmd /k "%ROOT%\run-frontend.cmd"
 
 :: -- 10. Open browser -----------------------------------------
 timeout /t 3 /nobreak >nul
 start "" "http://localhost:%FRONTEND_PORT%"
 
-:: -- Done -----------------------------------------------------
 echo.
 echo   =========================================
 echo   App is running!
 echo   Frontend : http://localhost:%FRONTEND_PORT%
 echo   Backend  : http://localhost:%BACKEND_PORT%
 echo   API docs : http://localhost:%BACKEND_PORT%/docs
-echo   Data dir : %DATA_DIR%
 echo   =========================================
 echo.
-echo   Both services run in separate windows.
-echo   Close those windows to stop them.
-echo.
 pause
-goto :eof
-
-:: -- Subroutine: find Python 3.10-3.12 ------------------------
-:find_python
-for %%C in (py python python3) do (
-    %%C --version >nul 2>&1
-    if not errorlevel 1 (
-        for /f "tokens=2" %%V in ('%%C --version 2^>^&1') do (
-            for /f "tokens=1,2 delims=." %%A in ("%%V") do (
-                if "%%A"=="3" if %%B GEQ 10 if %%B LEQ 12 (
-                    if not defined PYTHON set "PYTHON=%%C"
-                )
-            )
-        )
-    )
-)
 goto :eof
 
 :fail
