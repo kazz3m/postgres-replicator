@@ -117,11 +117,20 @@ export interface DatabaseInfo {
   exists_on_dest: boolean
 }
 
+export interface SchemaListItem {
+  schema_name: string
+  table_count: number
+  total_size_bytes: number
+  total_size_pretty: string
+}
+
 export const analysisApi = {
   schemas: () => api.get<SchemaInfo[]>('/analysis/schemas'),
   databases: () => api.get<DatabaseInfo[]>('/analysis/databases'),
-  databaseSchemas: (database: string) =>
-    api.get<SchemaInfo[]>(`/analysis/database-schemas?database=${encodeURIComponent(database)}`),
+  databaseSchemaList: (database: string) =>
+    api.get<SchemaListItem[]>(`/analysis/database-schema-list?database=${encodeURIComponent(database)}`),
+  schemaTables: (database: string, schema: string) =>
+    api.get<TableInfo[]>(`/analysis/schema-tables?database=${encodeURIComponent(database)}&schema=${encodeURIComponent(schema)}`),
   ensureDatabase: (database: string) =>
     api.post<{ status: string; database: string }>('/analysis/ensure-database', { database }),
   publishedTables: (database: string) =>

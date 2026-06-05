@@ -64,12 +64,101 @@ async def list_cluster_databases():
     ]
 
 
+@router.get("/database-schema-list")
+async def list_database_schema_list(database: str):
+    """
+    List schemas (names + sizes, NO tables) for a specific database.
+    Called when user expands a database node — fast, no per-table stats.
+    """
+    _require_connection()
+    db_dsn = _dsn_for_database(state.source_dsn, database)
+    try:
+        conn = await asyncpg.connect(db_dsn, timeout=10)
+    except Exception as e:
+        raise HTTPException(400, f"Cannot connect to database '{database}': {e}")
+
+    try:
+        rows = await conn.fetch("""
+            SELECT
+                n.nspname AS schema_name,
+                COUNT(c.oid) AS table_count,
+                COALESCE(SUM(pg_total_relation_size(c.oid)), 0) AS total_size_bytes,
+                pg_size_pretty(COALESCE(SUM(pg_total_relation_size(c.oid)), 0)) AS total_size_pretty
+            FROM pg_namespace n
+            LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relkind = 'r'
+            WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+              AND n.nspname NOT LIKE 'pg_%'
+            GROUP BY n.nspname
+            ORDER BY n.nspname
+        """)
+    finally:
+        await conn.close()
+
+    return [
+        {
+            "schema_name": r["schema_name"],
+            "table_count": r["table_count"],
+            "total_size_bytes": r["total_size_bytes"],
+            "total_size_pretty": r["total_size_pretty"],
+        }
+        for r in rows
+    ]
+
+
+@router.get("/schema-tables")
+async def list_schema_tables(database: str, schema: str):
+    """
+    List tables for a specific schema within a database.
+    Called when user expands a schema node — lazy loaded.
+    """
+    _require_connection()
+    db_dsn = _dsn_for_database(state.source_dsn, database)
+    try:
+        conn = await asyncpg.connect(db_dsn, timeout=10)
+    except Exception as e:
+        raise HTTPException(400, f"Cannot connect to database '{database}': {e}")
+
+    try:
+        rows = await conn.fetch("""
+            SELECT
+                t.table_name,
+                COALESCE(pg_total_relation_size(
+                    quote_ident(t.table_schema)||'.'||quote_ident(t.table_name)
+                ), 0) AS size_bytes,
+                pg_size_pretty(COALESCE(pg_total_relation_size(
+                    quote_ident(t.table_schema)||'.'||quote_ident(t.table_name)
+                ), 0)) AS size_pretty,
+                COALESCE(c.reltuples::bigint, 0) AS row_estimate,
+                c.relreplident
+            FROM information_schema.tables t
+            LEFT JOIN pg_class c ON c.relname = t.table_name
+              AND c.relnamespace = (
+                  SELECT oid FROM pg_namespace WHERE nspname = t.table_schema
+              )
+            WHERE t.table_schema = $1
+              AND t.table_type = 'BASE TABLE'
+            ORDER BY t.table_name
+        """, schema)
+    finally:
+        await conn.close()
+
+    replident_map = {"d": "default", "f": "full", "i": "index", "n": "nothing"}
+    return [
+        {
+            "table_name": r["table_name"],
+            "schema_name": schema,
+            "size_bytes": r["size_bytes"],
+            "size_pretty": r["size_pretty"],
+            "row_estimate": max(0, r["row_estimate"]),
+            "replica_identity": replident_map.get(r["relreplident"], "default"),
+        }
+        for r in rows
+    ]
+
+
 @router.get("/database-schemas")
 async def list_database_schemas(database: str):
-    """
-    List schemas and tables for a specific database on source.
-    Connects to that database directly (separate pool per-request).
-    """
+    """Legacy endpoint — returns all schemas+tables. Kept for backward compat."""
     _require_connection()
     db_dsn = _dsn_for_database(state.source_dsn, database)
     try:
