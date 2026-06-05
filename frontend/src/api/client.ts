@@ -53,6 +53,35 @@ export interface WorkerStat {
   latest_end_time: string | null
 }
 
+export interface SequenceInfo {
+  sequence_name: string
+  table_name: string
+  column_name: string
+  source_value: number
+  dest_value: number | null
+  needs_sync: boolean
+}
+
+export interface ColumnDiff {
+  column_name: string
+  source_type: string
+  dest_type: string | null
+  match: boolean
+}
+
+export interface TableSchemaDiff {
+  table: string
+  exists_on_dest: boolean
+  columns: ColumnDiff[]
+  compatible: boolean
+}
+
+export interface SchemaSyncResult {
+  table: string
+  action: string   // created | already_exists | incompatible | error
+  detail?: string
+}
+
 export interface ConnectionState {
   source_dsn: string | null
   source_repl_dsn: string | null
@@ -86,4 +115,14 @@ export const replicationApi = {
   setInterval: (interval_seconds: number) => api.put('/replication/stats/interval', { interval_seconds }),
   workerStats: () => api.get<WorkerStat[]>('/replication/worker-stats'),
   listSubscriptionsTyped: () => api.get<SubscriptionInfo[]>('/replication/subscriptions'),
+  stopSubscription: (name: string) => api.post(`/replication/subscription/${name}/stop`),
+  addTableToPublication: (pubName: string, table: string) =>
+    api.post(`/replication/publication/${pubName}/add-table`, { table }),
+  listSequences: () => api.get<SequenceInfo[]>('/replication/sequences'),
+  syncSequences: (sequences?: string[]) =>
+    api.post('/replication/sequences/sync', { sequences: sequences ?? [] }),
+  schemaDiff: (publication: string) =>
+    api.get<TableSchemaDiff[]>(`/replication/schema-diff?publication=${encodeURIComponent(publication)}`),
+  schemaSync: (publication: string) =>
+    api.post<SchemaSyncResult[]>('/replication/schema-sync', { publication }),
 }

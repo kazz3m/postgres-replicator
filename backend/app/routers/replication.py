@@ -4,6 +4,7 @@ from typing import List, Optional
 from ..models.schemas import (
     PublicationConfig, SubscriptionConfig, ReplicationStatus,
     ReplicationSlotInfo, SubscriptionStatus, TableReplicationProgress,
+    SequenceInfo, TableSchemaDiff, ColumnDiff, SchemaSyncResult,
 )
 from ..db import get_source_pool, get_dest_pool
 from .. import state
@@ -477,3 +478,448 @@ async def skip_lsn(body: dict):
     async with pool.acquire() as conn:
         await conn.execute(f'ALTER SUBSCRIPTION "{sub_name}" SKIP (LSN \'{lsn}\')')
     return {"status": "skipped", "subscription_name": sub_name, "lsn": lsn}
+
+
+# ── Stop subscription ─────────────────────────────────────────────────────────
+
+@router.post("/subscription/{name}/stop")
+async def stop_subscription(name: str):
+    """
+    Gracefully stop replication: DISABLE subscription on dest, drop slot on source.
+    Leaves tables and data intact. Use reset to restart from scratch.
+    """
+    _require_connection()
+    dest_pool = await get_dest_pool(state.dest_dsn)
+    src_pool = await get_source_pool(state.source_dsn)
+
+    async with dest_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT subslotname, subenabled FROM pg_subscription WHERE subname = $1", name
+        )
+        if not row:
+            raise HTTPException(404, f"Subscription '{name}' not found.")
+
+        if row["subenabled"]:
+            try:
+                await conn.execute(f'ALTER SUBSCRIPTION "{name}" DISABLE')
+            except Exception as e:
+                raise HTTPException(500, f"Could not disable subscription: {e}")
+
+        slot_name = row["subslotname"]
+
+    # Detach slot so source can clean up WAL; slot name stays in pg_subscription
+    # but replication stops. We use SET slot_name = NONE to detach gracefully.
+    async with dest_pool.acquire() as conn:
+        try:
+            await conn.execute(f'ALTER SUBSCRIPTION "{name}" SET (slot_name = NONE)')
+        except Exception:
+            pass
+
+    if slot_name:
+        async with src_pool.acquire() as conn:
+            still_exists = await conn.fetchval(
+                "SELECT 1 FROM pg_replication_slots WHERE slot_name = $1", slot_name
+            )
+            if still_exists:
+                try:
+                    await conn.execute("SELECT pg_drop_replication_slot($1)", slot_name)
+                except Exception as e:
+                    raise HTTPException(500, f"Could not drop replication slot '{slot_name}': {e}")
+
+    return {"status": "stopped", "subscription_name": name, "slot_dropped": bool(slot_name)}
+
+
+# ── Add table to publication ──────────────────────────────────────────────────
+
+@router.post("/publication/{pub_name}/add-table")
+async def add_table_to_publication(pub_name: str, body: dict):
+    """
+    ALTER PUBLICATION pub ADD TABLE schema.table
+    Then issues ALTER SUBSCRIPTION sub REFRESH PUBLICATION on all subscriptions
+    that reference this publication.
+    """
+    _require_connection()
+    table = body.get("table")  # "schema.table"
+    if not table or "." not in table:
+        raise HTTPException(400, "table must be 'schema.table'")
+
+    src_pool = await get_source_pool(state.source_dsn)
+    async with src_pool.acquire() as conn:
+        # Validate publication exists
+        exists = await conn.fetchval(
+            "SELECT 1 FROM pg_publication WHERE pubname = $1", pub_name
+        )
+        if not exists:
+            raise HTTPException(404, f"Publication '{pub_name}' not found.")
+
+        # Validate + quote table name safely
+        schema, tname = table.split(".", 1)
+        safe = await conn.fetchval(
+            "SELECT quote_ident(table_schema)||'.'||quote_ident(table_name) "
+            "FROM information_schema.tables "
+            "WHERE table_schema = $1 AND table_name = $2",
+            schema, tname,
+        )
+        if not safe:
+            raise HTTPException(400, f"Table '{table}' does not exist on source.")
+
+        await conn.execute(f'ALTER PUBLICATION "{pub_name}" ADD TABLE {safe}')
+
+    # Refresh all subscriptions on dest that reference this publication
+    dest_pool = await get_dest_pool(state.dest_dsn)
+    refreshed = []
+    async with dest_pool.acquire() as conn:
+        subs = await conn.fetch(
+            "SELECT subname FROM pg_subscription WHERE $1 = ANY(subpublications)", pub_name
+        )
+        for sub in subs:
+            try:
+                await conn.execute(f'ALTER SUBSCRIPTION "{sub["subname"]}" REFRESH PUBLICATION')
+                refreshed.append(sub["subname"])
+            except Exception as e:
+                raise HTTPException(500, f"Could not refresh subscription '{sub['subname']}': {e}")
+
+    return {
+        "status": "ok",
+        "publication": pub_name,
+        "table_added": table,
+        "subscriptions_refreshed": refreshed,
+    }
+
+
+# ── Sequence sync ─────────────────────────────────────────────────────────────
+
+@router.get("/sequences", response_model=List[SequenceInfo])
+async def list_sequences():
+    """
+    Read current sequence values from source using the most reliable method:
+    pg_sequences.last_value is NOT reliable (may lag due to caching), so we
+    use MAX(column) from the table as the authoritative high-water mark, then
+    fall back to last_value for sequences that have no owning table/column.
+
+    For SERIAL / IDENTITY columns: pg_get_serial_sequence() + MAX(col).
+    For plain sequences: pg_sequences.last_value (best available without nextval()).
+    """
+    _require_connection()
+    src_pool = await get_source_pool(state.source_dsn)
+    dest_pool = await get_dest_pool(state.dest_dsn)
+
+    async with src_pool.acquire() as src_conn:
+        # Gather all sequences with their owning table/column if any
+        seq_rows = await src_conn.fetch("""
+            SELECT
+                n.nspname || '.' || s.relname AS seq_fqn,
+                d.refobjid::regclass::text AS owner_table,
+                a.attname AS owner_column
+            FROM pg_class s
+            JOIN pg_namespace n ON n.oid = s.relnamespace
+            LEFT JOIN pg_depend d ON d.objid = s.oid
+                AND d.classid = 'pg_class'::regclass
+                AND d.refclassid = 'pg_class'::regclass
+                AND d.deptype = 'a'
+            LEFT JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid
+            WHERE s.relkind = 'S'
+              AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+            ORDER BY seq_fqn
+        """)
+
+        results: list[SequenceInfo] = []
+        for row in seq_rows:
+            seq_fqn = row["seq_fqn"]
+            owner_table = row["owner_table"]
+            owner_col = row["owner_column"]
+
+            if owner_table and owner_col:
+                # Most reliable: MAX of the actual data column
+                try:
+                    max_val = await src_conn.fetchval(
+                        f"SELECT COALESCE(MAX({owner_col}), 0) FROM {owner_table}"
+                    )
+                    source_value = int(max_val)
+                    table_ref = owner_table
+                    col_ref = owner_col
+                except Exception:
+                    # Fall back to last_value from pg_sequences
+                    lv = await src_conn.fetchval(
+                        "SELECT last_value FROM pg_sequences "
+                        "WHERE schemaname || '.' || sequencename = $1", seq_fqn
+                    )
+                    source_value = int(lv or 0)
+                    table_ref = seq_fqn
+                    col_ref = "last_value"
+            else:
+                # Plain sequence with no owning column — use last_value
+                lv = await src_conn.fetchval(
+                    "SELECT last_value FROM pg_sequences "
+                    "WHERE schemaname || '.' || sequencename = $1", seq_fqn
+                )
+                source_value = int(lv or 0)
+                table_ref = seq_fqn
+                col_ref = "last_value (no owning column)"
+
+            # Read dest value
+            dest_value: Optional[int] = None
+            async with dest_pool.acquire() as dest_conn:
+                dest_lv = await dest_conn.fetchval(
+                    "SELECT last_value FROM pg_sequences "
+                    "WHERE schemaname || '.' || sequencename = $1", seq_fqn
+                )
+                if dest_lv is not None:
+                    dest_value = int(dest_lv)
+
+            results.append(SequenceInfo(
+                sequence_name=seq_fqn,
+                table_name=table_ref,
+                column_name=col_ref,
+                source_value=source_value,
+                dest_value=dest_value,
+                needs_sync=dest_value is None or dest_value < source_value,
+            ))
+
+    return results
+
+
+@router.post("/sequences/sync")
+async def sync_sequences(body: dict):
+    """
+    Set sequence values on destination to match source high-water marks.
+    Uses setval(seq, value, true) — next nextval() returns value+1.
+    Accepts optional list of sequence names to sync; defaults to all that need sync.
+    """
+    _require_connection()
+    only = set(body.get("sequences", []))  # empty = sync all that need it
+
+    sequences = await list_sequences()
+    to_sync = [
+        s for s in sequences
+        if s.needs_sync and (not only or s.sequence_name in only)
+    ]
+
+    if not to_sync:
+        return {"synced": [], "message": "All sequences are already up to date."}
+
+    dest_pool = await get_dest_pool(state.dest_dsn)
+    synced = []
+    errors = []
+
+    async with dest_pool.acquire() as conn:
+        for seq in to_sync:
+            try:
+                # setval(seq, value, true): last_value = value, is_called = TRUE
+                # → next nextval() returns value + increment (usually +1)
+                await conn.execute(
+                    "SELECT setval($1, $2, true)", seq.sequence_name, seq.source_value
+                )
+                synced.append({
+                    "sequence": seq.sequence_name,
+                    "set_to": seq.source_value,
+                    "was": seq.dest_value,
+                })
+            except Exception as e:
+                errors.append({"sequence": seq.sequence_name, "error": str(e)})
+
+    return {"synced": synced, "errors": errors}
+
+
+# ── Schema DDL sync ───────────────────────────────────────────────────────────
+
+@router.get("/schema-diff", response_model=List[TableSchemaDiff])
+async def schema_diff(publication: str):
+    """
+    Compare table layouts between source and destination for all tables
+    in the given publication. Returns column-level diff per table.
+    """
+    _require_connection()
+    src_pool = await get_source_pool(state.source_dsn)
+    dest_pool = await get_dest_pool(state.dest_dsn)
+
+    async with src_pool.acquire() as src_conn:
+        pub_tables = await src_conn.fetch(
+            "SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = $1",
+            publication,
+        )
+
+    if not pub_tables:
+        raise HTTPException(404, f"Publication '{publication}' not found or has no tables.")
+
+    results = []
+    for pt in pub_tables:
+        fqn = f"{pt['schemaname']}.{pt['tablename']}"
+
+        async with src_pool.acquire() as src_conn:
+            src_cols = await src_conn.fetch("""
+                SELECT column_name,
+                       udt_name AS data_type,
+                       character_maximum_length,
+                       numeric_precision,
+                       numeric_scale,
+                       is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = $1 AND table_name = $2
+                ORDER BY ordinal_position
+            """, pt["schemaname"], pt["tablename"])
+
+        async with dest_pool.acquire() as dest_conn:
+            dest_cols = await dest_conn.fetch("""
+                SELECT column_name,
+                       udt_name AS data_type,
+                       character_maximum_length,
+                       numeric_precision,
+                       numeric_scale,
+                       is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = $1 AND table_name = $2
+                ORDER BY ordinal_position
+            """, pt["schemaname"], pt["tablename"])
+
+            table_exists = await dest_conn.fetchval(
+                "SELECT 1 FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2",
+                pt["schemaname"], pt["tablename"]
+            )
+
+        dest_col_map = {r["column_name"]: r for r in dest_cols}
+        col_diffs = []
+        compatible = bool(table_exists)
+
+        for src_col in src_cols:
+            cname = src_col["column_name"]
+            src_type = src_col["data_type"]
+            dest_col = dest_col_map.get(cname)
+            if dest_col:
+                match = dest_col["data_type"] == src_type
+            else:
+                match = False
+                compatible = False
+            col_diffs.append(ColumnDiff(
+                column_name=cname,
+                source_type=src_type,
+                dest_type=dest_col["data_type"] if dest_col else None,
+                match=match,
+            ))
+
+        results.append(TableSchemaDiff(
+            table=fqn,
+            exists_on_dest=bool(table_exists),
+            columns=col_diffs,
+            compatible=compatible,
+        ))
+
+    return results
+
+
+@router.post("/schema-sync", response_model=List[SchemaSyncResult])
+async def schema_sync(body: dict):
+    """
+    For each table in the publication that is missing on destination:
+    1. Export DDL from source using pg_catalog (column definitions only — no sequences,
+       no triggers, no policies). Indexes are NOT created — add them manually after sync.
+    2. Create schema if missing on destination.
+    3. CREATE TABLE on destination.
+
+    Returns per-table action log.
+    """
+    _require_connection()
+    publication = body.get("publication")
+    if not publication:
+        raise HTTPException(400, "publication name required")
+
+    diffs = await schema_diff(publication)
+    results = []
+
+    src_pool = await get_source_pool(state.source_dsn)
+    dest_pool = await get_dest_pool(state.dest_dsn)
+
+    for diff in diffs:
+        if diff.exists_on_dest:
+            if diff.compatible:
+                results.append(SchemaSyncResult(table=diff.table, action="already_exists"))
+            else:
+                mismatched = [c.column_name for c in diff.columns if not c.match]
+                results.append(SchemaSyncResult(
+                    table=diff.table,
+                    action="incompatible",
+                    detail=f"Mismatched or missing columns: {', '.join(mismatched)}",
+                ))
+            continue
+
+        schema_name, table_name = diff.table.split(".", 1)
+
+        try:
+            # Build CREATE TABLE DDL from pg_catalog on source
+            async with src_pool.acquire() as src_conn:
+                cols = await src_conn.fetch("""
+                    SELECT
+                        a.attname AS col,
+                        pg_catalog.format_type(a.atttypid, a.atttypmod) AS col_type,
+                        a.attnotnull AS not_null,
+                        pg_get_expr(d.adbin, d.adrelid) AS col_default,
+                        -- detect identity columns
+                        a.attidentity AS identity   -- '' none, 'a' ALWAYS, 'd' BY DEFAULT
+                    FROM pg_attribute a
+                    JOIN pg_class c ON c.oid = a.attrelid
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+                    WHERE n.nspname = $1
+                      AND c.relname = $2
+                      AND a.attnum > 0
+                      AND NOT a.attisdropped
+                    ORDER BY a.attnum
+                """, schema_name, table_name)
+
+                # Also get PRIMARY KEY constraint
+                pk_cols = await src_conn.fetch("""
+                    SELECT a.attname
+                    FROM pg_index i
+                    JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                    JOIN pg_class c ON c.oid = i.indrelid
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE i.indisprimary
+                      AND n.nspname = $1 AND c.relname = $2
+                    ORDER BY array_position(i.indkey, a.attnum)
+                """, schema_name, table_name)
+
+            col_defs = []
+            for c in cols:
+                col_def = f"  {c['col']} {c['col_type']}"
+                if c["identity"] == "a":
+                    col_def += " GENERATED ALWAYS AS IDENTITY"
+                elif c["identity"] == "d":
+                    col_def += " GENERATED BY DEFAULT AS IDENTITY"
+                elif c["col_default"] and "nextval" not in (c["col_default"] or ""):
+                    # Skip serial nextval defaults — handled by IDENTITY or sequence
+                    col_def += f" DEFAULT {c['col_default']}"
+                if c["not_null"] and not c["identity"]:
+                    col_def += " NOT NULL"
+                col_defs.append(col_def)
+
+            if pk_cols:
+                pk_list = ", ".join(r["attname"] for r in pk_cols)
+                col_defs.append(f"  PRIMARY KEY ({pk_list})")
+
+            ddl = (
+                f'CREATE TABLE IF NOT EXISTS "{schema_name}"."{table_name}" (\n'
+                + ",\n".join(col_defs)
+                + "\n);"
+            )
+
+            async with dest_pool.acquire() as dest_conn:
+                # Ensure schema exists
+                await dest_conn.execute(
+                    f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"'
+                )
+                await dest_conn.execute(ddl)
+
+            results.append(SchemaSyncResult(
+                table=diff.table,
+                action="created",
+                detail="Table and schema created. Indexes NOT created — add them manually for performance.",
+            ))
+
+        except Exception as e:
+            results.append(SchemaSyncResult(
+                table=diff.table,
+                action="error",
+                detail=str(e),
+            ))
+
+    return results

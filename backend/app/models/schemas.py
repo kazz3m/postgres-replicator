@@ -80,6 +80,35 @@ class StatsRefreshInterval(BaseModel):
     interval_seconds: int
 
 
+class SequenceInfo(BaseModel):
+    sequence_name: str       # fully qualified: schema.seq
+    table_name: str          # schema.table it belongs to
+    column_name: str
+    source_value: int
+    dest_value: Optional[int]   # None if seq doesn't exist on dest yet
+    needs_sync: bool
+
+
+class ColumnDiff(BaseModel):
+    column_name: str
+    source_type: str
+    dest_type: Optional[str]    # None if column missing on dest
+    match: bool
+
+
+class TableSchemaDiff(BaseModel):
+    table: str                  # schema.table
+    exists_on_dest: bool
+    columns: List[ColumnDiff]
+    compatible: bool            # True only when all columns match
+
+
+class SchemaSyncResult(BaseModel):
+    table: str
+    action: str                 # created | already_exists | error
+    detail: str = ""
+
+
 class PGVersion(BaseModel):
     version: str
     major: int
