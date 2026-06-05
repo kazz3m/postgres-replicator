@@ -3,7 +3,7 @@ import { replicationApi, SchemaInfo, TableSchemaDiff, SchemaSyncResult } from '.
 import { Spinner } from '../components/Spinner'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { Badge } from '../components/Badge'
-import { CheckCircle, AlertTriangle, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
+import { CheckCircle, AlertTriangle, ChevronDown, ChevronRight, RefreshCw, Circle, XCircle, Loader } from 'lucide-react'
 import clsx from 'clsx'
 
 interface Props {
@@ -30,6 +30,102 @@ function toSchemaTable(key: string): string {
 function toSchema(key: string): string {
   const parts = key.split('.')
   return parts.length >= 2 ? parts.slice(1).join('.') : key
+}
+
+// ── Apply progress modal ──────────────────────────────────────────────────────
+
+type StepState = 'pending' | 'running' | 'ok' | 'error'
+
+interface Step {
+  label: string
+  state: StepState
+  detail?: string
+}
+
+function StepIcon({ state }: { state: StepState }) {
+  if (state === 'running') return <Loader size={14} className="text-blue-400 animate-spin shrink-0" />
+  if (state === 'ok')      return <CheckCircle size={14} className="text-green-400 shrink-0" />
+  if (state === 'error')   return <XCircle size={14} className="text-red-400 shrink-0" />
+  return <Circle size={14} className="text-gray-600 shrink-0" />
+}
+
+interface ApplyModalProps {
+  pubName: string
+  subName: string
+  steps: Step[]
+  done: boolean
+  onClose: () => void
+  onConfirm: () => void
+}
+
+function ApplyModal({ pubName, subName, steps, done, onClose, onConfirm }: ApplyModalProps) {
+  const started = steps.some(s => s.state !== 'pending')
+  const hasError = steps.some(s => s.state === 'error')
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-6 pt-5 pb-3">
+          <h3 className="text-lg font-bold text-gray-200">Apply Replication</h3>
+          <p className="text-xs text-gray-500 mt-1">
+            Publication <span className="text-blue-300 font-mono">"{pubName}"</span> →{' '}
+            Subscription <span className="text-blue-300 font-mono">"{subName}"</span>
+          </p>
+        </div>
+
+        {/* Steps */}
+        <div className="px-6 pb-4 space-y-2">
+          {steps.map((step, i) => (
+            <div key={i} className="flex items-start gap-3">
+              <StepIcon state={step.state} />
+              <div className="min-w-0">
+                <span className={clsx('text-sm', {
+                  'text-gray-400': step.state === 'pending',
+                  'text-blue-300': step.state === 'running',
+                  'text-green-300': step.state === 'ok',
+                  'text-red-300': step.state === 'error',
+                })}>
+                  {step.label}
+                </span>
+                {step.detail && (
+                  <p className="text-xs text-gray-500 mt-0.5 break-words">{step.detail}</p>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="px-6 pb-5 flex gap-3 justify-end border-t border-gray-800 pt-4">
+          {!started && (
+            <>
+              <button onClick={onClose}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm">
+                Cancel
+              </button>
+              <button onClick={onConfirm}
+                className="px-4 py-2 bg-blue-700 hover:bg-blue-600 rounded text-sm font-semibold">
+                Apply
+              </button>
+            </>
+          )}
+          {started && !done && (
+            <span className="text-xs text-gray-500 flex items-center gap-1.5">
+              <Spinner size={3} /> Working...
+            </span>
+          )}
+          {done && (
+            <button onClick={onClose}
+              className={clsx('px-4 py-2 rounded text-sm font-semibold', hasError
+                ? 'bg-gray-700 hover:bg-gray-600'
+                : 'bg-green-700 hover:bg-green-600'
+              )}>
+              {hasError ? 'Close' : 'Done'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // ── Schema check panel ────────────────────────────────────────────────────────
@@ -230,8 +326,11 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState('')
   const [error, setError] = useState('')
-  const [confirmAction, setConfirmAction] = useState<null | 'apply' | 'drop_pub' | 'drop_sub'>(null)
+  const [confirmAction, setConfirmAction] = useState<null | 'drop_pub' | 'drop_sub'>(null)
   const [schemaOk, setSchemaOk] = useState(false)
+  const [showApplyModal, setShowApplyModal] = useState(false)
+  const [applySteps, setApplySteps] = useState<Step[]>([])
+  const [applyDone, setApplyDone] = useState(false)
 
   const hasSelection = selectedTables.size > 0 || selectedSchemas.size > 0
 
@@ -254,25 +353,76 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
   // so schema check only runs when individual tables are selected.
   const tablesToCheck = [...selectedTables].map(toSchemaTable)
 
-  async function applyReplication() {
-    setLoading(true); setError(''); setResult('')
-    try {
-      const target = selectedSchemas.size > 0
-        ? { schemas: Array.from(selectedSchemas).map(toSchema) }
-        : { tables: Array.from(selectedTables).map(toSchemaTable) }
+  function initSteps(): Step[] {
+    return [
+      { label: `Create publication "${pubName}" on source`, state: 'pending' },
+      { label: `Verify all tables exist on destination`, state: 'pending' },
+      { label: `Create subscription "${subName}" on destination`, state: 'pending' },
+    ]
+  }
 
+  function setStep(i: number, patch: Partial<Step>) {
+    setApplySteps(prev => prev.map((s, idx) => idx === i ? { ...s, ...patch } : s))
+  }
+
+  async function applyReplication() {
+    const steps = initSteps()
+    setApplySteps(steps)
+    setApplyDone(false)
+    setLoading(true); setError(''); setResult('')
+
+    const target = selectedSchemas.size > 0
+      ? { schemas: Array.from(selectedSchemas).map(toSchema) }
+      : { tables: Array.from(selectedTables).map(toSchemaTable) }
+
+    // Step 1 — create publication
+    setStep(0, { state: 'running' })
+    try {
       await replicationApi.createPublication({ publication_name: pubName, target })
+      setStep(0, { state: 'ok', detail: `FOR ${selectedSchemas.size > 0 ? 'TABLES IN SCHEMA' : 'TABLE'} ${selectedSchemas.size > 0 ? Array.from(selectedSchemas).map(toSchema).join(', ') : Array.from(selectedTables).map(toSchemaTable).slice(0, 3).join(', ') + (selectedTables.size > 3 ? ` +${selectedTables.size - 3} more` : '')}` })
+    } catch (e: any) {
+      const msg = e.response?.data?.detail || e.message
+      setStep(0, { state: 'error', detail: msg })
+      setApplyDone(true); setLoading(false)
+      return
+    }
+
+    // Step 2 — verify tables (subscription create will also check, but show it explicitly)
+    setStep(1, { state: 'running' })
+    try {
+      if (selectedTables.size > 0) {
+        const { data: diffs } = await replicationApi.schemaCheck(Array.from(selectedTables).map(toSchemaTable))
+        const missing = diffs.filter(d => !d.exists_on_dest)
+        if (missing.length > 0) {
+          setStep(1, { state: 'error', detail: `Missing on destination: ${missing.map(d => d.table).join(', ')}` })
+          setApplyDone(true); setLoading(false)
+          return
+        }
+      }
+      setStep(1, { state: 'ok', detail: 'All tables present on destination' })
+    } catch (e: any) {
+      setStep(1, { state: 'error', detail: e.response?.data?.detail || e.message })
+      setApplyDone(true); setLoading(false)
+      return
+    }
+
+    // Step 3 — create subscription
+    setStep(2, { state: 'running' })
+    try {
       await replicationApi.createSubscription({
         subscription_name: subName,
         publication_name: pubName,
         source_dsn: sourceDsn,
         copy_data: copyData,
       })
+      setStep(2, { state: 'ok', detail: copyData ? 'Initial data copy will begin shortly' : 'Replication active (no initial copy)' })
       setResult(`Publication "${pubName}" and subscription "${subName}" created successfully.`)
     } catch (e: any) {
-      setError(e.response?.data?.detail || e.message)
+      const msg = e.response?.data?.detail || e.message
+      setStep(2, { state: 'error', detail: msg })
+      setError(msg)
     } finally {
-      setLoading(false); setConfirmAction(null)
+      setApplyDone(true); setLoading(false)
     }
   }
 
@@ -390,12 +540,12 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       {/* Actions */}
       <div className="flex flex-wrap gap-3 items-center">
         <button
-          onClick={() => setConfirmAction('apply')}
+          onClick={() => { setShowApplyModal(true) }}
           disabled={loading || !canApply}
           className="px-4 py-2 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 rounded text-sm font-semibold flex items-center gap-2"
           title={!schemaOk && tablesToCheck.length > 0 ? 'Fix missing/incompatible tables on destination first' : undefined}
         >
-          {loading && <Spinner size={3} />} Apply Replication
+          Apply Replication
         </button>
         {!canApply && tablesToCheck.length > 0 && (
           <span className="text-xs text-orange-400">
@@ -414,13 +564,14 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
         </div>
       </div>
 
-      {confirmAction === 'apply' && (
-        <ConfirmModal
-          title="Apply Replication"
-          message={`Create publication "${pubName}" on source and subscription "${subName}" on destination. Existing replication will be interrupted and restarted.`}
-          confirmLabel="Apply"
+      {showApplyModal && (
+        <ApplyModal
+          pubName={pubName}
+          subName={subName}
+          steps={applySteps}
+          done={applyDone}
+          onClose={() => { setShowApplyModal(false); setApplySteps([]); setApplyDone(false) }}
           onConfirm={applyReplication}
-          onCancel={() => setConfirmAction(null)}
         />
       )}
       {confirmAction === 'drop_pub' && (
