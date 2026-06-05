@@ -391,7 +391,7 @@ export function AnalysisPage({ selectedTables, selectedSchemas, pgMajor, onSelec
         </div>
       )}
       <div className="text-xs text-orange-400 bg-orange-950 border border-orange-800 rounded px-3 py-2">
-        ⚠️ Sequences (serial/identity columns) are NOT replicated. After failover, sync sequences manually.
+        ⚠️ Sequences (serial/identity columns) are NOT replicated. Use <strong>Sequence Sync</strong> in the Status tab (click a publication name to reveal the panel) after stopping or completing replication.
       </div>
       <div className="text-xs text-blue-400 bg-blue-950 border border-blue-800 rounded px-3 py-2">
         ℹ️ Databases missing on destination can be created with the "Create" button per database row.
