@@ -256,7 +256,33 @@ function DbNode({
                     <table className="w-full text-xs">
                       <thead>
                         <tr className="text-gray-600 border-b border-gray-800">
-                          <th className="pl-16 pr-2 py-1.5 text-left w-8"></th>
+                          <th className="pl-16 pr-2 py-1.5 text-left w-8">
+                            <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+                              <button
+                                className="text-blue-500 hover:text-blue-300"
+                                title="Select all tables in this schema"
+                                onClick={() => {
+                                  const newTables = new Set(selectedTables)
+                                  const newSchemas = new Set(selectedSchemas)
+                                  newSchemas.delete(sKey)
+                                  schema.tables.forEach(t => newTables.add(tableKey(db.database, schema.schema_name, t.table_name)))
+                                  onSelectionChange(newTables, newSchemas)
+                                }}
+                              >all</button>
+                              <span className="text-gray-700">/</span>
+                              <button
+                                className="text-gray-500 hover:text-gray-300"
+                                title="Deselect all tables in this schema"
+                                onClick={() => {
+                                  const newTables = new Set(selectedTables)
+                                  const newSchemas = new Set(selectedSchemas)
+                                  newSchemas.delete(sKey)
+                                  schema.tables.forEach(t => newTables.delete(tableKey(db.database, schema.schema_name, t.table_name)))
+                                  onSelectionChange(newTables, newSchemas)
+                                }}
+                              >none</button>
+                            </div>
+                          </th>
                           <th className="px-2 py-1.5 text-left">Table</th>
                           <th className="px-2 py-1.5 text-right">Size</th>
                           <th className="px-2 py-1.5 text-right pr-4">Rows (est.)</th>
