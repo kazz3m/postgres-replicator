@@ -27,6 +27,14 @@ function toSchemaTable(key: string): string {
   return parts.length >= 3 ? parts.slice(1).join('.') : key
 }
 
+function extractError(e: any): string {
+  return e?.response?.data?.detail
+    || e?.response?.data?.message
+    || (typeof e?.response?.data === 'string' ? e.response.data : null)
+    || e?.message
+    || 'Unknown error'
+}
+
 function toSchema(key: string): string {
   const parts = key.split('.')
   return parts.length >= 2 ? parts.slice(1).join('.') : key
@@ -70,6 +78,10 @@ function ApplyModal({ pubName, subName, steps, done, onClose, onConfirm }: Apply
           <p className="text-xs text-gray-500 mt-1">
             Publication <span className="text-blue-300 font-mono">"{pubName}"</span> →{' '}
             Subscription <span className="text-blue-300 font-mono">"{subName}"</span>
+          </p>
+          <p className="text-xs text-gray-600 mt-1">
+            The destination PostgreSQL will connect back to the source using the replication DSN.
+            Both servers must be able to reach each other over the network.
           </p>
         </div>
 
@@ -153,7 +165,7 @@ function SchemaCheckPanel({ tables, onAllOk }: SchemaCheckPanelProps) {
       const allOk = data.every(d => d.exists_on_dest && d.compatible)
       onAllOk(allOk)
     } catch (e: any) {
-      setError(e.response?.data?.detail || e.message)
+      setError(extractError(e))
       onAllOk(false)
     } finally {
       setChecking(false)
@@ -167,7 +179,7 @@ function SchemaCheckPanel({ tables, onAllOk }: SchemaCheckPanelProps) {
       setSyncResults(data)
       await runCheck()
     } catch (e: any) {
-      setError(e.response?.data?.detail || e.message)
+      setError(extractError(e))
     } finally {
       setSyncing(false)
     }
@@ -381,7 +393,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       await replicationApi.createPublication({ publication_name: pubName, target })
       setStep(0, { state: 'ok', detail: `FOR ${selectedSchemas.size > 0 ? 'TABLES IN SCHEMA' : 'TABLE'} ${selectedSchemas.size > 0 ? Array.from(selectedSchemas).map(toSchema).join(', ') : Array.from(selectedTables).map(toSchemaTable).slice(0, 3).join(', ') + (selectedTables.size > 3 ? ` +${selectedTables.size - 3} more` : '')}` })
     } catch (e: any) {
-      const msg = e.response?.data?.detail || e.message
+      const msg = extractError(e)
       setStep(0, { state: 'error', detail: msg })
       setApplyDone(true); setLoading(false)
       return
@@ -401,7 +413,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       }
       setStep(1, { state: 'ok', detail: 'All tables present on destination' })
     } catch (e: any) {
-      setStep(1, { state: 'error', detail: e.response?.data?.detail || e.message })
+      setStep(1, { state: 'error', detail: extractError(e) })
       setApplyDone(true); setLoading(false)
       return
     }
@@ -418,7 +430,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       setStep(2, { state: 'ok', detail: copyData ? 'Initial data copy will begin shortly' : 'Replication active (no initial copy)' })
       setResult(`Publication "${pubName}" and subscription "${subName}" created successfully.`)
     } catch (e: any) {
-      const msg = e.response?.data?.detail || e.message
+      const msg = extractError(e)
       setStep(2, { state: 'error', detail: msg })
       setError(msg)
     } finally {
@@ -432,7 +444,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       await replicationApi.dropPublication(pubName)
       setResult(`Publication "${pubName}" dropped.`)
     } catch (e: any) {
-      setError(e.response?.data?.detail || e.message)
+      setError(extractError(e))
     } finally { setLoading(false); setConfirmAction(null) }
   }
 
@@ -442,7 +454,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       await replicationApi.dropSubscription(subName)
       setResult(`Subscription "${subName}" dropped.`)
     } catch (e: any) {
-      setError(e.response?.data?.detail || e.message)
+      setError(extractError(e))
     } finally { setLoading(false); setConfirmAction(null) }
   }
 

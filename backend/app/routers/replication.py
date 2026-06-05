@@ -185,12 +185,33 @@ async def create_or_update_subscription(config: SubscriptionConfig):
             )
 
         copy_data_sql = "true" if config.copy_data else "false"
-        await dest_conn.execute(f"""
-            CREATE SUBSCRIPTION "{config.subscription_name}"
-            CONNECTION $conn_str${conn_dsn}$conn_str$
-            PUBLICATION "{config.publication_name}"
-            WITH (copy_data = {copy_data_sql})
-        """)
+        try:
+            await dest_conn.execute(f"""
+                CREATE SUBSCRIPTION "{config.subscription_name}"
+                CONNECTION $conn_str${conn_dsn}$conn_str$
+                PUBLICATION "{config.publication_name}"
+                WITH (copy_data = {copy_data_sql})
+            """)
+        except Exception as e:
+            err = str(e)
+            # asyncpg wraps the PostgreSQL error — surface a clear message
+            if "could not connect to the publisher" in err or "Connection timed out" in err or "Connection refused" in err:
+                raise HTTPException(
+                    400,
+                    f"Destination PostgreSQL could not reach the source using the replication DSN "
+                    f"({conn_dsn.split('@')[-1] if '@' in conn_dsn else conn_dsn}). "
+                    f"Check network connectivity and that the source accepts connections on this address. "
+                    f"Detail: {err}"
+                )
+            if "password authentication failed" in err or "pg_hba.conf" in err:
+                raise HTTPException(
+                    400,
+                    f"Replication DSN authentication failed. "
+                    f"Ensure the replication user exists, has REPLICATION attribute, "
+                    f"and pg_hba.conf allows replication connections from the destination host. "
+                    f"Detail: {err}"
+                )
+            raise HTTPException(400, f"CREATE SUBSCRIPTION failed: {err}")
 
     return {"status": "ok", "subscription_name": config.subscription_name, "updated": bool(exists)}
 
