@@ -60,8 +60,8 @@ Common use cases: live migrations, reporting replicas, data warehousing, zero-do
 ## Quick Start — Docker
 
 ```bash
-git clone https://github.com/youruser/postgres-sync.git
-cd postgres-sync
+git clone https://github.com/kazz3m/postgres-replicator.git
+cd postgres-replicator
 cp .env.example .env          # optional: pre-fill DSNs
 docker compose up -d
 ```
