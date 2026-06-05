@@ -193,17 +193,12 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
         </div>
       )}
 
-      <div className="bg-gray-900 border border-gray-700 rounded-lg p-4">
-        <h3 className="font-semibold text-gray-300 mb-2 text-sm">Schema Synchronization Required</h3>
-        <p className="text-xs text-gray-400 mb-2">
-          Table schemas are NOT replicated automatically. Run this on source before applying replication:
-        </p>
-        <code className="block bg-gray-800 rounded px-3 py-2 text-xs text-green-300 font-mono">
-          pg_dump --schema-only -n schema_name source_db | psql destination_db
-        </code>
+      <div className="text-xs text-blue-400 bg-blue-950 border border-blue-800 rounded px-3 py-2">
+        ℹ️ Tables missing on destination will be detected automatically before applying replication.
+        Use the <strong>Schema Sync</strong> panel in the Status tab to create them with one click.
       </div>
 
-      {error && <div className="text-red-400 text-sm bg-red-950 border border-red-800 rounded p-3">{error}</div>}
+{error && <div className="text-red-400 text-sm bg-red-950 border border-red-800 rounded p-3">{error}</div>}
       {result && <div className="text-green-400 text-sm bg-green-950 border border-green-800 rounded p-3">{result}</div>}
 
       <div className="flex flex-wrap gap-3">
