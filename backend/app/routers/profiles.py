@@ -1,12 +1,22 @@
 import json
 import os
+import sys
 from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from ..crypto import encrypt_dsn, decrypt_dsn
 
-PROFILES_PATH = Path(os.environ.get("PROFILES_PATH", "/data/profiles.json"))
+def _default_data_path(env_var: str, filename: str) -> Path:
+    env = os.environ.get(env_var)
+    if env:
+        return Path(env)
+    if sys.platform == "win32":
+        base = Path(__file__).resolve().parent.parent.parent.parent
+        return base / "data" / filename
+    return Path("/data") / filename
+
+PROFILES_PATH = _default_data_path("PROFILES_PATH", "profiles.json")
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
 

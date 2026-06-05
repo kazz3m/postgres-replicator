@@ -10,10 +10,23 @@ Fernet = AES-128-CBC + HMAC-SHA256, authenticated encryption.
 """
 
 import os
+import sys
 from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 
-KEY_PATH = Path(os.environ.get("SECRET_KEY_PATH", "/data/secret.key"))
+def _default_key_path() -> Path:
+    """Return a sensible default for SECRET_KEY_PATH on any OS."""
+    env = os.environ.get("SECRET_KEY_PATH")
+    if env:
+        return Path(env)
+    # On Windows fall back to a 'data' directory next to the app package,
+    # not the Linux-only /data path.
+    if sys.platform == "win32":
+        base = Path(__file__).resolve().parent.parent.parent  # repo root
+        return base / "data" / "secret.key"
+    return Path("/data/secret.key")
+
+KEY_PATH = _default_key_path()
 
 
 def _load_or_create_key() -> bytes:

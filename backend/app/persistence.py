@@ -1,9 +1,19 @@
 import json
 import os
+import sys
 from pathlib import Path
 from .crypto import encrypt_dsn, decrypt_dsn
 
-CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "/data/config.json"))
+def _default_data_path(env_var: str, filename: str) -> Path:
+    env = os.environ.get(env_var)
+    if env:
+        return Path(env)
+    if sys.platform == "win32":
+        base = Path(__file__).resolve().parent.parent.parent
+        return base / "data" / filename
+    return Path("/data") / filename
+
+CONFIG_PATH = _default_data_path("CONFIG_PATH", "config.json")
 
 _defaults = {
     "source_dsn": "",
