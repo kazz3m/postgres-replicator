@@ -184,34 +184,48 @@ async def create_or_update_subscription(config: SubscriptionConfig):
                 f'DROP SUBSCRIPTION IF EXISTS "{config.subscription_name}"'
             )
 
+    # CREATE SUBSCRIPTION uses a dedicated connection (not shared pool) with a
+    # statement_timeout. The command makes destination PG connect back to source —
+    # if unreachable it blocks for the full OS TCP timeout and poisons pool connections.
+    import asyncpg as _asyncpg
+    dedicated_conn = None
+    try:
+        dedicated_conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
         copy_data_sql = "true" if config.copy_data else "false"
-        try:
-            await dest_conn.execute(f"""
-                CREATE SUBSCRIPTION "{config.subscription_name}"
-                CONNECTION $conn_str${conn_dsn}$conn_str$
-                PUBLICATION "{config.publication_name}"
-                WITH (copy_data = {copy_data_sql})
-            """)
-        except Exception as e:
-            err = str(e)
-            # asyncpg wraps the PostgreSQL error — surface a clear message
-            if "could not connect to the publisher" in err or "Connection timed out" in err or "Connection refused" in err:
-                raise HTTPException(
-                    400,
-                    f"Destination PostgreSQL could not reach the source using the replication DSN "
-                    f"({conn_dsn.split('@')[-1] if '@' in conn_dsn else conn_dsn}). "
-                    f"Check network connectivity and that the source accepts connections on this address. "
-                    f"Detail: {err}"
-                )
-            if "password authentication failed" in err or "pg_hba.conf" in err:
-                raise HTTPException(
-                    400,
-                    f"Replication DSN authentication failed. "
-                    f"Ensure the replication user exists, has REPLICATION attribute, "
-                    f"and pg_hba.conf allows replication connections from the destination host. "
-                    f"Detail: {err}"
-                )
-            raise HTTPException(400, f"CREATE SUBSCRIPTION failed: {err}")
+        # Set a statement-level timeout so the back-connect attempt fails fast
+        # rather than waiting for the OS TCP timeout.
+        await dedicated_conn.execute("SET statement_timeout = '30s'")
+        await dedicated_conn.execute(f"""
+            CREATE SUBSCRIPTION "{config.subscription_name}"
+            CONNECTION $conn_str${conn_dsn}$conn_str$
+            PUBLICATION "{config.publication_name}"
+            WITH (copy_data = {copy_data_sql})
+        """)
+    except Exception as e:
+        err = str(e)
+        if "could not connect to the publisher" in err or "Connection timed out" in err or "Connection refused" in err or "statement timeout" in err:
+            raise HTTPException(
+                400,
+                f"Destination PostgreSQL could not reach the source at "
+                f"{conn_dsn.split('@')[-1] if '@' in conn_dsn else conn_dsn}. "
+                f"Verify network connectivity and that the source allows connections from the destination host. "
+                f"Detail: {err}"
+            )
+        if "password authentication failed" in err or "pg_hba.conf" in err:
+            raise HTTPException(
+                400,
+                f"Replication DSN authentication failed. "
+                f"Ensure the replication user has the REPLICATION attribute and "
+                f"pg_hba.conf allows 'host replication <user> <dest_ip>/32' on source. "
+                f"Detail: {err}"
+            )
+        raise HTTPException(400, f"CREATE SUBSCRIPTION failed: {err}")
+    finally:
+        if dedicated_conn:
+            try:
+                await dedicated_conn.close()
+            except Exception:
+                pass
 
     return {"status": "ok", "subscription_name": config.subscription_name, "updated": bool(exists)}
 
