@@ -7,6 +7,7 @@ services:
       - DEST_DSN=${DEST_DSN:-}
       - CONFIG_PATH=/data/config.json
       - PROFILES_PATH=/data/profiles.json
+      - SECRET_KEY_PATH=/data/secret.key
     volumes:
       - pg_sync_data:/data
     networks:

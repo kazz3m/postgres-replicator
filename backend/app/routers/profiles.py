@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from ..crypto import encrypt_dsn, decrypt_dsn
 
 PROFILES_PATH = Path(os.environ.get("PROFILES_PATH", "/data/profiles.json"))
 
@@ -25,11 +26,23 @@ class Profile(ProfileIn):
     created_at: str
 
 
+_DSN_FIELDS = ("source_dsn", "source_repl_dsn", "dest_dsn")
+
+
+def _decrypt_profile(p: dict) -> dict:
+    return {**p, **{f: decrypt_dsn(p.get(f, "")) for f in _DSN_FIELDS}}
+
+
+def _encrypt_profile(p: dict) -> dict:
+    return {**p, **{f: encrypt_dsn(p.get(f, "")) for f in _DSN_FIELDS}}
+
+
 def _read() -> List[dict]:
     if PROFILES_PATH.exists():
         try:
             data = json.loads(PROFILES_PATH.read_text())
-            return data if isinstance(data, list) else []
+            raw = data if isinstance(data, list) else []
+            return [_decrypt_profile(p) for p in raw]
         except Exception:
             return []
     return []
@@ -37,7 +50,8 @@ def _read() -> List[dict]:
 
 def _write(profiles: List[dict]) -> None:
     PROFILES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PROFILES_PATH.write_text(json.dumps(profiles, indent=2))
+    encrypted = [_encrypt_profile(p) for p in profiles]
+    PROFILES_PATH.write_text(json.dumps(encrypted, indent=2))
 
 
 @router.get("", response_model=List[Profile])
