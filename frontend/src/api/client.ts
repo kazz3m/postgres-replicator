@@ -160,8 +160,12 @@ export const replicationApi = {
     api.post('/replication/sequences/sync', { sequences: sequences ?? [] }),
   schemaDiff: (publication: string) =>
     api.get<TableSchemaDiff[]>(`/replication/schema-diff?publication=${encodeURIComponent(publication)}`),
+  schemaCheck: (tables: string[]) =>
+    api.post<TableSchemaDiff[]>('/replication/schema-check', { tables }),
   schemaSync: (publication: string, createIndexes: 'before' | 'after' = 'after') =>
     api.post<SchemaSyncResult[]>('/replication/schema-sync', { publication, create_indexes: createIndexes }),
+  schemaSyncByTables: (tables: string[], createIndexes: 'before' | 'after' = 'after') =>
+    api.post<SchemaSyncResult[]>('/replication/schema-sync', { tables, create_indexes: createIndexes }),
   listIndexes: (publication: string) =>
     api.get<IndexInfo[]>(`/replication/schema-indexes?publication=${encodeURIComponent(publication)}`),
   createIndexes: (publication?: string, tables?: string[]) =>

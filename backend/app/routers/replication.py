@@ -724,58 +724,33 @@ async def sync_sequences(body: dict):
 
 # ── Schema DDL sync ───────────────────────────────────────────────────────────
 
-@router.get("/schema-diff", response_model=List[TableSchemaDiff])
-async def schema_diff(publication: str):
-    """
-    Compare table layouts between source and destination for all tables
-    in the given publication. Returns column-level diff per table.
-    """
-    _require_connection()
+async def _diff_table_list(table_pairs: list[tuple[str, str]]) -> list[TableSchemaDiff]:
+    """Core diff logic — accepts list of (schema, table) pairs."""
     src_pool = await get_source_pool(state.source_dsn)
     dest_pool = await get_dest_pool(state.dest_dsn)
-
-    async with src_pool.acquire() as src_conn:
-        pub_tables = await src_conn.fetch(
-            "SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = $1",
-            publication,
-        )
-
-    if not pub_tables:
-        raise HTTPException(404, f"Publication '{publication}' not found or has no tables.")
-
     results = []
-    for pt in pub_tables:
-        fqn = f"{pt['schemaname']}.{pt['tablename']}"
+
+    for schema_name, table_name in table_pairs:
+        fqn = f"{schema_name}.{table_name}"
 
         async with src_pool.acquire() as src_conn:
             src_cols = await src_conn.fetch("""
-                SELECT column_name,
-                       udt_name AS data_type,
-                       character_maximum_length,
-                       numeric_precision,
-                       numeric_scale,
-                       is_nullable
+                SELECT column_name, udt_name AS data_type
                 FROM information_schema.columns
                 WHERE table_schema = $1 AND table_name = $2
                 ORDER BY ordinal_position
-            """, pt["schemaname"], pt["tablename"])
+            """, schema_name, table_name)
 
         async with dest_pool.acquire() as dest_conn:
             dest_cols = await dest_conn.fetch("""
-                SELECT column_name,
-                       udt_name AS data_type,
-                       character_maximum_length,
-                       numeric_precision,
-                       numeric_scale,
-                       is_nullable
+                SELECT column_name, udt_name AS data_type
                 FROM information_schema.columns
                 WHERE table_schema = $1 AND table_name = $2
                 ORDER BY ordinal_position
-            """, pt["schemaname"], pt["tablename"])
-
+            """, schema_name, table_name)
             table_exists = await dest_conn.fetchval(
                 "SELECT 1 FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2",
-                pt["schemaname"], pt["tablename"]
+                schema_name, table_name,
             )
 
         dest_col_map = {r["column_name"]: r for r in dest_cols}
@@ -786,10 +761,8 @@ async def schema_diff(publication: str):
             cname = src_col["column_name"]
             src_type = src_col["data_type"]
             dest_col = dest_col_map.get(cname)
-            if dest_col:
-                match = dest_col["data_type"] == src_type
-            else:
-                match = False
+            match = bool(dest_col and dest_col["data_type"] == src_type)
+            if not match:
                 compatible = False
             col_diffs.append(ColumnDiff(
                 column_name=cname,
@@ -806,6 +779,41 @@ async def schema_diff(publication: str):
         ))
 
     return results
+
+
+@router.get("/schema-diff", response_model=List[TableSchemaDiff])
+async def schema_diff(publication: str):
+    """Compare table layouts for all tables in a publication."""
+    _require_connection()
+    src_pool = await get_source_pool(state.source_dsn)
+    async with src_pool.acquire() as src_conn:
+        pub_tables = await src_conn.fetch(
+            "SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = $1",
+            publication,
+        )
+    if not pub_tables:
+        raise HTTPException(404, f"Publication '{publication}' not found or has no tables.")
+    return await _diff_table_list([(r["schemaname"], r["tablename"]) for r in pub_tables])
+
+
+@router.post("/schema-check", response_model=List[TableSchemaDiff])
+async def schema_check(body: dict):
+    """
+    Compare table layouts for an explicit list of tables (no publication required).
+    Used by Replication Setup before a publication exists.
+    body: { "tables": ["schema.table", ...] }
+    """
+    _require_connection()
+    raw_tables: list[str] = body.get("tables", [])
+    if not raw_tables:
+        return []
+    pairs = []
+    for t in raw_tables:
+        if "." not in t:
+            continue
+        schema, table = t.split(".", 1)
+        pairs.append((schema, table))
+    return await _diff_table_list(pairs)
 
 
 async def _get_table_indexes(src_conn, schema_name: str, table_name: str) -> list[IndexInfo]:
@@ -932,14 +940,19 @@ async def schema_sync(body: dict):
     """
     _require_connection()
     publication = body.get("publication")
-    if not publication:
-        raise HTTPException(400, "publication name required")
+    tables_direct: list[str] = body.get("tables", [])  # alternative: explicit table list
+    if not publication and not tables_direct:
+        raise HTTPException(400, "publication or tables required")
     # create_indexes: "before" = create indexes right after table creation
     #                 "after"  = skip (user creates manually or calls /schema/create-indexes)
     # Default: "after" (safe during initial large copy — indexes slow down INSERT)
     create_indexes_when: str = body.get("create_indexes", "after")
 
-    diffs = await schema_diff(publication)
+    if publication:
+        diffs = await schema_diff(publication)
+    else:
+        pairs = [t.split(".", 1) for t in tables_direct if "." in t]
+        diffs = await _diff_table_list([(p[0], p[1]) for p in pairs])
     results = []
 
     src_pool = await get_source_pool(state.source_dsn)
