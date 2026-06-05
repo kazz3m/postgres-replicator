@@ -140,17 +140,17 @@ The UI shows a reminder and the `pg_dump` command before the Apply step.
 └──────────────┬──────────────────────┘
                │ REST  /api/*
 ┌──────────────▼──────────────────────┐
-│  Backend  (FastAPI + asyncpg)        │
-│  • /api/connections  — connect/test  │
-│  • /api/analysis     — schema sizes  │
-│  • /api/replication  — pub/sub/slots │
-│  • /api/profiles     — workspaces    │
+│ Backend  (FastAPI + asyncpg)        │
+│ • /api/connections  — connect/test  │
+│ • /api/analysis     — schema sizes  │
+│ • /api/replication  — pub/sub/slots │
+│ • /api/profiles     — workspaces    │
 └──────┬───────────────────┬──────────┘
        │ asyncpg           │ asyncpg
-┌──────▼──────┐    ┌───────▼──────┐
-│   Source DB  │    │  Destination │
-│  (Publisher) │    │  (Subscriber)│
-└─────────────┘    └──────────────┘
+┌──────▼──────┐    ┌───────▼───────┐
+│ Source DB   │    │  Destination  │
+│ (Publisher) │    │  (Subscriber) │
+└─────────────┘    └───────────────┘
 ```
 
 **Stack:** Python 3.12 · FastAPI · asyncpg · Pydantic v2 · React 18 · TypeScript · Vite · Tailwind CSS · TanStack Query · Docker / docker compose v2
