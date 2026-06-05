@@ -124,6 +124,8 @@ export const analysisApi = {
     api.get<SchemaInfo[]>(`/analysis/database-schemas?database=${encodeURIComponent(database)}`),
   ensureDatabase: (database: string) =>
     api.post<{ status: string; database: string }>('/analysis/ensure-database', { database }),
+  publishedTables: (database: string) =>
+    api.get<Record<string, string[]>>(`/analysis/published-tables?database=${encodeURIComponent(database)}`),
 }
 
 export const replicationApi = {

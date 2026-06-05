@@ -167,6 +167,40 @@ async def ensure_database(body: dict):
         await conn.close()
 
 
+@router.get("/published-tables")
+async def published_tables(database: str):
+    """
+    Returns a map of schema.table → list of publication names for tables
+    that are already part of a publication in the given source database.
+    Used by the UI to warn when selecting tables already being replicated.
+    """
+    _require_connection()
+    db_dsn = _dsn_for_database(state.source_dsn, database)
+    try:
+        conn = await asyncpg.connect(db_dsn, timeout=10)
+    except Exception as e:
+        raise HTTPException(400, f"Cannot connect to database '{database}': {e}")
+
+    try:
+        rows = await conn.fetch("""
+            SELECT schemaname || '.' || tablename AS table_fqn,
+                   pubname
+            FROM pg_publication_tables
+            ORDER BY table_fqn, pubname
+        """)
+    finally:
+        await conn.close()
+
+    result: dict[str, list[str]] = {}
+    for row in rows:
+        key = row["table_fqn"]
+        if key not in result:
+            result[key] = []
+        result[key].append(row["pubname"])
+
+    return result
+
+
 @router.get("/schemas", response_model=List[SchemaInfo])
 async def list_schemas():
     _require_connection()

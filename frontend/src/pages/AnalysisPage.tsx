@@ -63,6 +63,14 @@ function DbNode({
     staleTime: 30_000,
   })
 
+  // Map schema.table → publication names — loaded alongside schemas
+  const { data: publishedMap = {} } = useQuery({
+    queryKey: ['published-tables', db.database],
+    queryFn: () => analysisApi.publishedTables(db.database).then(r => r.data),
+    enabled: expanded,
+    staleTime: 15_000,
+  })
+
   const q = search.trim().toLowerCase()
 
   const filteredSchemas = schemas
@@ -257,9 +265,14 @@ function DbNode({
                       <tbody>
                         {schema.tables.map(table => {
                           const tKey = tableKey(db.database, schema.schema_name, table.table_name)
+                          const schemaTableKey = `${schema.schema_name}.${table.table_name}`
                           const isTableSchemaSelected = selectedSchemas.has(sKey)
                           const isSelected = selectedTables.has(tKey) || isTableSchemaSelected
                           const isHighlighted = q && table.table_name.toLowerCase().includes(q)
+
+                          // Publications this table already belongs to
+                          const inPublications: string[] = publishedMap[schemaTableKey] ?? []
+                          const inPublication = inPublications.length > 0
 
                           return (
                             <tr
@@ -267,6 +280,7 @@ function DbNode({
                               className={clsx('border-b border-gray-800/50 hover:bg-gray-800 transition-colors', {
                                 'bg-blue-950/30': isSelected,
                                 'bg-yellow-950/20': isHighlighted && !isSelected,
+                                'bg-amber-950/20': inPublication && !isSelected,
                               })}
                             >
                               <td className="pl-16 pr-2 py-1.5">
@@ -279,11 +293,20 @@ function DbNode({
                                 />
                               </td>
                               <td className="px-2 py-1.5">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <Table size={11} className="text-gray-600 shrink-0" />
                                   <span className={clsx({ 'text-yellow-300': isHighlighted && !isSelected })}>
                                     {table.table_name}
                                   </span>
+                                  {inPublications.map(pub => (
+                                    <span
+                                      key={pub}
+                                      className="text-xs bg-amber-900/50 border border-amber-700/60 text-amber-300 rounded px-1.5 py-0.5 font-mono"
+                                      title={`Already in publication: ${pub}`}
+                                    >
+                                      {pub}
+                                    </span>
+                                  ))}
                                   {table.replica_identity === 'nothing' && (
                                     <Badge label="NO REPLICATION" variant="red" />
                                   )}

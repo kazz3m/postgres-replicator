@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { PlusCircle, FolderOpen, Trash2, ChevronRight, Activity, Clock } from 'lucide-react'
-import { loadProfiles, deleteProfile, touchProfile, ConnectionProfile } from '../utils/profiles'
+import { PlusCircle, FolderOpen, Trash2, ChevronRight, Activity, Clock, Pencil, X, Save } from 'lucide-react'
+import { loadProfiles, deleteProfile, touchProfile, updateProfile, ConnectionProfile } from '../utils/profiles'
 import { shortDsn } from '../utils/maskDsn'
 import { connectionsApi, replicationApi, SubscriptionInfo, TableReplicationProgress, WorkerStat } from '../api/client'
 import { Spinner } from '../components/Spinner'
 import { Badge } from '../components/Badge'
+import { ConnectionFields, ConnFields, buildDsn, parseDsn, emptyFields } from '../components/ConnectionFields'
 
 export interface WorkspaceSnapshot {
   subscriptions: SubscriptionInfo[]
@@ -63,6 +64,124 @@ async function fetchSnapshot(): Promise<WorkspaceSnapshot> {
   }
 }
 
+// ── Edit panel (inline, shown below profile card) ────────────────────────────
+
+interface EditPanelProps {
+  profile: ConnectionProfile
+  onSave: () => void
+  onCancel: () => void
+}
+
+function EditPanel({ profile, onSave, onCancel }: EditPanelProps) {
+  const [name, setName] = useState(profile.name)
+  const [srcAdmin, setSrcAdmin] = useState<ConnFields>(parseDsn(profile.source_dsn))
+  const [srcRepl, setSrcRepl] = useState<ConnFields>(
+    profile.source_repl_dsn ? parseDsn(profile.source_repl_dsn) : emptyFields()
+  )
+  const [dst, setDst] = useState<ConnFields>(parseDsn(profile.dest_dsn))
+  const [showRepl, setShowRepl] = useState(!!profile.source_repl_dsn)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleSave() {
+    if (!name.trim()) return
+    const srcDsn = buildDsn(srcAdmin)
+    const dstDsn = buildDsn(dst)
+    if (!srcDsn || !dstDsn) { setError('Source and destination host/user are required.'); return }
+    setSaving(true); setError('')
+    try {
+      await updateProfile(profile.id, {
+        name: name.trim(),
+        source_dsn: srcDsn,
+        source_repl_dsn: showRepl ? buildDsn(srcRepl) : '',
+        dest_dsn: dstDsn,
+      })
+      onSave()
+    } catch (e: any) {
+      setError(e.response?.data?.detail || e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="border-t border-gray-700 bg-gray-950/60 p-5 space-y-4">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">Edit Workspace</span>
+        <button onClick={onCancel} className="text-gray-600 hover:text-gray-300 p-1 rounded hover:bg-gray-700">
+          <X size={13} />
+        </button>
+      </div>
+
+      {/* Workspace name */}
+      <div className="flex flex-col gap-0.5">
+        <label className="text-xs text-gray-500 uppercase tracking-wider">Workspace Name</label>
+        <input
+          type="text"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          className="bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        />
+      </div>
+
+      <ConnectionFields
+        label="Source (Publisher) — Admin"
+        labelColor="text-blue-400"
+        hint="Superuser or user with CREATE PUBLICATION privilege."
+        fields={srcAdmin}
+        onChange={setSrcAdmin}
+      />
+
+      <div>
+        <button
+          onClick={() => setShowRepl(s => !s)}
+          className="text-xs text-gray-400 hover:text-gray-200 flex items-center gap-1.5 mb-2"
+        >
+          {showRepl ? '▾' : '▸'} {showRepl ? 'Hide' : 'Add'} separate Replication user (optional)
+        </button>
+        {showRepl && (
+          <ConnectionFields
+            label="Source — Replication User"
+            labelColor="text-cyan-400"
+            hint="Used in CREATE SUBSCRIPTION CONNECTION clause. Must have REPLICATION attribute."
+            fields={srcRepl}
+            onChange={setSrcRepl}
+          />
+        )}
+      </div>
+
+      <ConnectionFields
+        label="Destination (Subscriber) — Admin"
+        labelColor="text-green-400"
+        hint="User with CREATE privilege on the database."
+        fields={dst}
+        onChange={setDst}
+      />
+
+      {error && <div className="text-xs text-red-400 bg-red-950/30 border border-red-900 rounded px-3 py-2">{error}</div>}
+
+      <div className="flex gap-2 pt-1">
+        <button
+          onClick={handleSave}
+          disabled={saving || !name.trim()}
+          className="flex items-center gap-1.5 text-sm bg-blue-700 hover:bg-blue-600 disabled:opacity-50 px-4 py-2 rounded font-semibold"
+        >
+          {saving ? <Spinner size={3} /> : <Save size={13} />}
+          Save Changes
+        </button>
+        <button
+          onClick={onCancel}
+          className="text-sm text-gray-400 hover:text-gray-200 px-3 py-2 rounded border border-gray-700 hover:border-gray-500"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Main picker ───────────────────────────────────────────────────────────────
+
 export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
   const queryClient = useQueryClient()
 
@@ -76,6 +195,7 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const [preview, setPreview] = useState<{ id: string; snapshot: WorkspaceSnapshot } | null>(null)
   const [previewLoading, setPreviewLoading] = useState<string | null>(null)
+  const [editing, setEditing] = useState<string | null>(null)  // profile id being edited
 
   async function handleLoad(profile: ConnectionProfile) {
     setLoading(profile.id)
@@ -120,6 +240,18 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
     queryClient.invalidateQueries({ queryKey: ['profiles'] })
     setDeleteConfirm(null)
     if (preview?.id === id) setPreview(null)
+    if (editing === id) setEditing(null)
+  }
+
+  function handleEditSaved() {
+    queryClient.invalidateQueries({ queryKey: ['profiles'] })
+    setEditing(null)
+  }
+
+  function toggleEdit(id: string) {
+    setEditing(prev => prev === id ? null : id)
+    // Close preview when opening edit and vice versa
+    if (editing !== id) setPreview(null)
   }
 
   return (
@@ -163,6 +295,7 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
               const isPreviewing = previewLoading === profile.id
               const thisPreview = preview?.id === profile.id ? preview.snapshot : null
               const thisError = error?.id === profile.id ? error.msg : null
+              const isEditing = editing === profile.id
 
               return (
                 <div key={profile.id} className="bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
@@ -189,7 +322,7 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
 
                     <button
                       onClick={() => handlePreview(profile)}
-                      disabled={!!loading || !!previewLoading}
+                      disabled={!!loading || !!previewLoading || isEditing}
                       className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200 border border-gray-700 hover:border-gray-500 px-2.5 py-1.5 rounded disabled:opacity-40 shrink-0"
                       title="Preview active replications"
                     >
@@ -197,9 +330,24 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
                       Preview
                     </button>
 
+                    {/* Edit button */}
+                    <button
+                      onClick={() => toggleEdit(profile.id)}
+                      disabled={!!loading || !!previewLoading}
+                      className={`flex items-center gap-1 text-xs px-2.5 py-1.5 rounded border transition-colors disabled:opacity-40 shrink-0 ${
+                        isEditing
+                          ? 'border-blue-500 text-blue-300 bg-blue-900/20'
+                          : 'border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-500'
+                      }`}
+                      title="Edit workspace connection settings"
+                    >
+                      <Pencil size={11} />
+                      Edit
+                    </button>
+
                     <button
                       onClick={() => handleLoad(profile)}
-                      disabled={!!loading || !!previewLoading}
+                      disabled={!!loading || !!previewLoading || isEditing}
                       className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 border border-blue-800 hover:border-blue-600 px-3 py-1.5 rounded font-semibold disabled:opacity-40 shrink-0"
                     >
                       {isLoading ? <Spinner size={3} /> : null}
@@ -233,13 +381,23 @@ export function WorkspacePicker({ onNewWorkspace, onLoadWorkspace }: Props) {
                     )}
                   </div>
 
-                  {thisError && (
+                  {thisError && !isEditing && (
                     <div className="px-4 py-2 text-xs text-red-400 bg-red-950/30 border-t border-red-900">
                       {thisError}
                     </div>
                   )}
 
-                  {thisPreview && (
+                  {/* Edit panel */}
+                  {isEditing && (
+                    <EditPanel
+                      profile={profile}
+                      onSave={handleEditSaved}
+                      onCancel={() => setEditing(null)}
+                    />
+                  )}
+
+                  {/* Preview panel — hidden while editing */}
+                  {thisPreview && !isEditing && (
                     <div className="border-t border-gray-700 bg-gray-950/50">
                       {thisPreview.subscriptions.length === 0 && thisPreview.progress.length === 0 ? (
                         <div className="px-4 py-3 text-xs text-gray-500">
