@@ -14,13 +14,26 @@ export const emptyFields = (): ConnFields => ({
   host: '', port: '5432', database: '', user: '', password: '', flags: '',
 })
 
-/** Build a postgresql:// DSN from structured fields. Returns '' if host/db/user missing. */
+/** Build a postgresql:// DSN from structured fields.
+ *  database is optional — omitting it connects to the default "postgres" maintenance DB.
+ *  Returns '' if host or user is missing. */
 export function buildDsn(f: ConnFields): string {
-  if (!f.host || !f.database || !f.user) return ''
+  if (!f.host || !f.user) return ''
   const encodedPass = f.password ? `:${encodeURIComponent(f.password)}` : ''
   const port = f.port && f.port !== '5432' ? `:${f.port}` : ':5432'
-  const base = `postgresql://${encodeURIComponent(f.user)}${encodedPass}@${f.host}${port}/${encodeURIComponent(f.database)}`
+  const db = f.database ? `/${encodeURIComponent(f.database)}` : '/postgres'
+  const base = `postgresql://${encodeURIComponent(f.user)}${encodedPass}@${f.host}${port}${db}`
   return f.flags.trim() ? `${base}?${f.flags.trim()}` : base
+}
+
+/** Build a cluster DSN (always connects to "postgres" maintenance DB) for database listing. */
+export function buildClusterDsn(f: ConnFields): string {
+  return buildDsn({ ...f, database: 'postgres' })
+}
+
+/** Build a DSN for a specific database within a cluster described by ConnFields. */
+export function buildDbDsn(f: ConnFields, database: string): string {
+  return buildDsn({ ...f, database })
 }
 
 /** Parse an existing DSN back into structured fields (best-effort). */
@@ -97,9 +110,19 @@ export function ConnectionFields({ label, labelColor = 'text-blue-400', hint, fi
           placeholder="5432" mono />
       </div>
 
-      {/* Row 2: database */}
-      <Field label="Database" value={fields.database} onChange={v => set({ database: v })}
-        placeholder="mydb" mono />
+      {/* Row 2: database (optional — leave blank to browse all databases) */}
+      <div className="flex flex-col gap-0.5">
+        <label className="text-xs text-gray-500 uppercase tracking-wider">
+          Database <span className="normal-case text-gray-600">(optional — leave blank to browse all databases)</span>
+        </label>
+        <input
+          type="text"
+          value={fields.database}
+          onChange={e => set({ database: e.target.value })}
+          placeholder="leave blank to browse cluster"
+          className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm font-mono focus:outline-none focus:border-blue-500"
+        />
+      </div>
 
       {/* Row 3: user + password */}
       <div className="grid grid-cols-2 gap-3">

@@ -4,8 +4,8 @@ import { Spinner } from '../components/Spinner'
 import { ConfirmModal } from '../components/ConfirmModal'
 
 interface Props {
-  selectedTables: Set<string>
-  selectedSchemas: Set<string>
+  selectedTables: Set<string>   // "db.schema.table"
+  selectedSchemas: Set<string>  // "db.schema"
   sourceDsn: string
   pgMajor: number
   schemaData: SchemaInfo[]
@@ -19,6 +19,29 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 10 || i === 0 ? 0 : 1)} ${units[i]}`
 }
 
+// Extract "schema.table" from "db.schema.table" key (last 2 parts)
+function toSchemaTable(key: string): string {
+  const parts = key.split('.')
+  return parts.length >= 3 ? parts.slice(1).join('.') : key
+}
+
+// Extract "schema" from "db.schema" key (last part)
+function toSchema(key: string): string {
+  const parts = key.split('.')
+  return parts.length >= 2 ? parts.slice(1).join('.') : key
+}
+
+// Group keys by database (first part of key)
+function groupByDb<T>(keys: Set<string>): Record<string, string[]> {
+  const result: Record<string, string[]> = {}
+  for (const key of keys) {
+    const db = key.split('.')[0]
+    if (!result[db]) result[db] = []
+    result[db].push(key)
+  }
+  return result
+}
+
 export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDsn, pgMajor, schemaData }: Props) {
   const [pubName, setPubName] = useState('pg_sync_pub')
   const [subName, setSubName] = useState('pg_sync_sub')
@@ -30,20 +53,30 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
 
   const hasSelection = selectedTables.size > 0 || selectedSchemas.size > 0
 
+  // totalBytes still works with schemaData (which is flat schema list for current db)
   const totalBytes = schemaData.reduce((sum, schema) => {
-    if (selectedSchemas.has(schema.schema_name)) {
+    if ([...selectedSchemas].some(k => toSchema(k) === schema.schema_name)) {
       return sum + schema.total_size_bytes
     }
     return sum + schema.tables.reduce((s, t) =>
-      selectedTables.has(`${t.schema_name}.${t.table_name}`) ? s + t.size_bytes : s, 0)
+      [...selectedTables].some(k => toSchemaTable(k) === `${t.schema_name}.${t.table_name}`)
+        ? s + t.size_bytes : s, 0)
   }, 0)
+
+  // Databases involved in selection
+  const selectedDbs = new Set([
+    ...[...selectedTables].map(k => k.split('.')[0]),
+    ...[...selectedSchemas].map(k => k.split('.')[0]),
+  ])
+  const multiDb = selectedDbs.size > 1
 
   async function applyReplication() {
     setLoading(true); setError(''); setResult('')
     try {
+      // For publication: strip db prefix — PostgreSQL only knows schema.table within a DB
       const target = selectedSchemas.size > 0
-        ? { schemas: Array.from(selectedSchemas) }
-        : { tables: Array.from(selectedTables) }
+        ? { schemas: Array.from(selectedSchemas).map(toSchema) }
+        : { tables: Array.from(selectedTables).map(toSchemaTable) }
 
       await replicationApi.createPublication({ publication_name: pubName, target })
       await replicationApi.createSubscription({
@@ -96,17 +129,26 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
 
       <div className="bg-gray-900 border border-gray-700 rounded-lg p-5 space-y-4">
         <h3 className="font-semibold text-gray-300">Selection Summary</h3>
+        {multiDb && (
+          <div className="text-xs text-yellow-400 bg-yellow-950/30 border border-yellow-800 rounded px-3 py-2">
+            ⚠️ Tables from multiple databases selected ({Array.from(selectedDbs).join(', ')}).
+            PostgreSQL logical replication works per-database — each database needs a separate publication/subscription pair.
+            Only one database's tables will be included in this publication.
+          </div>
+        )}
         {selectedSchemas.size > 0 && (
           <div className="text-sm">
             <span className="text-gray-400">Schemas: </span>
-            <span className="text-blue-300">{Array.from(selectedSchemas).join(', ')}</span>
+            <span className="text-blue-300">{Array.from(selectedSchemas).map(toSchema).join(', ')}</span>
             {pgMajor >= 15 && <span className="text-gray-500 ml-2">(schema-level publication)</span>}
           </div>
         )}
         {selectedTables.size > 0 && (
           <div className="text-sm">
             <span className="text-gray-400">Tables: </span>
-            <span className="text-blue-300">{Array.from(selectedTables).join(', ')}</span>
+            <span className="text-blue-300 break-all">
+              {Array.from(selectedTables).map(toSchemaTable).join(', ')}
+            </span>
           </div>
         )}
       </div>

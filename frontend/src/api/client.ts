@@ -110,8 +110,20 @@ export const connectionsApi = {
   status: () => api.get<ConnectionState>('/connections/status'),
 }
 
+export interface DatabaseInfo {
+  database: string
+  size_pretty: string
+  size_bytes: number
+  exists_on_dest: boolean
+}
+
 export const analysisApi = {
   schemas: () => api.get<SchemaInfo[]>('/analysis/schemas'),
+  databases: () => api.get<DatabaseInfo[]>('/analysis/databases'),
+  databaseSchemas: (database: string) =>
+    api.get<SchemaInfo[]>(`/analysis/database-schemas?database=${encodeURIComponent(database)}`),
+  ensureDatabase: (database: string) =>
+    api.post<{ status: string; database: string }>('/analysis/ensure-database', { database }),
 }
 
 export const replicationApi = {
