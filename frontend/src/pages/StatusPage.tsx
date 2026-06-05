@@ -6,7 +6,9 @@ import { ConfirmModal } from '../components/ConfirmModal'
 import { Spinner } from '../components/Spinner'
 import { SequenceSyncPanel } from '../components/SequenceSyncPanel'
 import { SchemaSyncPanel } from '../components/SchemaSyncPanel'
-import { RefreshCw, AlertTriangle, Square, PlusCircle } from 'lucide-react'
+import { AddTableModal } from '../components/AddTableModal'
+import { IndexSyncPanel } from '../components/IndexSyncPanel'
+import { RefreshCw, AlertTriangle, Square, PlusCircle, Layers } from 'lucide-react'
 import type { WorkspaceSnapshot } from './WorkspacePicker'
 
 function ProgressBar({ pct }: { pct: number | null | undefined }) {
@@ -43,13 +45,13 @@ export function StatusPage({ initialSnapshot }: Props) {
   const [confirmDropSlot, setConfirmDropSlot] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState(false)
   const [actionError, setActionError] = useState('')
-  // Add table to publication
-  const [addTablePub, setAddTablePub] = useState<string | null>(null)  // pub name
-  const [addTableInput, setAddTableInput] = useState('')
-  const [addTableLoading, setAddTableLoading] = useState(false)
+  // Add table to publication — modal
+  const [addTablePub, setAddTablePub] = useState<string | null>(null)
   const [addTableResult, setAddTableResult] = useState('')
   // Schema sync — track active publication for schema panel
   const [schemaPub, setSchemaPub] = useState<string | null>(null)
+  // Index panel after stop
+  const [indexPub, setIndexPub] = useState<string | null>(null)
 
   const { data: progress, refetch: refetchProgress, isLoading: progressLoading } = useQuery({
     queryKey: ['progress'],
@@ -110,20 +112,12 @@ export function StatusPage({ initialSnapshot }: Props) {
     }
   }
 
-  async function handleAddTable(pubName: string) {
-    if (!addTableInput.trim()) return
-    setAddTableLoading(true); setAddTableResult('')
-    try {
-      const { data } = await replicationApi.addTableToPublication(pubName, addTableInput.trim())
-      setAddTableResult(`Added ${data.table_added}, refreshed: ${data.subscriptions_refreshed.join(', ') || 'none'}`)
-      setAddTableInput('')
-      setAddTablePub(null)
-      qc.invalidateQueries({ queryKey: ['subscriptions'] })
-    } catch (e: any) {
-      setAddTableResult(`Error: ${e.response?.data?.detail || e.message}`)
-    } finally {
-      setAddTableLoading(false)
-    }
+  function handleAddTableDone(tables: string[], refreshed: string[]) {
+    setAddTableResult(
+      `Added ${tables.length} table${tables.length !== 1 ? 's' : ''}, refreshed: ${refreshed.join(', ') || 'none'}`
+    )
+    setAddTablePub(null)
+    qc.invalidateQueries({ queryKey: ['subscriptions'] })
   }
 
   async function handleDropSlot(slotName: string) {
@@ -260,7 +254,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                     </td>
                     <td className="px-4 py-2 text-gray-400">{sub.subslotname || '–'}</td>
                     <td className="px-4 py-2">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <button
                           onClick={() => setConfirmStop(sub.subname)}
                           disabled={actionLoading || !sub.subenabled}
@@ -276,6 +270,23 @@ export function StatusPage({ initialSnapshot }: Props) {
                         >
                           Reset
                         </button>
+                        {/* Create indexes — useful after replication completes */}
+                        {sub.subpublications?.length > 0 && (
+                          <button
+                            onClick={() => {
+                              const pub = sub.subpublications[0]
+                              setIndexPub(indexPub === pub ? null : pub)
+                            }}
+                            className={`text-xs px-2 py-1 rounded border flex items-center gap-1 transition-colors ${
+                              indexPub === sub.subpublications[0]
+                                ? 'border-purple-500 text-purple-300 bg-purple-900/20'
+                                : 'border-gray-700 text-gray-400 hover:border-gray-500'
+                            }`}
+                            title="Create indexes on destination for this publication"
+                          >
+                            <Layers size={10} /> Indexes
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -283,47 +294,23 @@ export function StatusPage({ initialSnapshot }: Props) {
               </tbody>
             </table>
 
-            {/* Add table to publication inline form */}
-            <div className="px-4 py-3 border-t border-gray-700">
-              {addTablePub ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-400 shrink-0">Add table to <span className="text-blue-300">{addTablePub}</span>:</span>
-                  <input
-                    type="text"
-                    value={addTableInput}
-                    onChange={e => setAddTableInput(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleAddTable(addTablePub)}
-                    placeholder="schema.table_name"
-                    className="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs font-mono focus:outline-none focus:border-blue-500"
-                    autoFocus
-                  />
-                  <button
-                    onClick={() => handleAddTable(addTablePub)}
-                    disabled={addTableLoading || !addTableInput.trim()}
-                    className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-50 px-2.5 py-1 rounded flex items-center gap-1"
-                  >
-                    {addTableLoading && <Spinner size={3} />} Add
-                  </button>
-                  <button onClick={() => { setAddTablePub(null); setAddTableInput(''); setAddTableResult('') }}
-                    className="text-xs text-gray-400 hover:text-gray-200">Cancel</button>
-                </div>
-              ) : (
-                <button
-                  onClick={() => {
-                    const pubs = (subs as any[]).flatMap((s: any) => s.subpublications ?? [])
-                    const uniquePub = [...new Set(pubs)]
-                    setAddTablePub(uniquePub[0] ?? null)
-                    setAddTableResult('')
-                  }}
-                  className="text-xs text-gray-400 hover:text-gray-200 flex items-center gap-1.5"
-                >
-                  <PlusCircle size={12} /> Add table to publication...
-                </button>
-              )}
+            {/* Add table to publication — opens modal tree picker */}
+            <div className="px-4 py-3 border-t border-gray-700 flex items-center gap-3">
+              <button
+                onClick={() => {
+                  const pubs = (subs as any[]).flatMap((s: any) => s.subpublications ?? [])
+                  const uniquePubs = [...new Set<string>(pubs)]
+                  setAddTablePub(uniquePubs[0] ?? null)
+                  setAddTableResult('')
+                }}
+                className="text-xs text-gray-400 hover:text-gray-200 flex items-center gap-1.5"
+              >
+                <PlusCircle size={12} /> Add table to publication...
+              </button>
               {addTableResult && (
-                <div className={`mt-1.5 text-xs ${addTableResult.startsWith('Error') ? 'text-red-400' : 'text-green-400'}`}>
+                <span className={`text-xs ${addTableResult.startsWith('Error') ? 'text-red-400' : 'text-green-400'}`}>
                   {addTableResult}
-                </div>
+                </span>
               )}
             </div>
           </>
@@ -336,6 +323,11 @@ export function StatusPage({ initialSnapshot }: Props) {
           <SchemaSyncPanel publication={schemaPub} />
           <SequenceSyncPanel />
         </>
+      )}
+
+      {/* Index panel — shown when "Indexes" button clicked on a subscription */}
+      {indexPub && (
+        <IndexSyncPanel publication={indexPub} />
       )}
 
       {/* Slots */}
@@ -389,6 +381,15 @@ export function StatusPage({ initialSnapshot }: Props) {
           </table>
         )}
       </div>
+
+      {/* Add table modal */}
+      {addTablePub && (
+        <AddTableModal
+          pubName={addTablePub}
+          onClose={() => setAddTablePub(null)}
+          onAdded={handleAddTableDone}
+        />
+      )}
 
       {confirmStop && (
         <ConfirmModal

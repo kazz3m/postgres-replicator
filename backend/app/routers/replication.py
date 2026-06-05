@@ -5,6 +5,7 @@ from ..models.schemas import (
     PublicationConfig, SubscriptionConfig, ReplicationStatus,
     ReplicationSlotInfo, SubscriptionStatus, TableReplicationProgress,
     SequenceInfo, TableSchemaDiff, ColumnDiff, SchemaSyncResult,
+    IndexInfo, IndexCreateResult,
 )
 from ..db import get_source_pool, get_dest_pool
 from .. import state
@@ -807,6 +808,117 @@ async def schema_diff(publication: str):
     return results
 
 
+async def _get_table_indexes(src_conn, schema_name: str, table_name: str) -> list[IndexInfo]:
+    """Return non-PK, non-constraint indexes for a table on source."""
+    rows = await src_conn.fetch("""
+        SELECT i.relname AS index_name,
+               pg_get_indexdef(ix.indexrelid) AS index_def
+        FROM pg_index ix
+        JOIN pg_class i ON i.oid = ix.indexrelid
+        JOIN pg_class c ON c.oid = ix.indrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1
+          AND c.relname = $2
+          AND NOT ix.indisprimary
+          AND NOT ix.indisunique OR ix.indisunique  -- include all non-PK
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_constraint con
+              WHERE con.conindid = ix.indexrelid
+                AND con.contype IN ('p', 'u', 'x')
+              LIMIT 1
+          )
+        ORDER BY i.relname
+    """, schema_name, table_name)
+    return [
+        IndexInfo(
+            table=f"{schema_name}.{table_name}",
+            index_name=r["index_name"],
+            index_def=r["index_def"],
+        )
+        for r in rows
+    ]
+
+
+@router.get("/schema-indexes")
+async def list_schema_indexes(publication: str):
+    """List all non-PK indexes for tables in a publication (so user can create them selectively)."""
+    _require_connection()
+    src_pool = await get_source_pool(state.source_dsn)
+
+    async with src_pool.acquire() as src_conn:
+        pub_tables = await src_conn.fetch(
+            "SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = $1",
+            publication,
+        )
+        if not pub_tables:
+            raise HTTPException(404, f"Publication '{publication}' not found or has no tables.")
+
+        result = []
+        for pt in pub_tables:
+            idxs = await _get_table_indexes(src_conn, pt["schemaname"], pt["tablename"])
+            result.extend(idxs)
+
+    return result
+
+
+@router.post("/schema/create-indexes", response_model=List[IndexCreateResult])
+async def create_indexes(body: dict):
+    """
+    Create indexes on destination for the specified tables (or all tables in a publication).
+    body: { "publication": "name" } or { "tables": ["schema.table", ...] }
+    Only creates non-PK indexes that exist on source but are absent on destination.
+    """
+    _require_connection()
+    publication = body.get("publication")
+    tables_filter = set(body.get("tables") or [])
+
+    src_pool = await get_source_pool(state.source_dsn)
+    dest_pool = await get_dest_pool(state.dest_dsn)
+
+    async with src_pool.acquire() as src_conn:
+        if publication:
+            pub_tables = await src_conn.fetch(
+                "SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = $1",
+                publication,
+            )
+            table_pairs = [(r["schemaname"], r["tablename"]) for r in pub_tables]
+        else:
+            table_pairs = [t.split(".", 1) for t in tables_filter if "." in t]
+
+    results: list[IndexCreateResult] = []
+
+    async with src_pool.acquire() as src_conn:
+        for schema_name, table_name in table_pairs:
+            fqn = f"{schema_name}.{table_name}"
+            if tables_filter and fqn not in tables_filter:
+                continue
+            idxs = await _get_table_indexes(src_conn, schema_name, table_name)
+            for idx in idxs:
+                async with dest_pool.acquire() as dest_conn:
+                    already = await dest_conn.fetchval(
+                        "SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'i'",
+                        schema_name, idx.index_name,
+                    )
+                    if already:
+                        results.append(IndexCreateResult(
+                            index_name=idx.index_name, table=fqn, action="already_exists"
+                        ))
+                        continue
+                    try:
+                        await dest_conn.execute(idx.index_def)
+                        results.append(IndexCreateResult(
+                            index_name=idx.index_name, table=fqn, action="created"
+                        ))
+                    except Exception as e:
+                        results.append(IndexCreateResult(
+                            index_name=idx.index_name, table=fqn,
+                            action="error", detail=str(e)
+                        ))
+
+    return results
+
+
 @router.post("/schema-sync", response_model=List[SchemaSyncResult])
 async def schema_sync(body: dict):
     """
@@ -822,6 +934,10 @@ async def schema_sync(body: dict):
     publication = body.get("publication")
     if not publication:
         raise HTTPException(400, "publication name required")
+    # create_indexes: "before" = create indexes right after table creation
+    #                 "after"  = skip (user creates manually or calls /schema/create-indexes)
+    # Default: "after" (safe during initial large copy — indexes slow down INSERT)
+    create_indexes_when: str = body.get("create_indexes", "after")
 
     diffs = await schema_diff(publication)
     results = []
@@ -909,10 +1025,29 @@ async def schema_sync(body: dict):
                 )
                 await dest_conn.execute(ddl)
 
+            # Optionally create indexes immediately (useful when applying schema
+            # before replication starts so destination is ready to serve queries)
+            index_results: list[IndexInfo] = []
+            if create_indexes_when == "before":
+                async with src_pool.acquire() as src_conn:
+                    idx_list = await _get_table_indexes(src_conn, schema_name, table_name)
+                async with dest_pool.acquire() as dest_conn:
+                    for idx in idx_list:
+                        try:
+                            await dest_conn.execute(idx.index_def)
+                            index_results.append(idx)
+                        except Exception:
+                            pass  # best-effort; individual errors don't fail table sync
+
             results.append(SchemaSyncResult(
                 table=diff.table,
                 action="created",
-                detail="Table and schema created. Indexes NOT created — add them manually for performance.",
+                detail=(
+                    f"Table created with {len(index_results)} index(es)."
+                    if create_indexes_when == "before" and index_results
+                    else "Table created. Indexes NOT created — use 'Create indexes' after replication completes."
+                ),
+                indexes=index_results,
             ))
 
         except Exception as e:

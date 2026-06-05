@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { replicationApi, TableSchemaDiff, SchemaSyncResult } from '../api/client'
 import { Badge } from './Badge'
 import { Spinner } from './Spinner'
+import { IndexSyncPanel } from './IndexSyncPanel'
 import { RefreshCw, ChevronDown, ChevronRight, AlertTriangle, CheckCircle } from 'lucide-react'
 
 interface Props { publication: string }
@@ -13,6 +14,8 @@ export function SchemaSyncPanel({ publication }: Props) {
   const [syncing, setSyncing] = useState(false)
   const [syncResults, setSyncResults] = useState<SchemaSyncResult[] | null>(null)
   const [error, setError] = useState('')
+  const [createIndexes, setCreateIndexes] = useState<'before' | 'after'>('after')
+  const [showIndexPanel, setShowIndexPanel] = useState(false)
 
   const { data: diffs, isLoading, refetch } = useQuery({
     queryKey: ['schema-diff', publication],
@@ -27,10 +30,11 @@ export function SchemaSyncPanel({ publication }: Props) {
   async function handleSync() {
     setSyncing(true); setError(''); setSyncResults(null)
     try {
-      const { data } = await replicationApi.schemaSync(publication)
+      const { data } = await replicationApi.schemaSync(publication, createIndexes)
       setSyncResults(data)
       refetch()
       qc.invalidateQueries({ queryKey: ['schema-diff'] })
+      qc.invalidateQueries({ queryKey: ['schema-indexes'] })
     } catch (e: any) {
       setError(e.response?.data?.detail || e.message)
     } finally {
@@ -65,15 +69,38 @@ export function SchemaSyncPanel({ publication }: Props) {
             <RefreshCw size={13} />
           </button>
           {missing.length > 0 && (
-            <button
-              onClick={handleSync}
-              disabled={syncing}
-              className="text-xs bg-orange-700 hover:bg-orange-600 disabled:opacity-50 px-3 py-1.5 rounded font-semibold flex items-center gap-1.5"
-            >
-              {syncing && <Spinner size={3} />}
-              Create {missing.length} missing table{missing.length !== 1 ? 's' : ''}
-            </button>
+            <div className="flex items-center gap-2">
+              {/* Index creation timing option */}
+              <select
+                value={createIndexes}
+                onChange={e => setCreateIndexes(e.target.value as 'before' | 'after')}
+                className="text-xs bg-gray-800 border border-gray-600 rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+                title="When to create indexes on destination"
+              >
+                <option value="after">Indexes: after replication</option>
+                <option value="before">Indexes: before replication</option>
+              </select>
+              <button
+                onClick={handleSync}
+                disabled={syncing}
+                className="text-xs bg-orange-700 hover:bg-orange-600 disabled:opacity-50 px-3 py-1.5 rounded font-semibold flex items-center gap-1.5"
+              >
+                {syncing && <Spinner size={3} />}
+                Create {missing.length} missing table{missing.length !== 1 ? 's' : ''}
+              </button>
+            </div>
           )}
+          <button
+            onClick={() => setShowIndexPanel(v => !v)}
+            className={`text-xs px-2.5 py-1.5 rounded border transition-colors ${
+              showIndexPanel
+                ? 'border-purple-500 text-purple-300 bg-purple-900/20'
+                : 'border-gray-700 text-gray-400 hover:border-gray-500'
+            }`}
+            title="Manage indexes on destination"
+          >
+            Indexes
+          </button>
         </div>
       </div>
 
@@ -170,9 +197,14 @@ export function SchemaSyncPanel({ publication }: Props) {
           <span className="text-green-600">{ok.length} OK</span>
           <span className="text-red-500">{missing.length} missing</span>
           <span className="text-yellow-500">{incompatible.length} incompatible</span>
-          <span className="text-gray-600 ml-auto">Indexes are not created automatically — add after sync for performance.</span>
+          <span className="text-gray-600 ml-auto">
+            {createIndexes === 'after'
+              ? 'Indexes will be created after replication — use "Indexes" panel to apply.'
+              : 'Indexes will be created immediately with tables.'}
+          </span>
         </div>
       )}
+      {showIndexPanel && <IndexSyncPanel publication={publication} />}
     </div>
   )
 }

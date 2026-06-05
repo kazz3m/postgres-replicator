@@ -103,10 +103,24 @@ class TableSchemaDiff(BaseModel):
     compatible: bool            # True only when all columns match
 
 
+class IndexInfo(BaseModel):
+    table: str                  # schema.table
+    index_name: str
+    index_def: str              # full CREATE INDEX statement
+
+
+class IndexCreateResult(BaseModel):
+    index_name: str
+    table: str
+    action: str                 # created | already_exists | error
+    detail: str = ""
+
+
 class SchemaSyncResult(BaseModel):
     table: str
     action: str                 # created | already_exists | error
     detail: str = ""
+    indexes: List[IndexInfo] = []   # available indexes (populated when create_indexes=before)
 
 
 class PGVersion(BaseModel):

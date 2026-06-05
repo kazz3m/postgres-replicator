@@ -80,6 +80,20 @@ export interface SchemaSyncResult {
   table: string
   action: string   // created | already_exists | incompatible | error
   detail?: string
+  indexes?: IndexInfo[]
+}
+
+export interface IndexInfo {
+  table: string
+  index_name: string
+  index_def: string
+}
+
+export interface IndexCreateResult {
+  index_name: string
+  table: string
+  action: string   // created | already_exists | error
+  detail?: string
 }
 
 export interface ConnectionState {
@@ -123,6 +137,10 @@ export const replicationApi = {
     api.post('/replication/sequences/sync', { sequences: sequences ?? [] }),
   schemaDiff: (publication: string) =>
     api.get<TableSchemaDiff[]>(`/replication/schema-diff?publication=${encodeURIComponent(publication)}`),
-  schemaSync: (publication: string) =>
-    api.post<SchemaSyncResult[]>('/replication/schema-sync', { publication }),
+  schemaSync: (publication: string, createIndexes: 'before' | 'after' = 'after') =>
+    api.post<SchemaSyncResult[]>('/replication/schema-sync', { publication, create_indexes: createIndexes }),
+  listIndexes: (publication: string) =>
+    api.get<IndexInfo[]>(`/replication/schema-indexes?publication=${encodeURIComponent(publication)}`),
+  createIndexes: (publication?: string, tables?: string[]) =>
+    api.post<IndexCreateResult[]>('/replication/schema/create-indexes', { publication, tables }),
 }
