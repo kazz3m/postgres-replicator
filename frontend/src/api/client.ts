@@ -27,6 +27,7 @@ export interface PublicationConfig { publication_name: string; target: Replicati
 
 export interface PublicationServerConfig {
   pub_name: string
+  database: string       // source database name
   puballtables: boolean
   tables: string[]       // "schema.table"
   schemas: string[]      // schema names (PG15+ only)

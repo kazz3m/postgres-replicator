@@ -452,6 +452,9 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       setResult(`Publication "${pubName}" and subscription "${subName}" created successfully.`)
       onReplConfigChange?.({
         pub_name: pubName, sub_name: subName, copy_data: copyData,
+        tables: tablesToCheck,
+        schemas: Array.from(selectedSchemas).map(toSchema),
+        database: replConfigs[pubName]?.database,
         last_applied: new Date().toISOString(), last_status: 'ok', last_error: undefined,
       })
     } catch (e: any) {
@@ -460,6 +463,9 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       setError(msg)
       onReplConfigChange?.({
         pub_name: pubName, sub_name: subName, copy_data: copyData,
+        tables: tablesToCheck,
+        schemas: Array.from(selectedSchemas).map(toSchema),
+        database: replConfigs[pubName]?.database,
         last_applied: new Date().toISOString(), last_status: 'error', last_error: msg,
       })
     } finally {

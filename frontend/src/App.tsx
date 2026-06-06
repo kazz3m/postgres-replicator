@@ -105,7 +105,26 @@ export default function App() {
     if (profile.replication_config && !configs[profile.replication_config.pub_name]) {
       configs[profile.replication_config.pub_name] = profile.replication_config
     }
-    if (Object.keys(configs).length > 0) setReplConfigs(configs)
+    if (Object.keys(configs).length > 0) {
+      setReplConfigs(configs)
+
+      // If profile has no table selection but configs have tables, restore from first config
+      const hasProfileSelection = (profile.selected_tables?.length ?? 0) > 0 || (profile.selected_schemas?.length ?? 0) > 0
+      if (!hasProfileSelection) {
+        const firstCfg = Object.values(configs)[0]
+        if (firstCfg?.database && firstCfg.tables && firstCfg.tables.length > 0) {
+          const tables = new Set(firstCfg.tables.map(t => `${firstCfg.database}.${t}`))
+          setSelectedTables(tables)
+          setSelectedSchemas(new Set())
+          persistSelection(tables, new Set())
+        } else if (firstCfg?.database && firstCfg.schemas && firstCfg.schemas.length > 0) {
+          const schemas = new Set(firstCfg.schemas.map(s => `${firstCfg.database}.${s}`))
+          setSelectedTables(new Set())
+          setSelectedSchemas(schemas)
+          persistSelection(new Set(), schemas)
+        }
+      }
+    }
 
     // Switch directly to Status tab to show live replication state
     setTab('status')
@@ -141,11 +160,17 @@ export default function App() {
   // ── Replication config save ───────────────────────────────────────────────
 
   function handleReplConfigChange(cfg: ReplicationConfig) {
+    // Enrich with current table selection if not already set
+    const existing = replConfigs[cfg.pub_name]
+    const enriched: ReplicationConfig = {
+      ...cfg,
+      tables: cfg.tables ?? existing?.tables,
+      schemas: cfg.schemas ?? existing?.schemas,
+      database: cfg.database ?? existing?.database,
+    }
     setReplConfigs(prev => {
-      const next = { ...prev, [cfg.pub_name]: cfg }
-      if (activeProfileId) {
-        void updateProfile(activeProfileId, { replication_configs: next })
-      }
+      const next = { ...prev, [enriched.pub_name]: enriched }
+      if (activeProfileId) void updateProfile(activeProfileId, { replication_configs: next })
       return next
     })
   }
@@ -153,20 +178,53 @@ export default function App() {
   // ── Open publication in Setup tab (from Analysis badge click) ─────────────
 
   function handleOpenPublication(pubServerConfig: PublicationServerConfig) {
-    // Merge server config with any saved config for this pub
     const saved = replConfigs[pubServerConfig.pub_name]
     const sub = pubServerConfig.subscriptions[0]
-    // Build selection: db prefix unknown here — use bare schema.table keys
-    // ReplicationSetupPage will use these as-is (they're already stripped of db prefix)
+
     const merged: ReplicationConfig = {
       pub_name: pubServerConfig.pub_name,
       sub_name: saved?.sub_name ?? sub?.sub_name ?? 'pg_sync_sub',
       copy_data: saved?.copy_data ?? true,
+      database: pubServerConfig.database,
+      // Prefer server-side table list (source of truth); fall back to saved
+      tables: pubServerConfig.tables.length > 0 ? pubServerConfig.tables : (saved?.tables ?? []),
+      schemas: pubServerConfig.schemas.length > 0 ? pubServerConfig.schemas : (saved?.schemas ?? []),
       last_applied: saved?.last_applied,
       last_status: saved?.last_status,
       last_error: saved?.last_error,
     }
-    setReplConfigs(prev => ({ ...prev, [merged.pub_name]: merged }))
+
+    // Restore selectedTables/selectedSchemas from publication — prepend db prefix
+    const db = pubServerConfig.database
+    if (db && merged.tables && merged.tables.length > 0) {
+      const tables = new Set(merged.tables.map(t => `${db}.${t}`))
+      setSelectedTables(tables)
+      setSelectedSchemas(new Set())
+      persistSelection(tables, new Set())
+      if (activeProfileId) {
+        void updateProfile(activeProfileId, {
+          selected_tables: [...tables],
+          selected_schemas: [],
+        })
+      }
+    } else if (db && merged.schemas && merged.schemas.length > 0) {
+      const schemas = new Set(merged.schemas.map(s => `${db}.${s}`))
+      setSelectedTables(new Set())
+      setSelectedSchemas(schemas)
+      persistSelection(new Set(), schemas)
+      if (activeProfileId) {
+        void updateProfile(activeProfileId, {
+          selected_tables: [],
+          selected_schemas: [...schemas],
+        })
+      }
+    }
+
+    setReplConfigs(prev => {
+      const next = { ...prev, [merged.pub_name]: merged }
+      if (activeProfileId) void updateProfile(activeProfileId, { replication_configs: next })
+      return next
+    })
     setActiveSetupPub(merged.pub_name)
     setTab('setup')
   }

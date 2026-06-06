@@ -25,7 +25,10 @@ class ReplicationConfig(BaseModel):
     pub_name: str = "pg_sync_pub"
     sub_name: str = "pg_sync_sub"
     copy_data: bool = True
-    last_applied: Optional[str] = None   # ISO timestamp of last Apply attempt
+    database: Optional[str] = None
+    tables: Optional[List[str]] = None   # "schema.table" without db prefix
+    schemas: Optional[List[str]] = None  # schema names (PG15+)
+    last_applied: Optional[str] = None
     last_status: Optional[str] = None    # "ok" | "error" | "partial"
     last_error: Optional[str] = None
 

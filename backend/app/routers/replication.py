@@ -97,6 +97,7 @@ async def get_publication_config(name: str):
     async with src_pool.acquire() as src_conn:
         version_num = await src_conn.fetchval("SELECT current_setting('server_version_num')::int")
         major = version_num // 10000
+        database = await src_conn.fetchval("SELECT current_database()")
 
         pub = await src_conn.fetchrow(
             "SELECT pubname, puballtables, pubinsert, pubupdate, pubdelete "
@@ -144,6 +145,7 @@ async def get_publication_config(name: str):
 
     return {
         "pub_name": name,
+        "database": database,
         "puballtables": pub["puballtables"],
         "tables": [f"{r['schemaname']}.{r['tablename']}" for r in tables],
         "schemas": schemas,

@@ -4,7 +4,10 @@ export interface ReplicationConfig {
   pub_name: string
   sub_name: string
   copy_data: boolean
-  last_applied?: string   // ISO timestamp
+  database?: string        // source database name
+  tables?: string[]        // "schema.table" — without db prefix
+  schemas?: string[]       // schema names (PG15+)
+  last_applied?: string    // ISO timestamp
   last_status?: 'ok' | 'error' | 'partial'
   last_error?: string
 }
