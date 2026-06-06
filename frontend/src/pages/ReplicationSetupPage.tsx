@@ -69,6 +69,9 @@ function parsePubSubName(name: string): { prefix: string; label: string } | null
   // Legacy format: {8chars}_pg_sync_{pub|sub}_{label}
   const legacy = name.match(/^([a-z0-9]{8})_pg_sync_(?:pub|sub)(?:_(.+))?$/)
   if (legacy) return { prefix: legacy[1], label: legacy[2] ?? '' }
+  // Very legacy format: pg_sync_{pub|sub}_{label} (no random prefix)
+  const veryLegacy = name.match(/^pg_sync_(?:pub|sub)(?:_(.+))?$/)
+  if (veryLegacy) return { prefix: 'pg_sync', label: veryLegacy[1] ?? '' }
   return null
 }
 
