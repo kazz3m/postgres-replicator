@@ -452,17 +452,17 @@ async def reset_replication(subscription_name: str):
     src_pool = await get_source_pool(state.source_dsn)
 
     async with dest_pool.acquire() as conn:
+        # Avoid reading subconninfo — requires superuser on Cloud SQL / restricted envs.
+        # Use state.source_repl_dsn (or source_dsn) as the connection string on recreate.
         row = await conn.fetchrow(
-            "SELECT subslotname, subpublications, subconninfo FROM pg_subscription WHERE subname = $1",
+            "SELECT subslotname, subpublications FROM pg_subscription WHERE subname = $1",
             subscription_name
         )
         if not row:
             raise HTTPException(404, f"Subscription '{subscription_name}' not found.")
         slot_name = row["subslotname"]
         publications = row["subpublications"]
-        conninfo = row["subconninfo"]
 
-        # Fix #6 (reset path): propagate DISABLE failure instead of swallowing it
         try:
             await conn.execute(f'ALTER SUBSCRIPTION "{subscription_name}" DISABLE')
         except Exception as e:
@@ -480,17 +480,35 @@ async def reset_replication(subscription_name: str):
             except Exception:
                 pass
 
-    # Fix #7: use dollar-quoting for conninfo consistently (same as create_or_update_subscription)
-    if "$conn_str$" in conninfo:
-        raise HTTPException(500, "Stored conninfo contains illegal sequence, cannot recreate subscription.")
+    conn_dsn = state.source_repl_dsn if state.source_repl_dsn else state.source_dsn
+    if not re.match(r'^postgres(ql)?://', conn_dsn):
+        raise HTTPException(400, "Replication DSN is missing or invalid. Reconnect and try again.")
+    if "$conn_str$" in conn_dsn:
+        raise HTTPException(500, "Connection DSN contains illegal sequence, cannot recreate subscription.")
+
     pub_list = ", ".join(f'"{p}"' for p in publications)
-    async with dest_pool.acquire() as conn:
-        await conn.execute(f"""
+    import asyncpg as _asyncpg
+    dedicated_conn = None
+    try:
+        dedicated_conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
+        await dedicated_conn.execute("SET statement_timeout = '30s'")
+        await dedicated_conn.execute(f"""
             CREATE SUBSCRIPTION "{subscription_name}"
-            CONNECTION $conn_str${conninfo}$conn_str$
+            CONNECTION $conn_str${conn_dsn}$conn_str$
             PUBLICATION {pub_list}
             WITH (copy_data = true)
         """)
+    except Exception as e:
+        err = str(e)
+        if "could not connect to the publisher" in err or "Connection timed out" in err or "Connection refused" in err or "statement timeout" in err:
+            raise HTTPException(400, f"Destination could not reach source at {conn_dsn.split('@')[-1] if '@' in conn_dsn else conn_dsn}: {err}")
+        raise HTTPException(400, f"CREATE SUBSCRIPTION failed during reset: {err}")
+    finally:
+        if dedicated_conn:
+            try:
+                await dedicated_conn.close()
+            except Exception:
+                pass
 
     return {"status": "reset", "subscription_name": subscription_name}
 
