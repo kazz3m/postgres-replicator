@@ -87,11 +87,18 @@ function SchemaNode({
     if (q && schema.schema_name.toLowerCase().includes(q)) setExpanded(true)
   }, [q])
 
+  // Tables already in a publication — cannot be added to another replication
+  function isInPublication(tableName: string): boolean {
+    return (publishedMap[`${schema.schema_name}.${tableName}`] ?? []).length > 0
+  }
+
+  const freeTables = (tables ?? []).filter(t => !isInPublication(t.table_name))
+
   const selectedTableCount = (tables ?? []).filter(t =>
     selectedTables.has(tableKey(dbName, schema.schema_name, t.table_name))
   ).length
-  const isIndeterminate = !isSchemaChecked && selectedTableCount > 0 && selectedTableCount < (tables?.length ?? 0)
-  const isAllTablesSelected = !isSchemaChecked && tables != null && tables.length > 0 && selectedTableCount === tables.length
+  const isIndeterminate = !isSchemaChecked && selectedTableCount > 0 && selectedTableCount < freeTables.length
+  const isAllTablesSelected = !isSchemaChecked && freeTables.length > 0 && selectedTableCount === freeTables.length
 
   function toggleSchemaSelect() {
     const newSchemas = new Set(selectedSchemas)
@@ -101,7 +108,8 @@ function SchemaNode({
       ;(tables ?? []).forEach(t => newTables.delete(tableKey(dbName, schema.schema_name, t.table_name)))
     } else {
       newSchemas.add(sKey)
-      ;(tables ?? []).forEach(t => newTables.delete(tableKey(dbName, schema.schema_name, t.table_name)))
+      // Only add free tables — published ones stay blocked
+      freeTables.forEach(t => newTables.delete(tableKey(dbName, schema.schema_name, t.table_name)))
     }
     onSelectionChange(newTables, newSchemas)
   }
@@ -110,7 +118,8 @@ function SchemaNode({
     const newTables = new Set(selectedTables)
     const newSchemas = new Set(selectedSchemas)
     newSchemas.delete(sKey)
-    ;(tables ?? []).forEach(t => newTables.add(tableKey(dbName, schema.schema_name, t.table_name)))
+    // Only select tables not already in a publication
+    freeTables.forEach(t => newTables.add(tableKey(dbName, schema.schema_name, t.table_name)))
     onSelectionChange(newTables, newSchemas)
   }
 
@@ -122,8 +131,9 @@ function SchemaNode({
     onSelectionChange(newTables, newSchemas)
   }
 
-  function toggleTable(table: string) {
-    const tKey = tableKey(dbName, schema.schema_name, table)
+  function toggleTable(tableName: string) {
+    if (isInPublication(tableName)) return  // guard — blocked at UI level too
+    const tKey = tableKey(dbName, schema.schema_name, tableName)
     const newTables = new Set(selectedTables)
     const newSchemas = new Set(selectedSchemas)
     newSchemas.delete(sKey)
@@ -146,6 +156,12 @@ function SchemaNode({
         <span className="text-gray-500 text-xs shrink-0">
           {schema.table_count} tables · {schema.total_size_pretty}
         </span>
+        {/* Show blocked count once tables are loaded */}
+        {tables && tables.length - freeTables.length > 0 && (
+          <span className="text-xs text-amber-500/70 shrink-0">
+            {tables.length - freeTables.length} in pub
+          </span>
+        )}
         {pgMajor >= 15 && (
           <div
             className="flex items-center gap-1.5 ml-3 pl-3 border-l border-gray-700 shrink-0"
@@ -180,7 +196,12 @@ function SchemaNode({
                 <tr className="text-gray-600 border-b border-gray-800">
                   <th className="pl-16 pr-2 py-1.5 text-left w-8">
                     <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
-                      <button className="text-blue-500 hover:text-blue-300" title="Select all" onClick={selectAll}>all</button>
+                      <button
+                        className="text-blue-500 hover:text-blue-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                        title={freeTables.length === 0 ? 'All tables are in existing publications' : 'Select all free tables'}
+                        disabled={freeTables.length === 0}
+                        onClick={selectAll}
+                      >all</button>
                       <span className="text-gray-700">/</span>
                       <button className="text-gray-500 hover:text-gray-300" title="Deselect all" onClick={deselectAll}>none</button>
                     </div>
@@ -198,23 +219,26 @@ function SchemaNode({
                   const isSelected = selectedTables.has(tKey) || isTableSchemaSelected
                   const isHighlighted = q && table.table_name.toLowerCase().includes(q)
                   const inPublications: string[] = publishedMap[schemaTableKey] ?? []
+                  const blockedByPub = inPublications.length > 0
 
                   return (
                     <tr
                       key={tKey}
-                      className={clsx('border-b border-gray-800/50 hover:bg-gray-800 transition-colors', {
+                      className={clsx('border-b border-gray-800/50 transition-colors', {
                         'bg-blue-950/30': isSelected,
-                        'bg-yellow-950/20': isHighlighted && !isSelected,
-                        'bg-amber-950/20': inPublications.length > 0 && !isSelected,
+                        'bg-yellow-950/20': isHighlighted && !isSelected && !blockedByPub,
+                        'bg-amber-950/20 opacity-75': blockedByPub,
+                        'hover:bg-gray-800': !blockedByPub,
                       })}
                     >
                       <td className="pl-16 pr-2 py-1.5">
                         <input
                           type="checkbox"
-                          checked={isSelected}
-                          disabled={isTableSchemaSelected}
+                          checked={isSelected && !blockedByPub}
+                          disabled={isTableSchemaSelected || blockedByPub}
                           onChange={() => toggleTable(table.table_name)}
-                          className="accent-blue-500 cursor-pointer disabled:opacity-40"
+                          className="accent-blue-500 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                          title={blockedByPub ? `Already in publication: ${inPublications.join(', ')}` : undefined}
                         />
                       </td>
                       <td className="px-2 py-1.5">
