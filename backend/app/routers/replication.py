@@ -121,12 +121,26 @@ async def get_publication_config(name: str):
             """, name)
             schemas = [r["nspname"] for r in schema_rows]
 
+    subs = []
     async with dest_pool.acquire() as dest_conn:
-        subs = await dest_conn.fetch(
-            "SELECT subname, subenabled, subslotname, subconninfo "
-            "FROM pg_subscription WHERE $1 = ANY(subpublications)",
-            name,
-        )
+        try:
+            subs = await dest_conn.fetch(
+                "SELECT subname, subenabled, subslotname "
+                "FROM pg_subscription WHERE $1 = ANY(subpublications)",
+                name,
+            )
+        except Exception:
+            # pg_subscription requires superuser or pg_monitor — fall back gracefully
+            try:
+                # pg_stat_subscription is accessible to non-superusers
+                subs = await dest_conn.fetch(
+                    "SELECT s.subname, true AS subenabled, NULL::text AS subslotname "
+                    "FROM pg_stat_subscription s "
+                    "WHERE s.subname IS NOT NULL "
+                    "GROUP BY s.subname",
+                )
+            except Exception:
+                subs = []
 
     return {
         "pub_name": name,
