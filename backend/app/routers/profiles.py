@@ -21,6 +21,15 @@ PROFILES_PATH = _default_data_path("PROFILES_PATH", "profiles.json")
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
 
 
+class ReplicationConfig(BaseModel):
+    pub_name: str = "pg_sync_pub"
+    sub_name: str = "pg_sync_sub"
+    copy_data: bool = True
+    last_applied: Optional[str] = None   # ISO timestamp of last Apply attempt
+    last_status: Optional[str] = None    # "ok" | "error" | "partial"
+    last_error: Optional[str] = None
+
+
 class ProfileIn(BaseModel):
     name: str
     source_dsn: str
@@ -29,6 +38,7 @@ class ProfileIn(BaseModel):
     last_used: Optional[str] = None
     selected_tables: Optional[List[str]] = None
     selected_schemas: Optional[List[str]] = None
+    replication_config: Optional[ReplicationConfig] = None
 
 
 class Profile(ProfileIn):

@@ -1,5 +1,14 @@
 import { api } from '../api/client'
 
+export interface ReplicationConfig {
+  pub_name: string
+  sub_name: string
+  copy_data: boolean
+  last_applied?: string   // ISO timestamp
+  last_status?: 'ok' | 'error' | 'partial'
+  last_error?: string
+}
+
 export interface ConnectionProfile {
   id: string
   name: string
@@ -10,6 +19,7 @@ export interface ConnectionProfile {
   last_used?: string
   selected_tables?: string[]
   selected_schemas?: string[]
+  replication_config?: ReplicationConfig
 }
 
 export async function loadProfiles(): Promise<ConnectionProfile[]> {

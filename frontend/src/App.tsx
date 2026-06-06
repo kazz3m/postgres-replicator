@@ -5,7 +5,7 @@ import { AnalysisPage } from './pages/AnalysisPage'
 import { ReplicationSetupPage } from './pages/ReplicationSetupPage'
 import { StatusPage } from './pages/StatusPage'
 import { connectionsApi, analysisApi, SchemaInfo } from './api/client'
-import { ConnectionProfile, touchProfile, updateProfile } from './utils/profiles'
+import { ConnectionProfile, ReplicationConfig, touchProfile, updateProfile } from './utils/profiles'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 
@@ -46,6 +46,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('analysis')
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null)
   const [initialSnapshot, setInitialSnapshot] = useState<WorkspaceSnapshot | null>(null)
+  const [savedReplConfig, setSavedReplConfig] = useState<ReplicationConfig | undefined>(undefined)
 
   const saved = loadSelection()
   const [selectedTables, setSelectedTables] = useState<Set<string>>(saved.tables)
@@ -94,6 +95,11 @@ export default function App() {
       persistSelection(tables, schemas)
     }
 
+    // Restore replication config (pub/sub names etc.)
+    if (profile.replication_config) {
+      setSavedReplConfig(profile.replication_config)
+    }
+
     // Switch directly to Status tab to show live replication state
     setTab('status')
     setStage('connected')
@@ -125,6 +131,15 @@ export default function App() {
     }
   }
 
+  // ── Replication config save ───────────────────────────────────────────────
+
+  function handleReplConfigChange(cfg: ReplicationConfig) {
+    setSavedReplConfig(cfg)
+    if (activeProfileId) {
+      void updateProfile(activeProfileId, { replication_config: cfg })
+    }
+  }
+
   // ── Disconnect ────────────────────────────────────────────────────────────
 
   function handleDisconnect() {
@@ -134,6 +149,7 @@ export default function App() {
     setPgMajor(0)
     setActiveProfileId(null)
     setInitialSnapshot(null)
+    setSavedReplConfig(undefined)
     clearSelection()
   }
 
@@ -235,6 +251,8 @@ export default function App() {
             sourceDsn={sourceDsn}
             pgMajor={pgMajor}
             schemaData={schemaData ?? []}
+            savedReplConfig={savedReplConfig}
+            onReplConfigChange={handleReplConfigChange}
           />
         )}
         {tab === 'status' && (

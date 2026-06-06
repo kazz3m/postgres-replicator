@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { replicationApi, SchemaInfo, TableSchemaDiff, SchemaSyncResult } from '../api/client'
+import { ReplicationConfig } from '../utils/profiles'
 import { Spinner } from '../components/Spinner'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { Badge } from '../components/Badge'
@@ -12,6 +13,8 @@ interface Props {
   sourceDsn: string
   pgMajor: number
   schemaData: SchemaInfo[]
+  savedReplConfig?: ReplicationConfig
+  onReplConfigChange?: (cfg: ReplicationConfig) => void
 }
 
 function formatBytes(bytes: number): string {
@@ -331,10 +334,10 @@ function SchemaCheckPanel({ tables, onAllOk }: SchemaCheckPanelProps) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDsn, pgMajor, schemaData }: Props) {
-  const [pubName, setPubName] = useState('pg_sync_pub')
-  const [subName, setSubName] = useState('pg_sync_sub')
-  const [copyData, setCopyData] = useState(true)
+export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDsn, pgMajor, schemaData, savedReplConfig, onReplConfigChange }: Props) {
+  const [pubName, setPubName] = useState(savedReplConfig?.pub_name ?? 'pg_sync_pub')
+  const [subName, setSubName] = useState(savedReplConfig?.sub_name ?? 'pg_sync_sub')
+  const [copyData, setCopyData] = useState(savedReplConfig?.copy_data ?? true)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState('')
   const [error, setError] = useState('')
@@ -343,6 +346,17 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
   const [showApplyModal, setShowApplyModal] = useState(false)
   const [applySteps, setApplySteps] = useState<Step[]>([])
   const [applyDone, setApplyDone] = useState(false)
+
+  // If savedReplConfig arrives later (workspace load after mount), sync it in
+  const didInit = useRef(!!savedReplConfig)
+  useEffect(() => {
+    if (savedReplConfig && !didInit.current) {
+      didInit.current = true
+      setPubName(savedReplConfig.pub_name)
+      setSubName(savedReplConfig.sub_name)
+      setCopyData(savedReplConfig.copy_data)
+    }
+  }, [savedReplConfig])
 
   const hasSelection = selectedTables.size > 0 || selectedSchemas.size > 0
 
@@ -429,10 +443,18 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       })
       setStep(2, { state: 'ok', detail: copyData ? 'Initial data copy will begin shortly' : 'Replication active (no initial copy)' })
       setResult(`Publication "${pubName}" and subscription "${subName}" created successfully.`)
+      onReplConfigChange?.({
+        pub_name: pubName, sub_name: subName, copy_data: copyData,
+        last_applied: new Date().toISOString(), last_status: 'ok', last_error: undefined,
+      })
     } catch (e: any) {
       const msg = extractError(e)
       setStep(2, { state: 'error', detail: msg })
       setError(msg)
+      onReplConfigChange?.({
+        pub_name: pubName, sub_name: subName, copy_data: copyData,
+        last_applied: new Date().toISOString(), last_status: 'error', last_error: msg,
+      })
     } finally {
       setApplyDone(true); setLoading(false)
     }
@@ -520,6 +542,23 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       )}
 
       {/* Configuration */}
+      {savedReplConfig?.last_applied && (
+        <div className={clsx('text-xs rounded px-3 py-2 flex items-center gap-2', {
+          'bg-green-950/30 border border-green-800 text-green-400': savedReplConfig.last_status === 'ok',
+          'bg-red-950/30 border border-red-800 text-red-400': savedReplConfig.last_status === 'error',
+          'bg-yellow-950/30 border border-yellow-800 text-yellow-400': savedReplConfig.last_status === 'partial',
+        })}>
+          {savedReplConfig.last_status === 'ok' ? <CheckCircle size={12} /> : <AlertTriangle size={12} />}
+          Last apply: <strong>{savedReplConfig.last_status}</strong>
+          {' · '}{new Date(savedReplConfig.last_applied).toLocaleString()}
+          {savedReplConfig.last_error && (
+            <span className="text-xs text-red-300 ml-1 truncate" title={savedReplConfig.last_error}>
+              — {savedReplConfig.last_error.slice(0, 120)}{savedReplConfig.last_error.length > 120 ? '…' : ''}
+            </span>
+          )}
+        </div>
+      )}
+
       <div className="bg-gray-900 border border-gray-700 rounded-lg p-5 space-y-4">
         <h3 className="font-semibold text-gray-300">Configuration</h3>
         <div className="grid grid-cols-2 gap-4">
