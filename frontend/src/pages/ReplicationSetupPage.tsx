@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { replicationApi, SchemaInfo, TableSchemaDiff, SchemaSyncResult } from '../api/client'
 import { ReplicationConfig } from '../utils/profiles'
 import { Spinner } from '../components/Spinner'
@@ -29,6 +29,31 @@ function formatBytes(bytes: number): string {
 function toSchemaTable(key: string): string {
   const parts = key.split('.')
   return parts.length >= 3 ? parts.slice(1).join('.') : key
+}
+
+// ── Name helpers ──────────────────────────────────────────────────────────────
+
+function randomPrefix(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
+  return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
+}
+
+function buildPubName(prefix: string, label: string): string {
+  const l = label.trim().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '')
+  return l ? `${prefix}_pg_sync_pub_${l}` : `${prefix}_pg_sync_pub`
+}
+
+function buildSubName(prefix: string, label: string): string {
+  const l = label.trim().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '')
+  return l ? `${prefix}_pg_sync_sub_${l}` : `${prefix}_pg_sync_sub`
+}
+
+/** Extract prefix + label from an existing name that follows the convention. */
+function parsePubSubName(name: string): { prefix: string; label: string } | null {
+  // Matches: {8chars}_pg_sync_{pub|sub}_{label} or {8chars}_pg_sync_{pub|sub}
+  const m = name.match(/^([a-z0-9]{8})_pg_sync_(?:pub|sub)(?:_(.+))?$/)
+  if (!m) return null
+  return { prefix: m[1], label: m[2] ?? '' }
 }
 
 function extractError(e: any): string {
@@ -339,10 +364,18 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
   // Derive the active config: activeSetupPub hint → first saved → defaults
   const activeConfig: ReplicationConfig = (activeSetupPub && replConfigs[activeSetupPub])
     ? replConfigs[activeSetupPub]
-    : Object.values(replConfigs)[0] ?? { pub_name: 'pg_sync_pub', sub_name: 'pg_sync_sub', copy_data: true }
+    : Object.values(replConfigs)[0] ?? { pub_name: '', sub_name: '', copy_data: true }
 
-  const [pubName, setPubName] = useState(activeConfig.pub_name)
-  const [subName, setSubName] = useState(activeConfig.sub_name)
+  function initFromConfig(cfg: ReplicationConfig): { prefix: string; label: string } {
+    const parsed = parsePubSubName(cfg.pub_name)
+    if (parsed) return parsed
+    // Legacy / non-standard name — keep as label, generate fresh prefix
+    return { prefix: randomPrefix(), label: cfg.pub_name.replace(/^pg_sync_pub_?/, '') }
+  }
+
+  const initParsed = initFromConfig(activeConfig)
+  const [prefix, setPrefix] = useState(initParsed.prefix || randomPrefix())
+  const [label, setLabel] = useState(initParsed.label)
   const [copyData, setCopyData] = useState(activeConfig.copy_data)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState('')
@@ -353,15 +386,25 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
   const [applySteps, setApplySteps] = useState<Step[]>([])
   const [applyDone, setApplyDone] = useState(false)
 
+  // Derived names — always consistent
+  const pubName = buildPubName(prefix, label)
+  const subName = buildSubName(prefix, label)
+
   // When activeSetupPub changes (badge click in Analysis → Setup tab), switch config
   const prevActivePub = useRef<string | undefined>(undefined)
   useEffect(() => {
     if (!activeSetupPub || activeSetupPub === prevActivePub.current) return
     prevActivePub.current = activeSetupPub
     const cfg = replConfigs[activeSetupPub]
-    setPubName(cfg?.pub_name ?? activeSetupPub)
-    setSubName(cfg?.sub_name ?? 'pg_sync_sub')
-    setCopyData(cfg?.copy_data ?? true)
+    if (cfg) {
+      const p = parsePubSubName(cfg.pub_name)
+      setPrefix(p?.prefix ?? randomPrefix())
+      setLabel(p?.label ?? '')
+      setCopyData(cfg.copy_data)
+    } else {
+      setPrefix(randomPrefix())
+      setLabel('')
+    }
     setResult(''); setError('')
   }, [activeSetupPub, replConfigs])
 
@@ -558,25 +601,33 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       {Object.keys(replConfigs).length > 1 && (
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-gray-500">Saved configs:</span>
-          {Object.values(replConfigs).map(cfg => (
-            <button
-              key={cfg.pub_name}
-              onClick={() => {
-                setPubName(cfg.pub_name)
-                setSubName(cfg.sub_name)
-                setCopyData(cfg.copy_data)
-                setResult(''); setError('')
-              }}
-              className={clsx('text-xs px-2.5 py-1 rounded border font-mono transition-colors', {
-                'border-blue-500 text-blue-300 bg-blue-900/20': pubName === cfg.pub_name,
-                'border-gray-700 text-gray-400 hover:border-gray-500': pubName !== cfg.pub_name,
-              })}
-            >
-              {cfg.pub_name}
-              {cfg.last_status === 'ok' && <CheckCircle size={10} className="inline ml-1 text-green-400" />}
-              {cfg.last_status === 'error' && <AlertTriangle size={10} className="inline ml-1 text-red-400" />}
-            </button>
-          ))}
+          {Object.values(replConfigs).map(cfg => {
+            const parsed = parsePubSubName(cfg.pub_name)
+            const display = parsed
+              ? <><span className="text-gray-600">{parsed.prefix}_</span>{parsed.label || 'pg_sync'}</>
+              : cfg.pub_name
+            return (
+              <button
+                key={cfg.pub_name}
+                onClick={() => {
+                  const p = parsePubSubName(cfg.pub_name)
+                  setPrefix(p?.prefix ?? randomPrefix())
+                  setLabel(p?.label ?? '')
+                  setCopyData(cfg.copy_data)
+                  setResult(''); setError('')
+                }}
+                className={clsx('text-xs px-2.5 py-1 rounded border font-mono transition-colors', {
+                  'border-blue-500 text-blue-300 bg-blue-900/20': pubName === cfg.pub_name,
+                  'border-gray-700 text-gray-400 hover:border-gray-500': pubName !== cfg.pub_name,
+                })}
+                title={cfg.pub_name}
+              >
+                {display}
+                {cfg.last_status === 'ok' && <CheckCircle size={10} className="inline ml-1 text-green-400" />}
+                {cfg.last_status === 'error' && <AlertTriangle size={10} className="inline ml-1 text-red-400" />}
+              </button>
+            )
+          })}
         </div>
       )}
 
@@ -600,24 +651,57 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
 
       <div className="bg-gray-900 border border-gray-700 rounded-lg p-5 space-y-4">
         <h3 className="font-semibold text-gray-300">Configuration</h3>
-        <div className="grid grid-cols-2 gap-4">
+
+        <div className="grid grid-cols-[120px_1fr] gap-3 items-end">
+          {/* Prefix */}
           <div>
-            <label className="block text-gray-400 mb-1 text-xs uppercase tracking-wider">Publication Name</label>
-            <input
-              className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-              value={pubName}
-              onChange={e => setPubName(e.target.value)}
-            />
+            <label className="block text-gray-400 mb-1 text-xs uppercase tracking-wider">
+              Prefix
+              <span className="normal-case text-gray-600 ml-1">(8 chars)</span>
+            </label>
+            <div className="flex gap-1">
+              <input
+                className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-2 text-sm font-mono focus:outline-none focus:border-blue-500"
+                value={prefix}
+                maxLength={8}
+                onChange={e => setPrefix(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8))}
+              />
+              <button
+                type="button"
+                onClick={() => setPrefix(randomPrefix())}
+                className="shrink-0 px-2 py-2 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-400 hover:text-gray-200"
+                title="Generate new random prefix"
+              >↻</button>
+            </div>
           </div>
+
+          {/* Label */}
           <div>
-            <label className="block text-gray-400 mb-1 text-xs uppercase tracking-wider">Subscription Name</label>
+            <label className="block text-gray-400 mb-1 text-xs uppercase tracking-wider">
+              Label
+              <span className="normal-case text-gray-600 ml-1">(optional — identifies this replication)</span>
+            </label>
             <input
-              className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-              value={subName}
-              onChange={e => setSubName(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:border-blue-500"
+              value={label}
+              placeholder="e.g. sasstaging_all"
+              onChange={e => setLabel(e.target.value)}
             />
           </div>
         </div>
+
+        {/* Preview */}
+        <div className="bg-gray-800/60 rounded px-3 py-2.5 space-y-1 text-xs font-mono">
+          <div className="flex items-center gap-2">
+            <span className="text-gray-500 w-24 shrink-0">Publication:</span>
+            <span className="text-blue-300">{pubName}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-gray-500 w-24 shrink-0">Subscription:</span>
+            <span className="text-green-300">{subName}</span>
+          </div>
+        </div>
+
         <label className="flex items-center gap-2 cursor-pointer text-sm">
           <input type="checkbox" checked={copyData} onChange={e => setCopyData(e.target.checked)} className="accent-blue-500" />
           <span className="text-gray-300">Copy existing data (initial sync)</span>
