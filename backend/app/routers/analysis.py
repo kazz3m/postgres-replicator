@@ -86,8 +86,9 @@ async def list_database_schema_list(database: str):
                 pg_size_pretty(COALESCE(SUM(pg_total_relation_size(c.oid)), 0)) AS total_size_pretty
             FROM pg_namespace n
             LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relkind = 'r'
-            WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-              AND n.nspname NOT LIKE 'pg_%'
+            WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast', 'pg_temp_1', 'pg_toast_temp_1')
+              AND n.nspname NOT LIKE 'pg\\_toast%'
+              AND n.nspname NOT LIKE 'pg\\_temp%'
             GROUP BY n.nspname
             ORDER BY n.nspname
         """)
