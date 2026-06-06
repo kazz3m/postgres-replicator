@@ -84,6 +84,66 @@ async def drop_publication(name: str):
     return {"status": "dropped", "name": name}
 
 
+@router.get("/publication-config")
+async def get_publication_config(name: str):
+    """
+    Load full configuration for an existing publication: tables/schemas it covers,
+    plus all linked subscriptions on destination. Used by UI to pre-fill Setup page.
+    """
+    _require_connection()
+    src_pool = await get_source_pool(state.source_dsn)
+    dest_pool = await get_dest_pool(state.dest_dsn)
+
+    async with src_pool.acquire() as src_conn:
+        version_num = await src_conn.fetchval("SELECT current_setting('server_version_num')::int")
+        major = version_num // 10000
+
+        pub = await src_conn.fetchrow(
+            "SELECT pubname, puballtables, pubinsert, pubupdate, pubdelete "
+            "FROM pg_publication WHERE pubname = $1", name
+        )
+        if not pub:
+            raise HTTPException(404, f"Publication '{name}' not found on source.")
+
+        tables = await src_conn.fetch(
+            "SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = $1 ORDER BY schemaname, tablename",
+            name,
+        )
+
+        schemas: list[str] = []
+        if major >= 15:
+            schema_rows = await src_conn.fetch("""
+                SELECT pn.nspname
+                FROM pg_publication_namespace ppn
+                JOIN pg_namespace pn ON pn.oid = ppn.pnnspid
+                JOIN pg_publication p ON p.oid = ppn.pnpubid
+                WHERE p.pubname = $1
+            """, name)
+            schemas = [r["nspname"] for r in schema_rows]
+
+    async with dest_pool.acquire() as dest_conn:
+        subs = await dest_conn.fetch(
+            "SELECT subname, subenabled, subslotname, subconninfo "
+            "FROM pg_subscription WHERE $1 = ANY(subpublications)",
+            name,
+        )
+
+    return {
+        "pub_name": name,
+        "puballtables": pub["puballtables"],
+        "tables": [f"{r['schemaname']}.{r['tablename']}" for r in tables],
+        "schemas": schemas,
+        "subscriptions": [
+            {
+                "sub_name": r["subname"],
+                "enabled": r["subenabled"],
+                "slot_name": r["subslotname"],
+            }
+            for r in subs
+        ],
+    }
+
+
 @router.get("/publications")
 async def list_publications():
     _require_connection()

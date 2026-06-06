@@ -6,6 +6,7 @@ import { ReplicationSetupPage } from './pages/ReplicationSetupPage'
 import { StatusPage } from './pages/StatusPage'
 import { connectionsApi, analysisApi, SchemaInfo } from './api/client'
 import { ConnectionProfile, ReplicationConfig, touchProfile, updateProfile } from './utils/profiles'
+import { PublicationServerConfig } from './api/client'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 
@@ -46,7 +47,10 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('analysis')
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null)
   const [initialSnapshot, setInitialSnapshot] = useState<WorkspaceSnapshot | null>(null)
-  const [savedReplConfig, setSavedReplConfig] = useState<ReplicationConfig | undefined>(undefined)
+  // Map of pub_name → ReplicationConfig persisted per-publication
+  const [replConfigs, setReplConfigs] = useState<Record<string, ReplicationConfig>>({})
+  // Publication currently active in Setup tab (pre-filled from server or saved config)
+  const [activeSetupPub, setActiveSetupPub] = useState<string | undefined>(undefined)
 
   const saved = loadSelection()
   const [selectedTables, setSelectedTables] = useState<Set<string>>(saved.tables)
@@ -95,10 +99,13 @@ export default function App() {
       persistSelection(tables, schemas)
     }
 
-    // Restore replication config (pub/sub names etc.)
-    if (profile.replication_config) {
-      setSavedReplConfig(profile.replication_config)
+    // Restore replication configs (pub_name → config map)
+    const configs: Record<string, ReplicationConfig> = { ...(profile.replication_configs ?? {}) }
+    // Migrate legacy single replication_config if present
+    if (profile.replication_config && !configs[profile.replication_config.pub_name]) {
+      configs[profile.replication_config.pub_name] = profile.replication_config
     }
+    if (Object.keys(configs).length > 0) setReplConfigs(configs)
 
     // Switch directly to Status tab to show live replication state
     setTab('status')
@@ -134,10 +141,34 @@ export default function App() {
   // ── Replication config save ───────────────────────────────────────────────
 
   function handleReplConfigChange(cfg: ReplicationConfig) {
-    setSavedReplConfig(cfg)
-    if (activeProfileId) {
-      void updateProfile(activeProfileId, { replication_config: cfg })
+    setReplConfigs(prev => {
+      const next = { ...prev, [cfg.pub_name]: cfg }
+      if (activeProfileId) {
+        void updateProfile(activeProfileId, { replication_configs: next })
+      }
+      return next
+    })
+  }
+
+  // ── Open publication in Setup tab (from Analysis badge click) ─────────────
+
+  function handleOpenPublication(pubServerConfig: PublicationServerConfig) {
+    // Merge server config with any saved config for this pub
+    const saved = replConfigs[pubServerConfig.pub_name]
+    const sub = pubServerConfig.subscriptions[0]
+    // Build selection: db prefix unknown here — use bare schema.table keys
+    // ReplicationSetupPage will use these as-is (they're already stripped of db prefix)
+    const merged: ReplicationConfig = {
+      pub_name: pubServerConfig.pub_name,
+      sub_name: saved?.sub_name ?? sub?.sub_name ?? 'pg_sync_sub',
+      copy_data: saved?.copy_data ?? true,
+      last_applied: saved?.last_applied,
+      last_status: saved?.last_status,
+      last_error: saved?.last_error,
     }
+    setReplConfigs(prev => ({ ...prev, [merged.pub_name]: merged }))
+    setActiveSetupPub(merged.pub_name)
+    setTab('setup')
   }
 
   // ── Disconnect ────────────────────────────────────────────────────────────
@@ -149,7 +180,8 @@ export default function App() {
     setPgMajor(0)
     setActiveProfileId(null)
     setInitialSnapshot(null)
-    setSavedReplConfig(undefined)
+    setReplConfigs({})
+    setActiveSetupPub(undefined)
     clearSelection()
   }
 
@@ -242,6 +274,7 @@ export default function App() {
             selectedSchemas={selectedSchemas}
             pgMajor={pgMajor}
             onSelectionChange={handleSelectionChange}
+            onOpenPublication={handleOpenPublication}
           />
         )}
         {tab === 'setup' && (
@@ -251,7 +284,8 @@ export default function App() {
             sourceDsn={sourceDsn}
             pgMajor={pgMajor}
             schemaData={schemaData ?? []}
-            savedReplConfig={savedReplConfig}
+            replConfigs={replConfigs}
+            activeSetupPub={activeSetupPub}
             onReplConfigChange={handleReplConfigChange}
           />
         )}

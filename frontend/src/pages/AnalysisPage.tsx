@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { analysisApi, DatabaseInfo, SchemaListItem, TableInfo } from '../api/client'
+import { analysisApi, replicationApi, DatabaseInfo, SchemaListItem, TableInfo, PublicationServerConfig } from '../api/client'
 import { Spinner } from '../components/Spinner'
 import { Badge } from '../components/Badge'
 import {
@@ -14,6 +14,7 @@ interface Props {
   selectedSchemas: Set<string>     // "db.schema"  (PG15+)
   pgMajor: number
   onSelectionChange: (tables: Set<string>, schemas: Set<string>) => void
+  onOpenPublication?: (config: PublicationServerConfig) => void
 }
 
 function tableKey(db: string, schema: string, table: string) { return `${db}.${schema}.${table}` }
@@ -41,13 +42,29 @@ interface SchemaNodeProps {
   selectedSchemas: Set<string>
   publishedMap: Record<string, string[]>
   onSelectionChange: (tables: Set<string>, schemas: Set<string>) => void
+  onOpenPublication?: (config: PublicationServerConfig) => void
   initiallyExpanded: boolean
 }
 
 function SchemaNode({
   dbName, schema, pgMajor, search, selectedTables, selectedSchemas,
-  publishedMap, onSelectionChange, initiallyExpanded,
+  publishedMap, onSelectionChange, onOpenPublication, initiallyExpanded,
 }: SchemaNodeProps) {
+  const [loadingPub, setLoadingPub] = useState<string | null>(null)
+
+  async function handlePubClick(pub: string, e: React.MouseEvent) {
+    e.stopPropagation()
+    if (!onOpenPublication) return
+    setLoadingPub(pub)
+    try {
+      const { data } = await replicationApi.publicationConfig(pub)
+      onOpenPublication(data)
+    } catch {
+      // ignore — badge stays static if fetch fails
+    } finally {
+      setLoadingPub(null)
+    }
+  }
   const [expanded, setExpanded] = useState(initiallyExpanded)
 
   const { data: tables, isLoading: tablesLoading } = useQuery({
@@ -207,13 +224,16 @@ function SchemaNode({
                             {table.table_name}
                           </span>
                           {inPublications.map(pub => (
-                            <span
+                            <button
                               key={pub}
-                              className="text-xs bg-amber-900/50 border border-amber-700/60 text-amber-300 rounded px-1.5 py-0.5 font-mono"
-                              title={`Already in publication: ${pub}`}
+                              onClick={e => handlePubClick(pub, e)}
+                              disabled={loadingPub === pub}
+                              className="text-xs bg-amber-900/50 border border-amber-700/60 text-amber-300 hover:bg-amber-800/60 hover:border-amber-600 rounded px-1.5 py-0.5 font-mono flex items-center gap-1 transition-colors disabled:opacity-60"
+                              title={`Click to open publication "${pub}" in Setup tab`}
                             >
+                              {loadingPub === pub && <Spinner size={2} />}
                               {pub}
-                            </span>
+                            </button>
                           ))}
                           {table.replica_identity === 'nothing' && (
                             <Badge label="NO REPLICATION" variant="red" />
@@ -245,11 +265,12 @@ interface DbNodeProps {
   selectedTables: Set<string>
   selectedSchemas: Set<string>
   onSelectionChange: (tables: Set<string>, schemas: Set<string>) => void
+  onOpenPublication?: (config: PublicationServerConfig) => void
   initiallyExpanded: boolean
 }
 
 function DbNode({
-  db, pgMajor, search, selectedTables, selectedSchemas, onSelectionChange, initiallyExpanded,
+  db, pgMajor, search, selectedTables, selectedSchemas, onSelectionChange, onOpenPublication, initiallyExpanded,
 }: DbNodeProps) {
   const qc = useQueryClient()
   const [expanded, setExpanded] = useState(initiallyExpanded)
@@ -375,6 +396,7 @@ function DbNode({
               selectedSchemas={selectedSchemas}
               publishedMap={publishedMap}
               onSelectionChange={onSelectionChange}
+              onOpenPublication={onOpenPublication}
               initiallyExpanded={false}
             />
           ))}
@@ -386,7 +408,7 @@ function DbNode({
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export function AnalysisPage({ selectedTables, selectedSchemas, pgMajor, onSelectionChange }: Props) {
+export function AnalysisPage({ selectedTables, selectedSchemas, pgMajor, onSelectionChange, onOpenPublication }: Props) {
   const [search, setSearch] = useState('')
 
   const { data: databases, isLoading, error } = useQuery({
@@ -467,6 +489,7 @@ export function AnalysisPage({ selectedTables, selectedSchemas, pgMajor, onSelec
             selectedTables={selectedTables}
             selectedSchemas={selectedSchemas}
             onSelectionChange={onSelectionChange}
+            onOpenPublication={onOpenPublication}
             initiallyExpanded={
               [...selectedTables].some(k => k.startsWith(`${db.database}.`)) ||
               [...selectedSchemas].some(k => k.startsWith(`${db.database}.`))

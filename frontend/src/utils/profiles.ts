@@ -19,6 +19,9 @@ export interface ConnectionProfile {
   last_used?: string
   selected_tables?: string[]
   selected_schemas?: string[]
+  // keyed by pub_name — each publication has independent config
+  replication_configs?: Record<string, ReplicationConfig>
+  // legacy single config — migrated on read
   replication_config?: ReplicationConfig
 }
 

@@ -24,6 +24,14 @@ export interface SchemaInfo {
 }
 export interface ReplicationTarget { schemas?: string[]; tables?: string[] }
 export interface PublicationConfig { publication_name: string; target: ReplicationTarget }
+
+export interface PublicationServerConfig {
+  pub_name: string
+  puballtables: boolean
+  tables: string[]       // "schema.table"
+  schemas: string[]      // schema names (PG15+ only)
+  subscriptions: Array<{ sub_name: string; enabled: boolean; slot_name: string | null }>
+}
 export interface SubscriptionConfig {
   subscription_name: string; publication_name: string
   source_dsn: string; copy_data: boolean
@@ -166,6 +174,8 @@ export const replicationApi = {
     api.post<SchemaSyncResult[]>('/replication/schema-sync', { publication, create_indexes: createIndexes }),
   schemaSyncByTables: (tables: string[], createIndexes: 'before' | 'after' = 'after') =>
     api.post<SchemaSyncResult[]>('/replication/schema-sync', { tables, create_indexes: createIndexes }),
+  publicationConfig: (name: string) =>
+    api.get<PublicationServerConfig>(`/replication/publication-config?name=${encodeURIComponent(name)}`),
   listIndexes: (publication: string) =>
     api.get<IndexInfo[]>(`/replication/schema-indexes?publication=${encodeURIComponent(publication)}`),
   createIndexes: (publication?: string, tables?: string[]) =>

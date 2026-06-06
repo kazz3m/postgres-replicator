@@ -13,7 +13,8 @@ interface Props {
   sourceDsn: string
   pgMajor: number
   schemaData: SchemaInfo[]
-  savedReplConfig?: ReplicationConfig
+  replConfigs?: Record<string, ReplicationConfig>   // all saved configs, keyed by pub_name
+  activeSetupPub?: string                           // pub to pre-select on mount
   onReplConfigChange?: (cfg: ReplicationConfig) => void
 }
 
@@ -334,10 +335,15 @@ function SchemaCheckPanel({ tables, onAllOk }: SchemaCheckPanelProps) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDsn, pgMajor, schemaData, savedReplConfig, onReplConfigChange }: Props) {
-  const [pubName, setPubName] = useState(savedReplConfig?.pub_name ?? 'pg_sync_pub')
-  const [subName, setSubName] = useState(savedReplConfig?.sub_name ?? 'pg_sync_sub')
-  const [copyData, setCopyData] = useState(savedReplConfig?.copy_data ?? true)
+export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDsn, pgMajor, schemaData, replConfigs = {}, activeSetupPub, onReplConfigChange }: Props) {
+  // Derive the active config: activeSetupPub hint → first saved → defaults
+  const activeConfig: ReplicationConfig = (activeSetupPub && replConfigs[activeSetupPub])
+    ? replConfigs[activeSetupPub]
+    : Object.values(replConfigs)[0] ?? { pub_name: 'pg_sync_pub', sub_name: 'pg_sync_sub', copy_data: true }
+
+  const [pubName, setPubName] = useState(activeConfig.pub_name)
+  const [subName, setSubName] = useState(activeConfig.sub_name)
+  const [copyData, setCopyData] = useState(activeConfig.copy_data)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState('')
   const [error, setError] = useState('')
@@ -347,16 +353,17 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
   const [applySteps, setApplySteps] = useState<Step[]>([])
   const [applyDone, setApplyDone] = useState(false)
 
-  // If savedReplConfig arrives later (workspace load after mount), sync it in
-  const didInit = useRef(!!savedReplConfig)
+  // When activeSetupPub changes (badge click in Analysis → Setup tab), switch config
+  const prevActivePub = useRef<string | undefined>(undefined)
   useEffect(() => {
-    if (savedReplConfig && !didInit.current) {
-      didInit.current = true
-      setPubName(savedReplConfig.pub_name)
-      setSubName(savedReplConfig.sub_name)
-      setCopyData(savedReplConfig.copy_data)
-    }
-  }, [savedReplConfig])
+    if (!activeSetupPub || activeSetupPub === prevActivePub.current) return
+    prevActivePub.current = activeSetupPub
+    const cfg = replConfigs[activeSetupPub]
+    setPubName(cfg?.pub_name ?? activeSetupPub)
+    setSubName(cfg?.sub_name ?? 'pg_sync_sub')
+    setCopyData(cfg?.copy_data ?? true)
+    setResult(''); setError('')
+  }, [activeSetupPub, replConfigs])
 
   const hasSelection = selectedTables.size > 0 || selectedSchemas.size > 0
 
@@ -541,19 +548,45 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
         </div>
       )}
 
-      {/* Configuration */}
-      {savedReplConfig?.last_applied && (
+      {/* Saved publication configs — quick switch */}
+      {Object.keys(replConfigs).length > 1 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs text-gray-500">Saved configs:</span>
+          {Object.values(replConfigs).map(cfg => (
+            <button
+              key={cfg.pub_name}
+              onClick={() => {
+                setPubName(cfg.pub_name)
+                setSubName(cfg.sub_name)
+                setCopyData(cfg.copy_data)
+                setResult(''); setError('')
+              }}
+              className={clsx('text-xs px-2.5 py-1 rounded border font-mono transition-colors', {
+                'border-blue-500 text-blue-300 bg-blue-900/20': pubName === cfg.pub_name,
+                'border-gray-700 text-gray-400 hover:border-gray-500': pubName !== cfg.pub_name,
+              })}
+            >
+              {cfg.pub_name}
+              {cfg.last_status === 'ok' && <CheckCircle size={10} className="inline ml-1 text-green-400" />}
+              {cfg.last_status === 'error' && <AlertTriangle size={10} className="inline ml-1 text-red-400" />}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Last apply status for current pub */}
+      {replConfigs[pubName]?.last_applied && (
         <div className={clsx('text-xs rounded px-3 py-2 flex items-center gap-2', {
-          'bg-green-950/30 border border-green-800 text-green-400': savedReplConfig.last_status === 'ok',
-          'bg-red-950/30 border border-red-800 text-red-400': savedReplConfig.last_status === 'error',
-          'bg-yellow-950/30 border border-yellow-800 text-yellow-400': savedReplConfig.last_status === 'partial',
+          'bg-green-950/30 border border-green-800 text-green-400': replConfigs[pubName].last_status === 'ok',
+          'bg-red-950/30 border border-red-800 text-red-400': replConfigs[pubName].last_status === 'error',
+          'bg-yellow-950/30 border border-yellow-800 text-yellow-400': replConfigs[pubName].last_status === 'partial',
         })}>
-          {savedReplConfig.last_status === 'ok' ? <CheckCircle size={12} /> : <AlertTriangle size={12} />}
-          Last apply: <strong>{savedReplConfig.last_status}</strong>
-          {' · '}{new Date(savedReplConfig.last_applied).toLocaleString()}
-          {savedReplConfig.last_error && (
-            <span className="text-xs text-red-300 ml-1 truncate" title={savedReplConfig.last_error}>
-              — {savedReplConfig.last_error.slice(0, 120)}{savedReplConfig.last_error.length > 120 ? '…' : ''}
+          {replConfigs[pubName].last_status === 'ok' ? <CheckCircle size={12} /> : <AlertTriangle size={12} />}
+          Last apply: <strong>{replConfigs[pubName].last_status}</strong>
+          {' · '}{new Date(replConfigs[pubName].last_applied!).toLocaleString()}
+          {replConfigs[pubName].last_error && (
+            <span className="text-xs text-red-300 ml-1 truncate" title={replConfigs[pubName].last_error}>
+              — {replConfigs[pubName].last_error!.slice(0, 120)}{replConfigs[pubName].last_error!.length > 120 ? '…' : ''}
             </span>
           )}
         </div>

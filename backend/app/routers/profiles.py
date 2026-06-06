@@ -38,7 +38,8 @@ class ProfileIn(BaseModel):
     last_used: Optional[str] = None
     selected_tables: Optional[List[str]] = None
     selected_schemas: Optional[List[str]] = None
-    replication_config: Optional[ReplicationConfig] = None
+    replication_config: Optional[ReplicationConfig] = None        # legacy
+    replication_configs: Optional[dict] = None                    # keyed by pub_name
 
 
 class Profile(ProfileIn):
