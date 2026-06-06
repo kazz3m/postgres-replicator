@@ -33,27 +33,43 @@ function toSchemaTable(key: string): string {
 
 // ── Name helpers ──────────────────────────────────────────────────────────────
 
+// PostgreSQL NAMEDATALEN = 64, max identifier = 63 bytes
+const PG_NAME_MAX = 63
+// Fixed overhead: "{8chars}_pub_" = 13, "{8chars}_sub_" = 13
+// Without label: "{8chars}_pub" = 12, "{8chars}_sub" = 12
+const PREFIX_LEN = 8
+const PUB_FIXED = PREFIX_LEN + 1 + 4  // "xxxxxxxx_pub_" = 13 (with separator before label)
+const SUB_FIXED = PREFIX_LEN + 1 + 4  // "xxxxxxxx_sub_" = 13
+export const LABEL_MAX = PG_NAME_MAX - PUB_FIXED  // 63 - 13 = 50
+
 function randomPrefix(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
-  return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
+  return Array.from({ length: PREFIX_LEN }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
+}
+
+function sanitizeLabel(raw: string): string {
+  return raw.trim().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '').slice(0, LABEL_MAX)
 }
 
 function buildPubName(prefix: string, label: string): string {
-  const l = label.trim().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '')
-  return l ? `${prefix}_pg_sync_pub_${l}` : `${prefix}_pg_sync_pub`
+  const l = sanitizeLabel(label)
+  return l ? `${prefix}_pub_${l}` : `${prefix}_pub`
 }
 
 function buildSubName(prefix: string, label: string): string {
-  const l = label.trim().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '')
-  return l ? `${prefix}_pg_sync_sub_${l}` : `${prefix}_pg_sync_sub`
+  const l = sanitizeLabel(label)
+  return l ? `${prefix}_sub_${l}` : `${prefix}_sub`
 }
 
-/** Extract prefix + label from an existing name that follows the convention. */
+/** Extract prefix + label from an existing name that follows either convention. */
 function parsePubSubName(name: string): { prefix: string; label: string } | null {
-  // Matches: {8chars}_pg_sync_{pub|sub}_{label} or {8chars}_pg_sync_{pub|sub}
-  const m = name.match(/^([a-z0-9]{8})_pg_sync_(?:pub|sub)(?:_(.+))?$/)
-  if (!m) return null
-  return { prefix: m[1], label: m[2] ?? '' }
+  // New format: {8chars}_{pub|sub}_{label} or {8chars}_{pub|sub}
+  const m = name.match(/^([a-z0-9]{8})_(?:pub|sub)(?:_(.+))?$/)
+  if (m) return { prefix: m[1], label: m[2] ?? '' }
+  // Legacy format: {8chars}_pg_sync_{pub|sub}_{label}
+  const legacy = name.match(/^([a-z0-9]{8})_pg_sync_(?:pub|sub)(?:_(.+))?$/)
+  if (legacy) return { prefix: legacy[1], label: legacy[2] ?? '' }
+  return null
 }
 
 function extractError(e: any): string {
@@ -369,8 +385,9 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
   function initFromConfig(cfg: ReplicationConfig): { prefix: string; label: string } {
     const parsed = parsePubSubName(cfg.pub_name)
     if (parsed) return parsed
-    // Legacy / non-standard name — keep as label, generate fresh prefix
-    return { prefix: randomPrefix(), label: cfg.pub_name.replace(/^pg_sync_pub_?/, '') }
+    // Non-standard name — use as label if short enough, otherwise generate fresh
+    const stripped = cfg.pub_name.replace(/^.*_pub_?/, '')
+    return { prefix: randomPrefix(), label: stripped.slice(0, LABEL_MAX) }
   }
 
   const initParsed = initFromConfig(activeConfig)
@@ -677,14 +694,29 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
 
           {/* Label */}
           <div>
-            <label className="block text-gray-400 mb-1 text-xs uppercase tracking-wider">
-              Label
-              <span className="normal-case text-gray-600 ml-1">(optional — identifies this replication)</span>
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-gray-400 text-xs uppercase tracking-wider">
+                Label
+                <span className="normal-case text-gray-600 ml-1">(optional)</span>
+              </label>
+              <span className={clsx('text-xs tabular-nums', {
+                'text-gray-600': sanitizeLabel(label).length <= LABEL_MAX * 0.8,
+                'text-yellow-500': sanitizeLabel(label).length > LABEL_MAX * 0.8 && sanitizeLabel(label).length < LABEL_MAX,
+                'text-red-500': sanitizeLabel(label).length >= LABEL_MAX,
+              })}>
+                {sanitizeLabel(label).length}/{LABEL_MAX}
+              </span>
+            </div>
             <input
-              className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:border-blue-500"
+              className={clsx(
+                'w-full bg-gray-800 border rounded px-3 py-2 text-sm font-mono focus:outline-none',
+                sanitizeLabel(label).length >= LABEL_MAX
+                  ? 'border-red-600 focus:border-red-500'
+                  : 'border-gray-600 focus:border-blue-500'
+              )}
               value={label}
               placeholder="e.g. sasstaging_all"
+              maxLength={LABEL_MAX + 20}  // allow typing past limit to show counter, sanitize on use
               onChange={e => setLabel(e.target.value)}
             />
           </div>
