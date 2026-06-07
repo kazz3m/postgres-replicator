@@ -485,9 +485,9 @@ async def copy_progress():
                 n.nspname                            AS schema_name,
                 c.relname                            AS table_name,
                 sr.srsubstate                        AS sub_state,
-                COALESCE(cp.tuples_done,    0)       AS tuples_done,
-                COALESCE(cp.tuples_total,   0)       AS tuples_total,
-                COALESCE(cp.bytes_processed,0)       AS bytes_processed,
+                COALESCE(cp.tuples_processed, 0)          AS tuples_done,
+                COALESCE(NULLIF(c.reltuples::bigint, -1), 0) AS tuples_total,
+                COALESCE(cp.bytes_processed, 0)           AS bytes_processed,
                 COALESCE(pg_relation_size(c.oid), 0) AS table_size_bytes
             FROM pg_subscription_rel sr
             JOIN pg_class     c  ON c.oid  = sr.srrelid
