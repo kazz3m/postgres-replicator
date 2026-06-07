@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from .routers import connections, analysis, replication, profiles
+from .routers import connections, analysis, replication, profiles, roles
 from .db import close_pools
 
 
@@ -25,6 +25,7 @@ app.include_router(connections.router)
 app.include_router(analysis.router)
 app.include_router(replication.router)
 app.include_router(profiles.router)
+app.include_router(roles.router)
 
 
 @app.get("/health")

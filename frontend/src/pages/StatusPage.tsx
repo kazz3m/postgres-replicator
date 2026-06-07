@@ -8,6 +8,7 @@ import { SequenceSyncPanel } from '../components/SequenceSyncPanel'
 import { SchemaSyncPanel } from '../components/SchemaSyncPanel'
 import { AddTableModal } from '../components/AddTableModal'
 import { IndexSyncPanel } from '../components/IndexSyncPanel'
+import { RolesSyncPanel } from '../components/RolesSyncPanel'
 import { RefreshCw, AlertTriangle, Square, PlusCircle, Layers } from 'lucide-react'
 import type { WorkspaceSnapshot } from './WorkspacePicker'
 
@@ -316,6 +317,9 @@ export function StatusPage({ initialSnapshot }: Props) {
           </>
         )}
       </div>
+
+      {/* Roles & Grants migration — always available */}
+      <RolesSyncPanel />
 
       {/* Schema + Sequence panels — shown when a publication is selected */}
       {schemaPub && (

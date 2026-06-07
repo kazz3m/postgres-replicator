@@ -1,0 +1,384 @@
+"""
+Roles & grants migration — pg_dumpall --globals-only compatible.
+
+Generates CREATE ROLE / ALTER ROLE / GRANT statements from source cluster
+and applies them on the destination cluster.  Mirrors the SQL queries that
+pg_dumpall uses internally so the output is drop-in compatible.
+"""
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional
+import asyncpg
+
+from ..db import get_source_pool, get_dest_pool
+from .. import state
+
+router = APIRouter(prefix="/api/roles", tags=["roles"])
+
+
+# ── Models ─────────────────────────────────────────────────────────────────────
+
+class RoleStatement(BaseModel):
+    sql: str
+    kind: str          # create_role | alter_role | grant_membership | grant_schema | grant_table | grant_default | comment
+    role: str          # primary role name this statement concerns
+    exists_on_dest: bool = False   # True → role already present; statement is ALTER, not CREATE
+    warning: Optional[str] = None  # e.g. "password unavailable on Cloud SQL"
+
+
+class RolesDiffResponse(BaseModel):
+    statements: List[RoleStatement]
+    skipped_system_roles: List[str]
+    password_available: bool   # False on Cloud SQL / RDS
+
+
+class RolesApplyRequest(BaseModel):
+    statements: List[str]   # raw SQL strings to execute on dest
+    stop_on_error: bool = False
+
+
+class StatementResult(BaseModel):
+    sql: str
+    ok: bool
+    error: Optional[str] = None
+
+
+class RolesApplyResponse(BaseModel):
+    results: List[StatementResult]
+    applied: int
+    failed: int
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _q(s: str) -> str:
+    """Quote a PostgreSQL identifier."""
+    return '"' + s.replace('"', '""') + '"'
+
+
+def _role_options(row: dict, password_available: bool) -> str:
+    """Build ALTER ROLE ... WITH ... option string from pg_authid row."""
+    parts = []
+    parts.append("SUPERUSER" if row["rolsuper"] else "NOSUPERUSER")
+    parts.append("INHERIT" if row["rolinherit"] else "NOINHERIT")
+    parts.append("CREATEROLE" if row["rolcreaterole"] else "NOCREATEROLE")
+    parts.append("CREATEDB" if row["rolcreatedb"] else "NOCREATEDB")
+    parts.append("LOGIN" if row["rolcanlogin"] else "NOLOGIN")
+    parts.append("REPLICATION" if row["rolreplication"] else "NOREPLICATION")
+    parts.append("BYPASSRLS" if row["rolbypassrls"] else "NOBYPASSRLS")
+    if row["rolconnlimit"] != -1:
+        parts.append(f"CONNECTION LIMIT {row['rolconnlimit']}")
+    if row["rolvaliduntil"] is not None:
+        parts.append(f"VALID UNTIL '{row['rolvaliduntil']}'")
+    return " ".join(parts)
+
+
+def _unpack_acl(acl_string: str):
+    """
+    Parse one entry from an ACL array element.
+    Format:  grantee=privs/grantor
+    Returns (grantee, privs, grantor) — grantee '' means PUBLIC.
+    """
+    if "=" not in acl_string:
+        return None
+    grantee, rest = acl_string.split("=", 1)
+    privs, grantor = rest.split("/", 1) if "/" in rest else (rest, "")
+    return grantee or "PUBLIC", privs, grantor
+
+
+_SCHEMA_PRIV_MAP = {"U": "USAGE", "C": "CREATE"}
+_TABLE_PRIV_MAP  = {
+    "r": "SELECT", "a": "INSERT", "w": "UPDATE", "d": "DELETE",
+    "D": "TRUNCATE", "x": "REFERENCES", "t": "TRIGGER",
+}
+
+
+# ── Globals diff (roles + memberships) ────────────────────────────────────────
+
+async def _globals_statements(
+    src_conn: asyncpg.Connection,
+    dest_roles: set,
+    password_available: bool,
+) -> List[RoleStatement]:
+    stmts: List[RoleStatement] = []
+
+    # --- Role definitions (mirrors pg_dumpall globals section) ---
+    rows = await src_conn.fetch("""
+        SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb,
+               rolcanlogin, rolreplication, rolbypassrls, rolconnlimit,
+               rolpassword, rolvaliduntil
+        FROM pg_authid
+        WHERE rolname NOT LIKE 'pg\_%'
+          AND rolname NOT IN ('replication')
+        ORDER BY rolname
+    """)
+
+    for row in rows:
+        name = row["rolname"]
+        exists = name in dest_roles
+        options = _role_options(dict(row), password_available)
+
+        if not exists:
+            stmts.append(RoleStatement(
+                sql=f"CREATE ROLE {_q(name)};",
+                kind="create_role", role=name, exists_on_dest=False,
+            ))
+
+        stmts.append(RoleStatement(
+            sql=f"ALTER ROLE {_q(name)} WITH {options};",
+            kind="alter_role", role=name, exists_on_dest=exists,
+        ))
+
+        # Password — only if available and role can login
+        pwd = row["rolpassword"]
+        if pwd and row["rolcanlogin"]:
+            if password_available:
+                stmts.append(RoleStatement(
+                    sql=f"ALTER ROLE {_q(name)} WITH PASSWORD '{pwd}';",
+                    kind="alter_role", role=name, exists_on_dest=exists,
+                ))
+            else:
+                stmts.append(RoleStatement(
+                    sql=f"-- ALTER ROLE {_q(name)} WITH PASSWORD '...';  -- password hash unavailable",
+                    kind="comment", role=name, exists_on_dest=exists,
+                    warning="Password hash not readable (Cloud SQL / RDS). Set password manually.",
+                ))
+
+    # --- Role memberships ---
+    members = await src_conn.fetch("""
+        SELECT ur.rolname AS role, um.rolname AS member,
+               m.admin_option
+        FROM pg_auth_members m
+        JOIN pg_authid ur ON ur.oid = m.roleid
+        JOIN pg_authid um ON um.oid = m.member
+        WHERE ur.rolname NOT LIKE 'pg\_%'
+          AND um.rolname NOT LIKE 'pg\_%'
+        ORDER BY ur.rolname, um.rolname
+    """)
+    for row in members:
+        admin = " WITH ADMIN OPTION" if row["admin_option"] else ""
+        stmts.append(RoleStatement(
+            sql=f"GRANT {_q(row['role'])} TO {_q(row['member'])}{admin};",
+            kind="grant_membership",
+            role=row["role"],
+            exists_on_dest=row["role"] in dest_roles,
+        ))
+
+    return stmts
+
+
+# ── Per-database grants (schema + table + default privileges) ─────────────────
+
+async def _db_grant_statements(
+    src_dsn: str,
+    database: str,
+    non_system_roles: set,
+) -> List[RoleStatement]:
+    stmts: List[RoleStatement] = []
+
+    import urllib.parse
+    parsed = urllib.parse.urlparse(src_dsn)
+    db_dsn = urllib.parse.urlunparse(parsed._replace(path="/" + urllib.parse.quote(database, safe="")))
+
+    try:
+        conn = await asyncpg.connect(db_dsn)
+    except Exception:
+        return stmts  # skip unreachable databases silently
+
+    try:
+        # Schema grants — unpack nspacl
+        schemas = await conn.fetch("""
+            SELECT nspname, nspacl
+            FROM pg_namespace
+            WHERE nspname NOT LIKE 'pg\\_toast%'
+              AND nspname NOT LIKE 'pg\\_temp%'
+              AND nspname <> 'information_schema'
+            ORDER BY nspname
+        """)
+        for row in schemas:
+            if not row["nspacl"]:
+                continue
+            for entry in row["nspacl"]:
+                parsed_acl = _unpack_acl(entry)
+                if not parsed_acl:
+                    continue
+                grantee, privs, _ = parsed_acl
+                if grantee != "PUBLIC" and grantee not in non_system_roles:
+                    continue
+                grants = [_SCHEMA_PRIV_MAP[c] for c in privs if c in _SCHEMA_PRIV_MAP]
+                if not grants:
+                    continue
+                grantee_sql = "PUBLIC" if grantee == "PUBLIC" else _q(grantee)
+                stmts.append(RoleStatement(
+                    sql=f"GRANT {', '.join(grants)} ON SCHEMA {_q(row['nspname'])} TO {grantee_sql};",
+                    kind="grant_schema",
+                    role=grantee if grantee != "PUBLIC" else "__public__",
+                ))
+
+        # Table grants — information_schema view (standard, no superuser needed)
+        table_grants = await conn.fetch("""
+            SELECT grantee, table_schema, table_name, privilege_type, is_grantable
+            FROM information_schema.role_table_grants
+            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+              AND grantor <> grantee
+            ORDER BY grantee, table_schema, table_name, privilege_type
+        """)
+        # Collapse per (grantee, table) for compact GRANT statements
+        from collections import defaultdict
+        collapsed: dict = defaultdict(lambda: {"privs": [], "grantable": False})
+        for row in table_grants:
+            key = (row["grantee"], row["table_schema"], row["table_name"])
+            collapsed[key]["privs"].append(row["privilege_type"])
+            if row["is_grantable"] == "YES":
+                collapsed[key]["grantable"] = True
+
+        for (grantee, schema, table), info in collapsed.items():
+            if grantee not in non_system_roles and grantee != "PUBLIC":
+                continue
+            go = " WITH GRANT OPTION" if info["grantable"] else ""
+            grantee_sql = "PUBLIC" if grantee == "PUBLIC" else _q(grantee)
+            stmts.append(RoleStatement(
+                sql=f"GRANT {', '.join(sorted(info['privs']))} ON TABLE {_q(schema)}.{_q(table)} TO {grantee_sql}{go};",
+                kind="grant_table",
+                role=grantee if grantee != "PUBLIC" else "__public__",
+            ))
+
+        # Default privileges — pg_default_acl
+        def_acls = await conn.fetch("""
+            SELECT r.rolname AS owner,
+                   n.nspname AS schema,
+                   d.defaclobjtype,
+                   d.defaclacl
+            FROM pg_default_acl d
+            JOIN pg_authid r ON r.oid = d.defaclrole
+            LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace
+            ORDER BY owner, schema, defaclobjtype
+        """)
+        obj_type_map = {"r": "TABLES", "S": "SEQUENCES", "f": "FUNCTIONS", "T": "TYPES", "n": "SCHEMAS"}
+        for row in def_acls:
+            obj_type = obj_type_map.get(row["defaclobjtype"], row["defaclobjtype"])
+            schema_clause = f" IN SCHEMA {_q(row['schema'])}" if row["schema"] else ""
+            for entry in (row["defaclacl"] or []):
+                parsed_acl = _unpack_acl(entry)
+                if not parsed_acl:
+                    continue
+                grantee, privs, _ = parsed_acl
+                if grantee != "PUBLIC" and grantee not in non_system_roles:
+                    continue
+                if obj_type == "TABLES":
+                    grants = [_TABLE_PRIV_MAP[c] for c in privs if c in _TABLE_PRIV_MAP]
+                elif obj_type == "SEQUENCES":
+                    seq_map = {"r": "SELECT", "w": "UPDATE", "U": "USAGE"}
+                    grants = [seq_map[c] for c in privs if c in seq_map]
+                else:
+                    grants = list(privs)  # raw for functions/types
+                if not grants:
+                    continue
+                grantee_sql = "PUBLIC" if grantee == "PUBLIC" else _q(grantee)
+                stmts.append(RoleStatement(
+                    sql=(f"ALTER DEFAULT PRIVILEGES FOR ROLE {_q(row['owner'])}"
+                         f"{schema_clause} GRANT {', '.join(grants)} ON {obj_type} TO {grantee_sql};"),
+                    kind="grant_default",
+                    role=grantee if grantee != "PUBLIC" else "__public__",
+                ))
+    finally:
+        await conn.close()
+
+    return stmts
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@router.get("/diff", response_model=RolesDiffResponse)
+async def roles_diff(include_databases: bool = True):
+    """
+    Generate pg_dumpall-compatible DDL statements to migrate roles and grants
+    from source to destination.  Statements are returned for preview/editing
+    before applying.
+    """
+    if not state.source_dsn:
+        raise HTTPException(400, "Not connected.")
+
+    src_pool = await get_source_pool(state.source_dsn)
+    dest_pool = await get_dest_pool(state.dest_dsn)
+
+    async with src_pool.acquire() as src_conn, dest_pool.acquire() as dest_conn:
+        # Check if password hashes are readable (superuser-only column)
+        try:
+            await src_conn.fetchval("SELECT rolpassword FROM pg_authid LIMIT 1")
+            password_available = True
+        except asyncpg.InsufficientPrivilegeError:
+            password_available = False
+
+        # Roles already present on destination
+        dest_role_rows = await dest_conn.fetch(
+            "SELECT rolname FROM pg_roles WHERE rolname NOT LIKE 'pg\\_%'"
+        )
+        dest_roles = {r["rolname"] for r in dest_role_rows}
+
+        # Roles present on source (non-system) — for grant filtering
+        src_role_rows = await src_conn.fetch(
+            "SELECT rolname FROM pg_authid WHERE rolname NOT LIKE 'pg\\_%'"
+        )
+        non_system_roles = {r["rolname"] for r in src_role_rows}
+
+        skipped = [r for r in dest_roles if r.startswith("pg_")]
+
+        stmts = await _globals_statements(src_conn, dest_roles, password_available)
+
+    # Per-database grants — use separate connections outside the pool
+    if include_databases:
+        db_conn = await asyncpg.connect(state.source_dsn)
+        try:
+            dbs = await db_conn.fetch("""
+                SELECT datname FROM pg_database
+                WHERE datistemplate = false AND datname NOT IN ('postgres')
+                ORDER BY datname
+            """)
+        finally:
+            await db_conn.close()
+
+        for row in dbs:
+            db_stmts = await _db_grant_statements(
+                state.source_dsn, row["datname"], non_system_roles
+            )
+            stmts.extend(db_stmts)
+
+    return RolesDiffResponse(
+        statements=stmts,
+        skipped_system_roles=skipped,
+        password_available=password_available,
+    )
+
+
+@router.post("/apply", response_model=RolesApplyResponse)
+async def roles_apply(body: RolesApplyRequest):
+    """
+    Execute the provided SQL statements on the destination cluster.
+    Statements that are comments (start with --) are skipped automatically.
+    """
+    if not state.dest_dsn:
+        raise HTTPException(400, "Not connected.")
+
+    dest_pool = await get_dest_pool(state.dest_dsn)
+    results: List[StatementResult] = []
+    applied = 0
+    failed = 0
+
+    async with dest_pool.acquire() as conn:
+        for sql in body.statements:
+            stripped = sql.strip()
+            if not stripped or stripped.startswith("--"):
+                continue
+            try:
+                await conn.execute(stripped)
+                results.append(StatementResult(sql=sql, ok=True))
+                applied += 1
+            except Exception as e:
+                err = str(e)
+                results.append(StatementResult(sql=sql, ok=False, error=err))
+                failed += 1
+                if body.stop_on_error:
+                    break
+
+    return RolesApplyResponse(results=results, applied=applied, failed=failed)

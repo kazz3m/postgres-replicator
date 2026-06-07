@@ -146,6 +146,39 @@ export const analysisApi = {
     api.get<Record<string, string[]>>(`/analysis/published-tables?database=${encodeURIComponent(database)}`),
 }
 
+export interface RoleStatement {
+  sql: string
+  kind: 'create_role' | 'alter_role' | 'grant_membership' | 'grant_schema' | 'grant_table' | 'grant_default' | 'comment'
+  role: string
+  exists_on_dest: boolean
+  warning?: string
+}
+
+export interface RolesDiffResponse {
+  statements: RoleStatement[]
+  skipped_system_roles: string[]
+  password_available: boolean
+}
+
+export interface StatementResult {
+  sql: string
+  ok: boolean
+  error?: string
+}
+
+export interface RolesApplyResponse {
+  results: StatementResult[]
+  applied: number
+  failed: number
+}
+
+export const rolesApi = {
+  diff: (includeDatabases = true) =>
+    api.get<RolesDiffResponse>(`/roles/diff?include_databases=${includeDatabases}`),
+  apply: (statements: string[], stopOnError = false) =>
+    api.post<RolesApplyResponse>('/roles/apply', { statements, stop_on_error: stopOnError }),
+}
+
 export const replicationApi = {
   createPublication: (cfg: PublicationConfig) => api.post('/replication/publication', cfg),
   dropPublication: (name: string) => api.delete(`/replication/publication/${name}`),
