@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { replicationApi, TableReplicationProgress, ReplicationSlotInfo, SubscriptionInfo } from '../api/client'
+import { replicationApi, ReplicationSlotInfo, SubscriptionInfo, TableCopyProgress, CopyProgressResponse } from '../api/client'
 import { Badge } from '../components/Badge'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { Spinner } from '../components/Spinner'
@@ -9,19 +9,36 @@ import { SchemaSyncPanel } from '../components/SchemaSyncPanel'
 import { AddTableModal } from '../components/AddTableModal'
 import { IndexSyncPanel } from '../components/IndexSyncPanel'
 import { RolesSyncPanel } from '../components/RolesSyncPanel'
-import { RefreshCw, AlertTriangle, Square, PlusCircle, Layers } from 'lucide-react'
+import { RefreshCw, AlertTriangle, Square, PlusCircle, Layers, Database } from 'lucide-react'
+import clsx from 'clsx'
 import type { WorkspaceSnapshot } from './WorkspacePicker'
 
-function ProgressBar({ pct }: { pct: number | null | undefined }) {
+function ProgressBar({ pct, color = 'blue' }: { pct: number | null | undefined; color?: string }) {
   const v = pct ?? 0
+  const colorClass = color === 'green' ? 'bg-green-500' : color === 'yellow' ? 'bg-yellow-500' : 'bg-blue-500'
   return (
-    <div className="w-full bg-gray-800 rounded-full h-1.5">
+    <div className="w-full bg-gray-800 rounded-full h-2">
       <div
-        className="h-1.5 rounded-full bg-blue-500 transition-all"
+        className={`h-2 rounded-full transition-all ${colorClass}`}
         style={{ width: `${Math.min(100, v)}%` }}
       />
     </div>
   )
+}
+
+function fmtBytes(b: number): string {
+  if (b <= 0) return '0 B'
+  if (b < 1024) return `${b} B`
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
+  if (b < 1024 ** 3) return `${(b / 1024 ** 2).toFixed(1)} MB`
+  if (b < 1024 ** 4) return `${(b / 1024 ** 3).toFixed(2)} GB`
+  return `${(b / 1024 ** 4).toFixed(2)} TB`
+}
+
+function lagColor(bytes: number): string {
+  if (bytes > 1024 ** 3) return 'text-red-400'       // > 1 GB
+  if (bytes > 100 * 1024 * 1024) return 'text-yellow-400'  // > 100 MB
+  return 'text-green-400'
 }
 
 function statusVariant(s: string): 'green' | 'yellow' | 'blue' | 'red' | 'gray' {
@@ -61,7 +78,17 @@ export function StatusPage({ initialSnapshot }: Props) {
     initialData: initialSnapshot?.progress,
   })
 
-  const { data: slots, refetch: refetchSlots, isLoading: slotsLoading } = useQuery({
+  const { data: copyData, refetch: refetchCopy } = useQuery<CopyProgressResponse>({
+    queryKey: ['copy-progress'],
+    queryFn: () => replicationApi.copyProgress().then(r => r.data),
+    // Poll faster when copy is active
+    refetchInterval: (query) =>
+      (query.state.data as CopyProgressResponse | undefined)?.copying_active
+        ? 3000
+        : interval * 1000,
+  })
+
+  const { data: slots, refetch: refetchSlots } = useQuery({
     queryKey: ['slots'],
     queryFn: () => replicationApi.listSlots().then(r => r.data),
     refetchInterval: interval * 1000,
@@ -133,7 +160,7 @@ export function StatusPage({ initialSnapshot }: Props) {
     }
   }
 
-  function refetchAll() { refetchProgress(); refetchSlots(); refetchSubs() }
+  function refetchAll() { refetchProgress(); refetchCopy(); refetchSlots(); refetchSubs() }
 
   return (
     <div className="p-6 space-y-6">
@@ -175,37 +202,123 @@ export function StatusPage({ initialSnapshot }: Props) {
         </div>
       )}
 
-      {/* Table progress */}
+      {/* Copy + WAL progress — rich view */}
       <div className="bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-700 font-semibold text-gray-300">Table Replication Progress</div>
-        {progressLoading ? (
-          <div className="p-4 flex items-center gap-2"><Spinner /> Loading...</div>
-        ) : !progress?.length ? (
+        <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
+          <span className="font-semibold text-gray-300 flex-1">Replication Progress</span>
+          {copyData?.copying_active && (
+            <span className="flex items-center gap-1.5 text-xs text-blue-400 animate-pulse">
+              <span className="w-2 h-2 rounded-full bg-blue-400 inline-block" />
+              Initial copy in progress
+            </span>
+          )}
+        </div>
+
+        {/* WAL lag row — always visible when slots exist */}
+        {copyData?.wal_slots && copyData.wal_slots.length > 0 && (
+          <div className="px-4 py-3 border-b border-gray-800 flex flex-wrap gap-4">
+            {copyData.wal_slots.map(slot => {
+              const lag = slot.lag_bytes ?? 0
+              return (
+                <div key={slot.slot_name} className="flex items-center gap-3 text-xs">
+                  <Database size={12} className="text-gray-500 shrink-0" />
+                  <span className="font-mono text-gray-400">{slot.slot_name}</span>
+                  <Badge label={slot.active ? 'active' : 'inactive'} variant={slot.active ? 'green' : 'gray'} />
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-gray-500">WAL lag:</span>
+                    <span className={clsx('font-mono font-semibold', lagColor(lag))}>
+                      {fmtBytes(lag)}
+                    </span>
+                    {lag > 0 && (
+                      <div className="w-24">
+                        <ProgressBar
+                          pct={lag > 0 ? Math.min(100, (lag / (1024 ** 3)) * 100) : 0}
+                          color={lag > 1024 ** 3 ? 'yellow' : lag > 100 * 1024 * 1024 ? 'yellow' : 'green'}
+                        />
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => setConfirmDropSlot(slot.slot_name)}
+                    disabled={actionLoading || slot.active}
+                    className="text-xs text-red-500/60 hover:text-red-400 border border-red-900/50 hover:border-red-800 px-1.5 py-0.5 rounded disabled:opacity-30 transition-colors"
+                    title={slot.active ? 'Cannot drop active slot' : 'Drop slot'}
+                  >
+                    Drop
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Per-table copy progress */}
+        {!copyData?.tables?.length ? (
           <div className="p-4 text-gray-500 text-sm">No tables tracked yet. Set up replication first.</div>
         ) : (
           <table className="w-full text-xs">
             <thead>
               <tr className="text-gray-500 border-b border-gray-700">
-                <th className="px-4 py-2 text-left">Schema</th>
-                <th className="px-4 py-2 text-left">Table</th>
+                <th className="px-4 py-2 text-left">Schema.Table</th>
                 <th className="px-4 py-2 text-left">Status</th>
-                <th className="px-4 py-2 text-right">Rows</th>
-                <th className="px-4 py-2 text-left w-32">Progress</th>
+                <th className="px-4 py-2 text-right">Table size</th>
+                <th className="px-4 py-2 text-right">Rows copied</th>
+                <th className="px-4 py-2 text-left w-48">Copy progress</th>
               </tr>
             </thead>
             <tbody>
-              {progress.map((row: TableReplicationProgress) => (
-                <tr key={`${row.schema_name}.${row.table_name}`} className="border-b border-gray-800 hover:bg-gray-800">
-                  <td className="px-4 py-2 text-gray-400">{row.schema_name}</td>
-                  <td className="px-4 py-2">{row.table_name}</td>
-                  <td className="px-4 py-2"><Badge label={row.status} variant={statusVariant(row.status)} /></td>
-                  <td className="px-4 py-2 text-right text-gray-400">{row.total_rows?.toLocaleString() ?? '–'}</td>
-                  <td className="px-4 py-2">
-                    <ProgressBar pct={row.progress_pct} />
-                    <span className="text-gray-500">{row.progress_pct != null ? `${row.progress_pct.toFixed(0)}%` : '–'}</span>
-                  </td>
-                </tr>
-              ))}
+              {copyData.tables.map((row: TableCopyProgress) => {
+                const isCopying = row.sub_state === 'd'
+                const isDone = ['f', 's', 'r'].includes(row.sub_state)
+                return (
+                  <tr
+                    key={`${row.schema_name}.${row.table_name}`}
+                    className={clsx('border-b border-gray-800', {
+                      'bg-blue-950/20': isCopying,
+                      'hover:bg-gray-800': !isCopying,
+                    })}
+                  >
+                    <td className="px-4 py-2 font-mono">
+                      <span className="text-gray-500">{row.schema_name}.</span>
+                      <span>{row.table_name}</span>
+                    </td>
+                    <td className="px-4 py-2">
+                      <Badge label={row.status} variant={statusVariant(row.status)} />
+                    </td>
+                    <td className="px-4 py-2 text-right text-gray-400">
+                      {fmtBytes(row.table_size_bytes)}
+                    </td>
+                    <td className="px-4 py-2 text-right text-gray-400">
+                      {isCopying && row.tuples_total != null && row.tuples_total > 0
+                        ? <><span className="text-blue-300">{(row.tuples_done ?? 0).toLocaleString()}</span>{' / '}{row.tuples_total.toLocaleString()}</>
+                        : isDone
+                          ? <span className="text-green-500">done</span>
+                          : '–'
+                      }
+                    </td>
+                    <td className="px-4 py-2">
+                      {isCopying ? (
+                        <div className="space-y-1">
+                          <ProgressBar pct={row.copy_pct} color="blue" />
+                          <div className="flex justify-between text-gray-500">
+                            <span>{row.copy_pct != null ? `${row.copy_pct.toFixed(1)}%` : 'estimating...'}</span>
+                            {row.bytes_processed != null && row.bytes_processed > 0 && (
+                              <span>{fmtBytes(row.bytes_processed)} processed</span>
+                            )}
+                          </div>
+                        </div>
+                      ) : isDone ? (
+                        <div className="space-y-1">
+                          <ProgressBar pct={100} color="green" />
+                          <span className="text-green-600 text-xs">100%</span>
+                        </div>
+                      ) : (
+                        <span className="text-gray-600">–</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         )}
@@ -334,57 +447,6 @@ export function StatusPage({ initialSnapshot }: Props) {
         <IndexSyncPanel publication={indexPub} />
       )}
 
-      {/* Slots */}
-      <div className="bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-700 font-semibold text-gray-300">Replication Slots (Source)</div>
-        {slotsLoading ? (
-          <div className="p-4 flex items-center gap-2"><Spinner /> Loading...</div>
-        ) : !slots?.length ? (
-          <div className="p-4 text-gray-500 text-sm">No replication slots found.</div>
-        ) : (
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-gray-500 border-b border-gray-700">
-                <th className="px-4 py-2 text-left">Slot</th>
-                <th className="px-4 py-2 text-left">Plugin</th>
-                <th className="px-4 py-2 text-left">Active</th>
-                <th className="px-4 py-2 text-right">Lag (bytes)</th>
-                <th className="px-4 py-2 text-left">Flush LSN</th>
-                <th className="px-4 py-2 text-left">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {slots?.map((slot: ReplicationSlotInfo) => (
-                <tr key={slot.slot_name} className="border-b border-gray-800 hover:bg-gray-800">
-                  <td className="px-4 py-2 font-semibold">{slot.slot_name}</td>
-                  <td className="px-4 py-2 text-gray-400">{slot.plugin}</td>
-                  <td className="px-4 py-2">
-                    <Badge label={slot.active ? 'active' : 'inactive'} variant={slot.active ? 'green' : 'gray'} />
-                  </td>
-                  <td className="px-4 py-2 text-right text-gray-400">
-                    {slot.lag_bytes != null
-                      ? slot.lag_bytes > 1_000_000
-                        ? <span className="text-yellow-400">{(slot.lag_bytes / 1_000_000).toFixed(1)} MB</span>
-                        : `${slot.lag_bytes.toLocaleString()} B`
-                      : '–'}
-                  </td>
-                  <td className="px-4 py-2 text-gray-400 font-mono">{slot.confirmed_flush_lsn || '–'}</td>
-                  <td className="px-4 py-2">
-                    <button
-                      onClick={() => setConfirmDropSlot(slot.slot_name)}
-                      disabled={actionLoading || slot.active}
-                      className="text-xs text-red-400 hover:text-red-300 border border-red-800 px-2 py-1 rounded disabled:opacity-40"
-                      title={slot.active ? 'Cannot drop active slot' : 'Drop slot'}
-                    >
-                      Drop
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
 
       {/* Add table modal */}
       {addTablePub && (

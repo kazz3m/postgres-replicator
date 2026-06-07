@@ -146,6 +146,24 @@ export const analysisApi = {
     api.get<Record<string, string[]>>(`/analysis/published-tables?database=${encodeURIComponent(database)}`),
 }
 
+export interface TableCopyProgress {
+  schema_name: string
+  table_name: string
+  sub_state: string       // i/d/f/s/r/e
+  status: string          // initializing/copying/synced/ready/error
+  tuples_done: number | null
+  tuples_total: number | null
+  bytes_processed: number | null
+  table_size_bytes: number
+  copy_pct: number | null
+}
+
+export interface CopyProgressResponse {
+  tables: TableCopyProgress[]
+  wal_slots: ReplicationSlotInfo[]
+  copying_active: boolean
+}
+
 export interface RoleStatement {
   sql: string
   kind: 'create_role' | 'alter_role' | 'grant_membership' | 'grant_schema' | 'grant_table' | 'grant_default' | 'comment'
@@ -209,6 +227,8 @@ export const replicationApi = {
     api.post<SchemaSyncResult[]>('/replication/schema-sync', { publication, create_indexes: createIndexes }),
   schemaSyncByTables: (tables: string[], createIndexes: 'before' | 'after' = 'after') =>
     api.post<SchemaSyncResult[]>('/replication/schema-sync', { tables, create_indexes: createIndexes }),
+  copyProgress: () =>
+    api.get<CopyProgressResponse>('/replication/copy-progress'),
   publicationConfig: (name: string) =>
     api.get<PublicationServerConfig>(`/replication/publication-config?name=${encodeURIComponent(name)}`),
   listIndexes: (publication: string) =>

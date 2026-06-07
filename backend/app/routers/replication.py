@@ -5,7 +5,7 @@ from ..models.schemas import (
     PublicationConfig, SubscriptionConfig, ReplicationStatus,
     ReplicationSlotInfo, SubscriptionStatus, TableReplicationProgress,
     SequenceInfo, TableSchemaDiff, ColumnDiff, SchemaSyncResult,
-    IndexInfo, IndexCreateResult,
+    IndexInfo, IndexCreateResult, TableCopyProgress, CopyProgressResponse,
 )
 from ..db import get_source_pool, get_dest_pool
 from .. import state
@@ -442,6 +442,108 @@ async def replication_progress():
         total_rows=max(0, r["total_rows"]),
         progress_pct=100.0 if r["status"] in ("synced", "ready") else None,
     ) for r in rows]
+
+
+# ── Copy + WAL progress ───────────────────────────────────────────────────────
+
+@router.get("/copy-progress", response_model=CopyProgressResponse)
+async def copy_progress():
+    """
+    Rich progress endpoint combining:
+    - pg_subscription_rel state per table (from destination)
+    - pg_stat_progress_copy live COPY stats (from destination, PG 14+)
+    - pg_class table sizes (from destination)
+    - pg_replication_slots WAL lag (from source)
+    """
+    _require_connection()
+    dest_pool = await get_dest_pool(state.dest_dsn)
+    src_pool  = await get_source_pool(state.source_dsn)
+
+    async with dest_pool.acquire() as dest_conn:
+        # pg_stat_progress_copy available on PG 14+; LEFT JOIN so older versions still work
+        rows = await dest_conn.fetch("""
+            SELECT
+                n.nspname                          AS schema_name,
+                c.relname                          AS table_name,
+                sr.srsubstate                      AS sub_state,
+                COALESCE(cp.tuples_done, 0)        AS tuples_done,
+                COALESCE(cp.tuples_total, 0)       AS tuples_total,
+                COALESCE(cp.bytes_processed, 0)    AS bytes_processed,
+                COALESCE(pg_relation_size(c.oid), 0) AS table_size_bytes
+            FROM pg_subscription_rel sr
+            JOIN pg_class     c ON c.oid = sr.srrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_stat_progress_copy cp ON cp.relid = sr.srrelid
+            ORDER BY n.nspname, c.relname
+        """)
+
+    state_label = {
+        'i': 'initializing',
+        'd': 'copying',
+        'f': 'synced',
+        's': 'synced',
+        'r': 'ready',
+        'e': 'error',
+    }
+
+    tables = []
+    copying_active = False
+    for r in rows:
+        sub_state = r["sub_state"]
+        status = state_label.get(sub_state, 'unknown')
+        if sub_state == 'd':
+            copying_active = True
+
+        tuples_done  = r["tuples_done"]
+        tuples_total = r["tuples_total"]
+        copy_pct: Optional[float] = None
+        if sub_state == 'd' and tuples_total > 0:
+            copy_pct = min(100.0, tuples_done / tuples_total * 100)
+        elif sub_state in ('f', 's', 'r'):
+            copy_pct = 100.0
+
+        tables.append(TableCopyProgress(
+            schema_name=r["schema_name"],
+            table_name=r["table_name"],
+            sub_state=sub_state,
+            status=status,
+            tuples_done=tuples_done if sub_state == 'd' else None,
+            tuples_total=tuples_total if sub_state == 'd' else None,
+            bytes_processed=r["bytes_processed"] if sub_state == 'd' else None,
+            table_size_bytes=r["table_size_bytes"],
+            copy_pct=copy_pct,
+        ))
+
+    # WAL lag from source replication slots
+    async with src_pool.acquire() as src_conn:
+        slot_rows = await src_conn.fetch("""
+            SELECT slot_name, plugin, slot_type, active,
+                   restart_lsn::text,
+                   confirmed_flush_lsn::text,
+                   COALESCE(
+                       pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn),
+                       0
+                   ) AS lag_bytes
+            FROM pg_replication_slots
+            WHERE slot_type = 'logical'
+            ORDER BY slot_name
+        """)
+
+    wal_slots = [ReplicationSlotInfo(
+        slot_name=r["slot_name"],
+        plugin=r["plugin"] or "",
+        slot_type=r["slot_type"],
+        active=r["active"],
+        restart_lsn=r["restart_lsn"],
+        confirmed_flush_lsn=r["confirmed_flush_lsn"],
+        lag_bytes=r["lag_bytes"],
+    ) for r in slot_rows]
+
+    return CopyProgressResponse(
+        tables=tables,
+        wal_slots=wal_slots,
+        copying_active=copying_active,
+    )
 
 
 # ── Reset ─────────────────────────────────────────────────────────────────────

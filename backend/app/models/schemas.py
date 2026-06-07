@@ -80,6 +80,29 @@ class StatsRefreshInterval(BaseModel):
     interval_seconds: int
 
 
+class TableCopyProgress(BaseModel):
+    schema_name: str
+    table_name: str
+    sub_state: str          # i/d/f/s/r/e raw char
+    status: str             # initializing/copying/synced/ready/error
+    # COPY phase (only populated while sub_state == 'd')
+    tuples_done: Optional[int]
+    tuples_total: Optional[int]
+    bytes_processed: Optional[int]
+    # size from pg_class (always available)
+    table_size_bytes: int
+    # derived
+    copy_pct: Optional[float]   # None if not in copy phase or tuples_total == 0
+
+
+class CopyProgressResponse(BaseModel):
+    tables: List["TableCopyProgress"]
+    # WAL lag per slot — sourced from pg_replication_slots on source
+    wal_slots: List[ReplicationSlotInfo]
+    # True when at least one table is still in copy (d) state
+    copying_active: bool
+
+
 class SequenceInfo(BaseModel):
     sequence_name: str       # fully qualified: schema.seq
     table_name: str          # schema.table it belongs to
