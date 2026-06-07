@@ -264,21 +264,48 @@ async def create_or_update_subscription(config: SubscriptionConfig):
     # statement_timeout. The command makes destination PG connect back to source —
     # if unreachable it blocks for the full OS TCP timeout and poisons pool connections.
     import asyncpg as _asyncpg
-    dedicated_conn = None
+
+    async def _drop_orphaned_slot(slot_name: str) -> None:
+        """Drop a replication slot on source that was left behind by a failed CREATE SUBSCRIPTION."""
+        src_pool = await get_source_pool(state.source_dsn)
+        async with src_pool.acquire() as src_conn:
+            exists = await src_conn.fetchval(
+                "SELECT 1 FROM pg_replication_slots WHERE slot_name = $1", slot_name
+            )
+            if exists:
+                await src_conn.execute("SELECT pg_drop_replication_slot($1)", slot_name)
+
+    async def _do_create_subscription() -> None:
+        dedicated_conn = None
+        try:
+            dedicated_conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
+            copy_data_sql = "true" if config.copy_data else "false"
+            await dedicated_conn.execute("SET statement_timeout = '30s'")
+            await dedicated_conn.execute(f"""
+                CREATE SUBSCRIPTION "{config.subscription_name}"
+                CONNECTION $conn_str${conn_dsn}$conn_str$
+                PUBLICATION "{config.publication_name}"
+                WITH (copy_data = {copy_data_sql})
+            """)
+        finally:
+            if dedicated_conn:
+                try:
+                    await dedicated_conn.close()
+                except Exception:
+                    pass
+
     try:
-        dedicated_conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
-        copy_data_sql = "true" if config.copy_data else "false"
-        # Set a statement-level timeout so the back-connect attempt fails fast
-        # rather than waiting for the OS TCP timeout.
-        await dedicated_conn.execute("SET statement_timeout = '30s'")
-        await dedicated_conn.execute(f"""
-            CREATE SUBSCRIPTION "{config.subscription_name}"
-            CONNECTION $conn_str${conn_dsn}$conn_str$
-            PUBLICATION "{config.publication_name}"
-            WITH (copy_data = {copy_data_sql})
-        """)
+        await _do_create_subscription()
     except Exception as e:
         err = str(e)
+        # Orphaned slot from a previous failed attempt — drop it and retry once
+        if "replication slot" in err and "already exists" in err:
+            try:
+                await _drop_orphaned_slot(config.subscription_name)
+                await _do_create_subscription()
+                return {"status": "created", "subscription_name": config.subscription_name}
+            except Exception as e2:
+                err = str(e2)
         if "could not connect to the publisher" in err or "Connection timed out" in err or "Connection refused" in err or "statement timeout" in err:
             raise HTTPException(
                 400,
@@ -296,12 +323,6 @@ async def create_or_update_subscription(config: SubscriptionConfig):
                 f"Detail: {err}"
             )
         raise HTTPException(400, f"CREATE SUBSCRIPTION failed: {err}")
-    finally:
-        if dedicated_conn:
-            try:
-                await dedicated_conn.close()
-            except Exception:
-                pass
 
     return {"status": "ok", "subscription_name": config.subscription_name, "updated": bool(exists)}
 
