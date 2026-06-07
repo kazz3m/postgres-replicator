@@ -155,7 +155,8 @@ function SchemaNode({
   publishedMap, onSelectionChange, onOpenPublication, onCreateReplication, initiallyExpanded,
 }: SchemaNodeProps) {
   const [loadingPub, setLoadingPub] = useState<string | null>(null)
-  const [selectAllOnLoad, setSelectAllOnLoad] = useState(false)
+  // pending = true means: once tables load, select all free + fire onCreateReplication
+  const pendingCreateRef = useRef(false)
 
   async function handlePubClick(pub: string, e: React.MouseEvent) {
     e.stopPropagation()
@@ -192,18 +193,18 @@ function SchemaNode({
     if (q && schema.schema_name.toLowerCase().includes(q)) setExpanded(true)
   }, [q])
 
-  // When tables finish loading after "Create replication" click, select all free tables
+  // When tables finish loading and a create-replication is pending: select all free + navigate
   useEffect(() => {
-    if (selectAllOnLoad && tables && tables.length > 0) {
-      setSelectAllOnLoad(false)
-      const free = tables.filter(t => (publishedMap[`${schema.schema_name}.${t.table_name}`] ?? []).length === 0)
-      const newTables = new Set(selectedTables)
-      const newSchemas = new Set(selectedSchemas)
-      newSchemas.delete(sKey)
-      free.forEach(t => newTables.add(tableKey(dbName, schema.schema_name, t.table_name)))
-      onSelectionChange(newTables, newSchemas)
-    }
-  }, [tables, selectAllOnLoad])
+    if (!pendingCreateRef.current || !tables || tables.length === 0) return
+    pendingCreateRef.current = false
+    const free = tables.filter(t => (publishedMap[`${schema.schema_name}.${t.table_name}`] ?? []).length === 0)
+    const newTables = new Set(selectedTables)
+    const newSchemas = new Set(selectedSchemas)
+    newSchemas.delete(sKey)
+    free.forEach(t => newTables.add(tableKey(dbName, schema.schema_name, t.table_name)))
+    onSelectionChange(newTables, newSchemas)
+    onCreateReplication?.(dbName, schema.schema_name)
+  }, [tables])
 
   // Tables already in a publication — cannot be added to another replication
   function isInPublication(tableName: string): boolean {
@@ -298,18 +299,18 @@ function SchemaNode({
             onClick={e => {
               e.stopPropagation()
               if (tables && tables.length > 0) {
-                // Tables already loaded — select all free ones immediately
+                // Tables already loaded — select all free ones and navigate immediately
                 const newTables = new Set(selectedTables)
                 const newSchemas = new Set(selectedSchemas)
                 newSchemas.delete(sKey)
                 freeTables.forEach(t => newTables.add(tableKey(dbName, schema.schema_name, t.table_name)))
                 onSelectionChange(newTables, newSchemas)
+                onCreateReplication(dbName, schema.schema_name)
               } else {
-                // Expand to trigger lazy load, select all when loaded
+                // Expand to trigger lazy load; useEffect will select + navigate once loaded
                 setExpanded(true)
-                setSelectAllOnLoad(true)
+                pendingCreateRef.current = true
               }
-              onCreateReplication(dbName, schema.schema_name)
             }}
             className="flex items-center gap-1 text-xs bg-green-900/40 hover:bg-green-800/60 border border-green-700/60 hover:border-green-600 text-green-400 px-2 py-0.5 rounded ml-2 shrink-0 transition-colors"
             title={`Create new replication for schema "${schema.schema_name}"`}
