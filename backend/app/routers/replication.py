@@ -570,6 +570,31 @@ async def copy_progress():
     )
 
 
+# ── Analyze ───────────────────────────────────────────────────────────────────
+
+@router.post("/analyze")
+async def analyze_tables(body: dict):
+    """Run ANALYZE on specified tables on destination. tables: ["schema.table", ...]"""
+    _require_connection()
+    tables: list = body.get("tables", [])
+    if not tables:
+        raise HTTPException(400, "No tables specified.")
+    dest_pool = await get_dest_pool(state.dest_dsn)
+    results = []
+    async with dest_pool.acquire() as conn:
+        for t in tables:
+            try:
+                parts = t.split(".", 1)
+                if len(parts) != 2:
+                    raise ValueError(f"Expected schema.table, got: {t}")
+                schema, table = parts
+                await conn.execute(f'ANALYZE "{schema}"."{table}"')
+                results.append({"table": t, "ok": True})
+            except Exception as e:
+                results.append({"table": t, "ok": False, "error": str(e)})
+    return {"results": results}
+
+
 # ── Reset ─────────────────────────────────────────────────────────────────────
 
 @router.post("/reset/{subscription_name}")

@@ -9,7 +9,7 @@ import { SchemaSyncPanel } from '../components/SchemaSyncPanel'
 import { AddTableModal } from '../components/AddTableModal'
 import { IndexSyncPanel } from '../components/IndexSyncPanel'
 import { RolesSyncPanel } from '../components/RolesSyncPanel'
-import { RefreshCw, AlertTriangle, Square, PlusCircle, Layers, Database } from 'lucide-react'
+import { RefreshCw, AlertTriangle, Square, PlusCircle, Layers, Database, ChevronDown, ChevronRight, FlaskConical } from 'lucide-react'
 import clsx from 'clsx'
 import type { WorkspaceSnapshot } from './WorkspacePicker'
 
@@ -70,6 +70,10 @@ export function StatusPage({ initialSnapshot }: Props) {
   const [schemaPub, setSchemaPub] = useState<string | null>(null)
   // Index panel after stop
   const [indexPub, setIndexPub] = useState<string | null>(null)
+  // Progress table expanded/collapsed
+  const [tablesPanelExpanded, setTablesPanelExpanded] = useState(false)
+  // ANALYZE state
+  const [analyzingTables, setAnalyzingTables] = useState(false)
 
   const { data: progress, refetch: refetchProgress, isLoading: progressLoading } = useQuery({
     queryKey: ['progress'],
@@ -162,6 +166,16 @@ export function StatusPage({ initialSnapshot }: Props) {
 
   function refetchAll() { refetchProgress(); refetchCopy(); refetchSlots(); refetchSubs() }
 
+  async function handleAnalyze(tables: string[]) {
+    setAnalyzingTables(true)
+    try {
+      await replicationApi.analyzeTables(tables)
+      refetchCopy()
+    } finally {
+      setAnalyzingTables(false)
+    }
+  }
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -214,129 +228,172 @@ export function StatusPage({ initialSnapshot }: Props) {
           )}
         </div>
 
-        {/* WAL lag row — always visible when slots exist */}
-        {copyData?.wal_slots && copyData.wal_slots.length > 0 && (
-          <div className="px-4 py-3 border-b border-gray-800 flex flex-wrap gap-4">
-            {copyData.wal_slots.map(slot => {
-              const lag = slot.lag_bytes ?? 0
-              return (
-                <div key={slot.slot_name} className="flex items-center gap-3 text-xs">
-                  <Database size={12} className="text-gray-500 shrink-0" />
-                  <span className="font-mono text-gray-400">{slot.slot_name}</span>
-                  <Badge label={slot.active ? 'active' : 'inactive'} variant={slot.active ? 'green' : 'gray'} />
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-gray-500">WAL lag:</span>
-                    <span className={clsx('font-mono font-semibold', lagColor(lag))}>
-                      {fmtBytes(lag)}
-                    </span>
-                    {lag > 0 && (
-                      <div className="w-24">
-                        <ProgressBar
-                          pct={lag > 0 ? Math.min(100, (lag / (1024 ** 3)) * 100) : 0}
-                          color={lag > 1024 ** 3 ? 'yellow' : lag > 100 * 1024 * 1024 ? 'yellow' : 'green'}
-                        />
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    onClick={() => setConfirmDropSlot(slot.slot_name)}
-                    disabled={actionLoading || slot.active}
-                    className="text-xs text-red-500/60 hover:text-red-400 border border-red-900/50 hover:border-red-800 px-1.5 py-0.5 rounded disabled:opacity-30 transition-colors"
-                    title={slot.active ? 'Cannot drop active slot' : 'Drop slot'}
-                  >
-                    Drop
-                  </button>
-                </div>
-              )
-            })}
-          </div>
-        )}
-
-        {/* Per-table copy progress */}
-        {copyLoading ? (
-          <div className="p-4 flex items-center gap-2 text-gray-500 text-sm"><Spinner size={3} /> Loading...</div>
-        ) : copyError ? (
-          <div className="p-4 text-red-400 text-sm">Failed to load progress. Check backend logs.</div>
-        ) : !copyData?.tables?.length ? (
-          <div className="p-4 text-gray-500 text-sm">No tables tracked yet. Set up replication first.</div>
-        ) : (
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-gray-500 border-b border-gray-700">
-                <th className="px-4 py-2 text-left">Schema.Table</th>
-                <th className="px-4 py-2 text-left">Status</th>
-                <th className="px-4 py-2 text-right">Table size</th>
-                <th className="px-4 py-2 text-right">Rows copied</th>
-                <th className="px-4 py-2 text-left w-48">Copy progress</th>
-                <th className="px-4 py-2 text-left">Analyzed</th>
-              </tr>
-            </thead>
-            <tbody>
-              {copyData.tables.map((row: TableCopyProgress) => {
-                const isCopying = row.sub_state === 'd'
-                const isDone = ['f', 's', 'r'].includes(row.sub_state)
+        {/* WAL lag + sync summary per slot */}
+        {copyData?.wal_slots && copyData.wal_slots.length > 0 && (() => {
+          const total = copyData.tables.length
+          const synced = copyData.tables.filter(t => ['f','s','r'].includes(t.sub_state)).length
+          const unanalyzed = copyData.tables.filter(t => !t.last_analyze).map(t => `${t.schema_name}.${t.table_name}`)
+          return (
+            <div className="border-b border-gray-800 divide-y divide-gray-800">
+              {copyData.wal_slots.map(slot => {
+                const lag = slot.lag_bytes ?? 0
                 return (
-                  <tr
-                    key={`${row.schema_name}.${row.table_name}`}
-                    className={clsx('border-b border-gray-800', {
-                      'bg-blue-950/20': isCopying,
-                      'hover:bg-gray-800': !isCopying,
-                    })}
-                  >
-                    <td className="px-4 py-2 font-mono">
-                      <span className="text-gray-500">{row.schema_name}.</span>
-                      <span>{row.table_name}</span>
-                    </td>
-                    <td className="px-4 py-2">
-                      <Badge label={row.status} variant={statusVariant(row.status)} />
-                    </td>
-                    <td className="px-4 py-2 text-right text-gray-400">
-                      {fmtBytes(row.table_size_bytes)}
-                    </td>
-                    <td className="px-4 py-2 text-right text-gray-400">
-                      {isCopying && row.tuples_total != null && row.tuples_total > 0
-                        ? <><span className="text-blue-300">{(row.tuples_done ?? 0).toLocaleString()}</span>{' / '}{row.tuples_total.toLocaleString()}</>
-                        : isDone
-                          ? <span className="text-green-500">done</span>
-                          : '–'
-                      }
-                    </td>
-                    <td className="px-4 py-2">
-                      {isCopying ? (
-                        <div className="space-y-1">
-                          <ProgressBar pct={row.copy_pct} color="blue" />
-                          <div className="flex justify-between text-gray-500">
-                            <span>{row.copy_pct != null ? `${row.copy_pct.toFixed(1)}%` : 'estimating...'}</span>
-                            {row.bytes_processed != null && row.bytes_processed > 0 && (
-                              <span>{fmtBytes(row.bytes_processed)} processed</span>
-                            )}
+                  <div key={slot.slot_name} className="px-4 py-2.5 flex flex-wrap items-center gap-3 text-xs">
+                    <Database size={12} className="text-gray-500 shrink-0" />
+                    <span className="font-mono text-gray-300 font-medium">{slot.slot_name}</span>
+                    <Badge label={slot.active ? 'active' : 'inactive'} variant={slot.active ? 'green' : 'gray'} />
+
+                    {/* Table sync counter */}
+                    {total > 0 && (
+                      <span className={clsx('font-mono', synced === total ? 'text-green-400' : 'text-blue-400')}>
+                        {synced}/{total} tables synced
+                      </span>
+                    )}
+
+                    {/* WAL lag */}
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-gray-500">WAL lag:</span>
+                      <span className={clsx('font-mono font-semibold', lagColor(lag))}>{fmtBytes(lag)}</span>
+                      {lag > 0 && (
+                        <div className="w-20">
+                          <ProgressBar pct={Math.min(100, (lag / (1024 ** 3)) * 100)}
+                            color={lag > 1024 ** 3 ? 'yellow' : lag > 100 * 1024 * 1024 ? 'yellow' : 'green'} />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Analyze all unanalyzed */}
+                    {unanalyzed.length > 0 && (
+                      <button
+                        onClick={() => handleAnalyze(unanalyzed)}
+                        disabled={analyzingTables}
+                        className="flex items-center gap-1 text-xs bg-amber-900/40 hover:bg-amber-800/60 border border-amber-700/60 text-amber-300 px-2 py-0.5 rounded disabled:opacity-50 transition-colors"
+                        title={`Run ANALYZE on ${unanalyzed.length} unanalyzed table${unanalyzed.length !== 1 ? 's' : ''}`}
+                      >
+                        {analyzingTables ? <Spinner size={2} /> : <FlaskConical size={10} />}
+                        Analyze {unanalyzed.length} unanalyzed
+                      </button>
+                    )}
+
+                    {/* Expand/collapse tables */}
+                    <button
+                      onClick={() => setTablesPanelExpanded(e => !e)}
+                      className="flex items-center gap-1 text-gray-400 hover:text-gray-200 ml-auto"
+                    >
+                      {tablesPanelExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                      {tablesPanelExpanded ? 'Hide tables' : 'Show tables'}
+                    </button>
+
+                    <button
+                      onClick={() => setConfirmDropSlot(slot.slot_name)}
+                      disabled={actionLoading || slot.active}
+                      className="text-xs text-red-500/60 hover:text-red-400 border border-red-900/50 hover:border-red-800 px-1.5 py-0.5 rounded disabled:opacity-30 transition-colors"
+                      title={slot.active ? 'Cannot drop active slot' : 'Drop slot'}
+                    >
+                      Drop
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })()}
+
+        {/* Per-table copy progress — lazy (only rendered when expanded) */}
+        {tablesPanelExpanded && (
+          copyLoading ? (
+            <div className="p-4 flex items-center gap-2 text-gray-500 text-sm"><Spinner size={3} /> Loading...</div>
+          ) : copyError ? (
+            <div className="p-4 text-red-400 text-sm">Failed to load progress. Check backend logs.</div>
+          ) : !copyData?.tables?.length ? (
+            <div className="p-4 text-gray-500 text-sm">No tables tracked yet. Set up replication first.</div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-gray-500 border-b border-gray-700">
+                  <th className="px-4 py-2 text-left">Schema.Table</th>
+                  <th className="px-4 py-2 text-left">Status</th>
+                  <th className="px-4 py-2 text-right">Table size</th>
+                  <th className="px-4 py-2 text-right">Rows copied</th>
+                  <th className="px-4 py-2 text-left w-48">Copy progress</th>
+                  <th className="px-4 py-2 text-left">Analyzed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {copyData.tables.map((row: TableCopyProgress) => {
+                  const isCopying = row.sub_state === 'd'
+                  const isDone = ['f', 's', 'r'].includes(row.sub_state)
+                  return (
+                    <tr
+                      key={`${row.schema_name}.${row.table_name}`}
+                      className={clsx('border-b border-gray-800', {
+                        'bg-blue-950/20': isCopying,
+                        'hover:bg-gray-800': !isCopying,
+                      })}
+                    >
+                      <td className="px-4 py-2 font-mono">
+                        <span className="text-gray-500">{row.schema_name}.</span>
+                        <span>{row.table_name}</span>
+                      </td>
+                      <td className="px-4 py-2">
+                        <Badge label={row.status} variant={statusVariant(row.status)} />
+                      </td>
+                      <td className="px-4 py-2 text-right text-gray-400">
+                        {fmtBytes(row.table_size_bytes)}
+                      </td>
+                      <td className="px-4 py-2 text-right text-gray-400">
+                        {isCopying && row.tuples_total != null && row.tuples_total > 0
+                          ? <><span className="text-blue-300">{(row.tuples_done ?? 0).toLocaleString()}</span>{' / '}{row.tuples_total.toLocaleString()}</>
+                          : isDone
+                            ? <span className="text-green-500">done</span>
+                            : '–'
+                        }
+                      </td>
+                      <td className="px-4 py-2">
+                        {isCopying ? (
+                          <div className="space-y-1">
+                            <ProgressBar pct={row.copy_pct} color="blue" />
+                            <div className="flex justify-between text-gray-500">
+                              <span>{row.copy_pct != null ? `${row.copy_pct.toFixed(1)}%` : 'estimating...'}</span>
+                              {row.bytes_processed != null && row.bytes_processed > 0 && (
+                                <span>{fmtBytes(row.bytes_processed)} processed</span>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      ) : isDone ? (
-                        <div className="space-y-1">
-                          <ProgressBar pct={100} color="green" />
-                          <span className="text-green-600 text-xs">100%</span>
-                        </div>
-                      ) : (
-                        <span className="text-gray-600">–</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2">
-                      {row.last_analyze ? (
-                        <span className="text-green-400 text-xs" title={row.last_analyze}>
-                          ✓ {new Date(row.last_analyze).toLocaleString()}
-                        </span>
-                      ) : (
-                        <span className="text-yellow-500 text-xs" title="Table has never been analyzed on destination — query plans may be suboptimal">
-                          ⚠ never
-                        </span>
-                      )}
-                    </td>
+                        ) : isDone ? (
+                          <div className="space-y-1">
+                            <ProgressBar pct={100} color="green" />
+                            <span className="text-green-600 text-xs">100%</span>
+                          </div>
+                        ) : (
+                          <span className="text-gray-600">–</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2">
+                        {row.last_analyze ? (
+                          <span className="text-green-400 text-xs" title={row.last_analyze}>
+                            ✓ {new Date(row.last_analyze).toLocaleString()}
+                          </span>
+                        ) : (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-yellow-500 text-xs">⚠ never</span>
+                            <button
+                              onClick={() => handleAnalyze([`${row.schema_name}.${row.table_name}`])}
+                              disabled={analyzingTables}
+                              className="text-xs bg-amber-900/40 hover:bg-amber-800/60 border border-amber-700/60 text-amber-300 px-1.5 py-0.5 rounded disabled:opacity-50"
+                              title="Run ANALYZE on this table"
+                            >
+                              Analyze
+                            </button>
+                          </div>
+                        )}
+                      </td>
                   </tr>
                 )
               })}
             </tbody>
           </table>
+          )
         )}
       </div>
 

@@ -230,6 +230,8 @@ export const replicationApi = {
     api.post<SchemaSyncResult[]>('/replication/schema-sync', { tables, create_indexes: createIndexes }),
   copyProgress: () =>
     api.get<CopyProgressResponse>('/replication/copy-progress'),
+  analyzeTables: (tables: string[]) =>
+    api.post<{ results: { table: string; ok: boolean; error?: string }[] }>('/replication/analyze', { tables }),
   publicationConfig: (name: string) =>
     api.get<PublicationServerConfig>(`/replication/publication-config?name=${encodeURIComponent(name)}`),
   listIndexes: (publication: string) =>
