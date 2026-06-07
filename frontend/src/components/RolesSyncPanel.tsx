@@ -252,9 +252,8 @@ export function RolesSyncPanel() {
                 <div className="mx-4 mt-3 text-xs text-blue-400 bg-blue-950/30 border border-blue-800 rounded px-3 py-2 flex items-start gap-2">
                   <AlertTriangle size={13} className="shrink-0 mt-0.5" />
                   <span>
-                    Destination is <strong>Cloud SQL</strong> — <code>SUPERUSER</code>, <code>NOSUPERUSER</code>,
-                    {' '}<code>REPLICATION</code>, <code>NOREPLICATION</code> and <code>BYPASSRLS</code> options
-                    are automatically stripped from all statements.
+                    Destination is <strong>Cloud SQL</strong> — <code>SUPERUSER</code> / <code>NOSUPERUSER</code> options
+                    are automatically stripped from all statements (not supported by Cloud SQL).
                   </span>
                 </div>
               )}

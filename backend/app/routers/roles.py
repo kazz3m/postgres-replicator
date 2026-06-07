@@ -70,9 +70,8 @@ def _role_options(row: dict, dest_is_cloudsql: bool = False) -> str:
     parts.append("CREATEROLE" if row["rolcreaterole"] else "NOCREATEROLE")
     parts.append("CREATEDB" if row["rolcreatedb"] else "NOCREATEDB")
     parts.append("LOGIN" if row["rolcanlogin"] else "NOLOGIN")
-    if not dest_is_cloudsql:
-        parts.append("REPLICATION" if row["rolreplication"] else "NOREPLICATION")
-        parts.append("BYPASSRLS" if row["rolbypassrls"] else "NOBYPASSRLS")
+    parts.append("REPLICATION" if row["rolreplication"] else "NOREPLICATION")
+    parts.append("BYPASSRLS" if row["rolbypassrls"] else "NOBYPASSRLS")
     if row["rolconnlimit"] != -1:
         parts.append(f"CONNECTION LIMIT {row['rolconnlimit']}")
     if row["rolvaliduntil"] is not None:
