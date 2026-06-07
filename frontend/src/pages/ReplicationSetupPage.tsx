@@ -16,6 +16,7 @@ interface Props {
   replConfigs?: Record<string, ReplicationConfig>   // all saved configs, keyed by pub_name
   activeSetupPub?: string                           // pub to pre-select on mount
   onReplConfigChange?: (cfg: ReplicationConfig) => void
+  onReplConfigDelete?: (pubName: string) => void
 }
 
 function formatBytes(bytes: number): string {
@@ -379,7 +380,7 @@ function SchemaCheckPanel({ tables, onAllOk }: SchemaCheckPanelProps) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDsn, pgMajor, schemaData, replConfigs = {}, activeSetupPub, onReplConfigChange }: Props) {
+export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDsn, pgMajor, schemaData, replConfigs = {}, activeSetupPub, onReplConfigChange, onReplConfigDelete }: Props) {
   // Derive the active config: activeSetupPub hint → first saved → defaults
   const activeConfig: ReplicationConfig = (activeSetupPub && replConfigs[activeSetupPub])
     ? replConfigs[activeSetupPub]
@@ -618,7 +619,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       )}
 
       {/* Saved publication configs — quick switch */}
-      {Object.keys(replConfigs).length > 1 && (
+      {Object.keys(replConfigs).length > 0 && (
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-gray-500">Saved configs:</span>
           {Object.values(replConfigs).map(cfg => {
@@ -626,26 +627,40 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
             const display = parsed
               ? <><span className="text-gray-600">{parsed.prefix}_</span>{parsed.label || 'pg_sync'}</>
               : cfg.pub_name
+            const isActive = pubName === cfg.pub_name
             return (
-              <button
-                key={cfg.pub_name}
-                onClick={() => {
-                  const p = parsePubSubName(cfg.pub_name)
-                  setPrefix(p?.prefix ?? randomPrefix())
-                  setLabel(p?.label ?? '')
-                  setCopyData(cfg.copy_data)
-                  setResult(''); setError('')
-                }}
-                className={clsx('text-xs px-2.5 py-1 rounded border font-mono transition-colors', {
-                  'border-blue-500 text-blue-300 bg-blue-900/20': pubName === cfg.pub_name,
-                  'border-gray-700 text-gray-400 hover:border-gray-500': pubName !== cfg.pub_name,
-                })}
-                title={cfg.pub_name}
-              >
-                {display}
-                {cfg.last_status === 'ok' && <CheckCircle size={10} className="inline ml-1 text-green-400" />}
-                {cfg.last_status === 'error' && <AlertTriangle size={10} className="inline ml-1 text-red-400" />}
-              </button>
+              <div key={cfg.pub_name} className={clsx('flex items-center rounded border font-mono text-xs transition-colors', {
+                'border-blue-500 bg-blue-900/20': isActive,
+                'border-gray-700 hover:border-gray-500': !isActive,
+              })}>
+                <button
+                  onClick={() => {
+                    const p = parsePubSubName(cfg.pub_name)
+                    setPrefix(p?.prefix ?? randomPrefix())
+                    setLabel(p?.label ?? '')
+                    setCopyData(cfg.copy_data)
+                    setResult(''); setError('')
+                  }}
+                  className={clsx('px-2.5 py-1 transition-colors', {
+                    'text-blue-300': isActive,
+                    'text-gray-400 hover:text-gray-200': !isActive,
+                  })}
+                  title={cfg.pub_name}
+                >
+                  {display}
+                  {cfg.last_status === 'ok' && <CheckCircle size={10} className="inline ml-1 text-green-400" />}
+                  {cfg.last_status === 'error' && <AlertTriangle size={10} className="inline ml-1 text-red-400" />}
+                </button>
+                {onReplConfigDelete && (
+                  <button
+                    onClick={() => onReplConfigDelete(cfg.pub_name)}
+                    className="pr-1.5 pl-0.5 py-1 text-gray-600 hover:text-red-400 transition-colors"
+                    title={`Remove saved config "${cfg.pub_name}"`}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
             )
           })}
         </div>

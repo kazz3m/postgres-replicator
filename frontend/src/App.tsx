@@ -230,6 +230,18 @@ export default function App() {
     setTab('setup')
   }
 
+  // ── Delete saved replication config ──────────────────────────────────────────
+
+  function handleReplConfigDelete(pubName: string) {
+    setReplConfigs(prev => {
+      const next = { ...prev }
+      delete next[pubName]
+      if (activeProfileId) void updateProfile(activeProfileId, { replication_configs: next })
+      return next
+    })
+    if (activeSetupPub === pubName) setActiveSetupPub(undefined)
+  }
+
   // ── Create new replication from schema row in Analysis ───────────────────────
 
   function handleCreateReplication(db: string, schema: string) {
@@ -365,6 +377,7 @@ export default function App() {
             replConfigs={replConfigs}
             activeSetupPub={activeSetupPub}
             onReplConfigChange={handleReplConfigChange}
+            onReplConfigDelete={handleReplConfigDelete}
           />
         )}
         {tab === 'status' && (
