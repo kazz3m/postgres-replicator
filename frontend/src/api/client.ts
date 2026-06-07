@@ -156,6 +156,7 @@ export interface TableCopyProgress {
   bytes_processed: number | null
   table_size_bytes: number
   copy_pct: number | null
+  last_analyze: string | null   // ISO timestamp or null if never analyzed
 }
 
 export interface CopyProgressResponse {

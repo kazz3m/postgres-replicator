@@ -482,17 +482,19 @@ async def copy_progress():
     async with dest_pool.acquire() as dest_conn:
         rows = await dest_conn.fetch("""
             SELECT
-                n.nspname                            AS schema_name,
-                c.relname                            AS table_name,
-                sr.srsubstate                        AS sub_state,
-                COALESCE(cp.tuples_processed, 0)          AS tuples_done,
-                COALESCE(NULLIF(c.reltuples::bigint, -1), 0) AS tuples_total,
-                COALESCE(cp.bytes_processed, 0)           AS bytes_processed,
-                COALESCE(pg_relation_size(c.oid), 0) AS table_size_bytes
+                n.nspname                                        AS schema_name,
+                c.relname                                        AS table_name,
+                sr.srsubstate                                    AS sub_state,
+                COALESCE(cp.tuples_processed, 0)                 AS tuples_done,
+                COALESCE(NULLIF(c.reltuples::bigint, -1), 0)     AS tuples_total,
+                COALESCE(cp.bytes_processed, 0)                  AS bytes_processed,
+                COALESCE(pg_relation_size(c.oid), 0)             AS table_size_bytes,
+                GREATEST(psu.last_analyze, psu.last_autoanalyze) AS last_analyze
             FROM pg_subscription_rel sr
-            JOIN pg_class     c  ON c.oid  = sr.srrelid
-            JOIN pg_namespace n  ON n.oid  = c.relnamespace
-            LEFT JOIN pg_stat_progress_copy cp ON cp.relid = c.oid
+            JOIN pg_class           c   ON c.oid  = sr.srrelid
+            JOIN pg_namespace       n   ON n.oid  = c.relnamespace
+            LEFT JOIN pg_stat_progress_copy cp  ON cp.relid = c.oid
+            LEFT JOIN pg_stat_user_tables   psu ON psu.relid = c.oid
             ORDER BY n.nspname, c.relname
         """)
 
@@ -521,6 +523,7 @@ async def copy_progress():
         elif sub_state in ('f', 's', 'r'):
             copy_pct = 100.0
 
+        last_analyze = r["last_analyze"]
         tables.append(TableCopyProgress(
             schema_name=r["schema_name"],
             table_name=r["table_name"],
@@ -531,6 +534,7 @@ async def copy_progress():
             bytes_processed=r["bytes_processed"] if sub_state == 'd' else None,
             table_size_bytes=r["table_size_bytes"],
             copy_pct=copy_pct,
+            last_analyze=last_analyze.isoformat() if last_analyze else None,
         ))
 
     # WAL lag from source replication slots

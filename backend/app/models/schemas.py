@@ -93,6 +93,8 @@ class TableCopyProgress(BaseModel):
     table_size_bytes: int
     # derived
     copy_pct: Optional[float]   # None if not in copy phase or tuples_total == 0
+    # statistics freshness on destination
+    last_analyze: Optional[str]  # ISO timestamp or None if never analyzed
 
 
 class CopyProgressResponse(BaseModel):

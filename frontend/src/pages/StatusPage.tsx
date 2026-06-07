@@ -268,6 +268,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                 <th className="px-4 py-2 text-right">Table size</th>
                 <th className="px-4 py-2 text-right">Rows copied</th>
                 <th className="px-4 py-2 text-left w-48">Copy progress</th>
+                <th className="px-4 py-2 text-left">Analyzed</th>
               </tr>
             </thead>
             <tbody>
@@ -318,6 +319,17 @@ export function StatusPage({ initialSnapshot }: Props) {
                         </div>
                       ) : (
                         <span className="text-gray-600">–</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2">
+                      {row.last_analyze ? (
+                        <span className="text-green-400 text-xs" title={row.last_analyze}>
+                          ✓ {new Date(row.last_analyze).toLocaleString()}
+                        </span>
+                      ) : (
+                        <span className="text-yellow-500 text-xs" title="Table has never been analyzed on destination — query plans may be suboptimal">
+                          ⚠ never
+                        </span>
                       )}
                     </td>
                   </tr>
