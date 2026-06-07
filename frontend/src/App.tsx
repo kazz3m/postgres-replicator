@@ -234,7 +234,8 @@ export default function App() {
 
   function handleCreateReplication(db: string, schema: string) {
     const prefix = randomPrefix()
-    const label = schema.trim().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '').slice(0, LABEL_MAX)
+    const raw = `${db}_${schema}`
+    const label = raw.trim().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '').slice(0, LABEL_MAX)
     const pub_name = label ? `${prefix}_pub_${label}` : `${prefix}_pub`
     const sub_name = label ? `${prefix}_sub_${label}` : `${prefix}_sub`
     const cfg: ReplicationConfig = { pub_name, sub_name, copy_data: true, database: db }
