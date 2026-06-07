@@ -130,7 +130,9 @@ async def list_schema_tables(database: str, schema: str):
                     quote_ident(t.table_schema)||'.'||quote_ident(t.table_name)
                 ), 0)) AS size_pretty,
                 COALESCE(c.reltuples::bigint, 0) AS row_estimate,
-                c.relreplident
+                c.relreplident,
+                c.relkind = 'p'          AS is_partitioned,
+                c.relispartition         AS is_partition
             FROM information_schema.tables t
             LEFT JOIN pg_class c ON c.relname = t.table_name
               AND c.relnamespace = (
@@ -152,6 +154,8 @@ async def list_schema_tables(database: str, schema: str):
             "size_pretty": r["size_pretty"],
             "row_estimate": max(0, r["row_estimate"]),
             "replica_identity": replident_map.get(r["relreplident"], "default"),
+            "is_partitioned": r["is_partitioned"] or False,
+            "is_partition": r["is_partition"] or False,
         }
         for r in rows
     ]

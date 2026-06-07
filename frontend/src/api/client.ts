@@ -17,6 +17,8 @@ export interface TableInfo {
   schema_name: string; table_name: string
   size_bytes: number; size_pretty: string; row_estimate: number
   replica_identity?: string
+  is_partitioned?: boolean   // parent partitioned table (relkind='p')
+  is_partition?: boolean     // child partition (relispartition=true)
 }
 export interface SchemaInfo {
   schema_name: string; tables: TableInfo[]

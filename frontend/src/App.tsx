@@ -256,6 +256,11 @@ export default function App() {
       if (activeProfileId) void updateProfile(activeProfileId, { replication_configs: next })
       return next
     })
+    // Clear selection so Setup page starts fresh for the new schema
+    setSelectedTables(new Set())
+    setSelectedSchemas(new Set())
+    clearSelection()
+    if (activeProfileId) void updateProfile(activeProfileId, { selected_tables: [], selected_schemas: [] })
     setActiveSetupPub(pub_name)
     setTab('setup')
   }

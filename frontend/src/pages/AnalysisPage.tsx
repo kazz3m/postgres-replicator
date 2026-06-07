@@ -373,6 +373,12 @@ function SchemaNode({
                               {pub}
                             </button>
                           ))}
+                          {table.is_partitioned && (
+                            <Badge label="PARTITIONED" variant="yellow" />
+                          )}
+                          {table.is_partition && (
+                            <Badge label="PARTITION" variant="gray" />
+                          )}
                           {table.replica_identity === 'nothing' && (
                             <Badge label="NO REPLICATION" variant="red" />
                           )}
