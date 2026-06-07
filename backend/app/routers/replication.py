@@ -481,20 +481,19 @@ async def copy_progress():
     src_pool  = await get_source_pool(state.source_dsn)
 
     async with dest_pool.acquire() as dest_conn:
-        # pg_stat_progress_copy available on PG 14+; LEFT JOIN so older versions still work
         rows = await dest_conn.fetch("""
             SELECT
-                n.nspname                          AS schema_name,
-                c.relname                          AS table_name,
-                sr.srsubstate                      AS sub_state,
-                COALESCE(cp.tuples_done, 0)        AS tuples_done,
-                COALESCE(cp.tuples_total, 0)       AS tuples_total,
-                COALESCE(cp.bytes_processed, 0)    AS bytes_processed,
+                n.nspname                            AS schema_name,
+                c.relname                            AS table_name,
+                sr.srsubstate                        AS sub_state,
+                COALESCE(cp.tuples_done,    0)       AS tuples_done,
+                COALESCE(cp.tuples_total,   0)       AS tuples_total,
+                COALESCE(cp.bytes_processed,0)       AS bytes_processed,
                 COALESCE(pg_relation_size(c.oid), 0) AS table_size_bytes
             FROM pg_subscription_rel sr
-            JOIN pg_class     c ON c.oid = sr.srrelid
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            LEFT JOIN pg_stat_progress_copy cp ON cp.relid = sr.srrelid
+            JOIN pg_class     c  ON c.oid  = sr.srrelid
+            JOIN pg_namespace n  ON n.oid  = c.relnamespace
+            LEFT JOIN pg_stat_progress_copy cp ON cp.relid = c.oid
             ORDER BY n.nspname, c.relname
         """)
 
