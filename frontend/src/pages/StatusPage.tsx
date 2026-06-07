@@ -78,14 +78,14 @@ export function StatusPage({ initialSnapshot }: Props) {
     initialData: initialSnapshot?.progress,
   })
 
-  const { data: copyData, refetch: refetchCopy } = useQuery<CopyProgressResponse>({
+  const { data: copyData, refetch: refetchCopy, isLoading: copyLoading, isError: copyError } = useQuery<CopyProgressResponse>({
     queryKey: ['copy-progress'],
     queryFn: () => replicationApi.copyProgress().then(r => r.data),
-    // Poll faster when copy is active
     refetchInterval: (query) =>
       (query.state.data as CopyProgressResponse | undefined)?.copying_active
         ? 3000
         : interval * 1000,
+    retry: 1,
   })
 
   const { data: slots, refetch: refetchSlots } = useQuery({
@@ -253,7 +253,11 @@ export function StatusPage({ initialSnapshot }: Props) {
         )}
 
         {/* Per-table copy progress */}
-        {!copyData?.tables?.length ? (
+        {copyLoading ? (
+          <div className="p-4 flex items-center gap-2 text-gray-500 text-sm"><Spinner size={3} /> Loading...</div>
+        ) : copyError ? (
+          <div className="p-4 text-red-400 text-sm">Failed to load progress. Check backend logs.</div>
+        ) : !copyData?.tables?.length ? (
           <div className="p-4 text-gray-500 text-sm">No tables tracked yet. Set up replication first.</div>
         ) : (
           <table className="w-full text-xs">

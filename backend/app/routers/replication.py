@@ -478,7 +478,6 @@ async def copy_progress():
     """
     _require_connection()
     dest_pool = await get_dest_pool(state.dest_dsn)
-    src_pool  = await get_source_pool(state.source_dsn)
 
     async with dest_pool.acquire() as dest_conn:
         rows = await dest_conn.fetch("""
