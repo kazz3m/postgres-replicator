@@ -29,12 +29,19 @@ Common use cases: live migrations, reporting replicas, data warehousing, zero-do
 |---|---|
 | **Connection management** | Separate Admin DSN (superuser) and Replication DSN (replicator user); connection profiles saved on server |
 | **Pre-flight checks** | Validates `wal_level = logical`, `REPLICATION` attribute, `LOGIN`, `SELECT` on all published tables, `CREATE` on destination DB, `pg_create_subscription` role (PG 16+), `max_replication_slots` / `max_wal_senders` headroom, pg_hba.conf replication channel |
-| **Database analysis** | Schema/table tree with sizes, row estimates, `REPLICA IDENTITY` badges; search, expand all, select all |
-| **Publication setup** | Create/update/drop publications for individual tables or entire schemas (PG 15+ schema-level publications) |
-| **Subscription setup** | Create/update/drop subscriptions with `copy_data` toggle; verifies target tables exist on destination before applying |
+| **Database analysis** | Three-level lazy tree (cluster → databases → schemas → tables) with sizes, row estimates, `REPLICA IDENTITY` badges; search, expand-all, per-schema select-all |
+| **Publication badges** | Tables already in a publication show a clickable badge; click opens that publication's config directly in Setup tab |
+| **Publications panel** | Per-database collapsible panel listing all found publications with their tables; "Manage" button opens any publication in Setup tab |
+| **Publication setup** | Create/update/drop publications for individual tables or entire schemas (PG 15+ schema-level publications); pub/sub names follow `{8chars}_{pub|sub}_{label}` pattern with 63-byte PG limit enforced |
+| **Multi-publication workspace** | Independently manage multiple publications per workspace; saved configs keyed by pub name with quick-switch buttons |
+| **Subscription setup** | Create/update/drop subscriptions with `copy_data` toggle; verifies target tables exist on destination before applying; live step-by-step progress modal |
+| **Schema synchronization** | Inline schema diff and auto-create missing tables on destination before applying replication; no manual `pg_dump` required |
+| **Roles & grants migration** | `pg_dumpall --globals-only` compatible: generates and applies `CREATE ROLE`, `ALTER ROLE`, membership grants, schema grants, table grants and default privileges; Cloud SQL aware (strips `SUPERUSER`/`NOSUPERUSER`) |
 | **Live monitoring** | Per-table sync progress (`pg_subscription_rel` states), replication slot lag, `pg_stat_subscription` worker health, `pg_stat_replication` write/flush/replay lag |
 | **Conflict handling** | Detect disabled subscriptions, show replication origin LSN, skip conflicting transaction via `ALTER SUBSCRIPTION … SKIP` |
-| **Workspace persistence** | Named workspaces (profiles) stored in Docker volume or local `data/` directory; remembers table selection, last used timestamp |
+| **Sequence sync** | Detect and synchronise sequence values between source and destination after replication completes |
+| **Index sync** | Create missing indexes on destination that exist on source |
+| **Workspace persistence** | Named workspaces (profiles) stored in Docker volume or local `data/` directory; remembers table selection, last used timestamp, all publication configs |
 | **Reset replication** | Drop and recreate subscription + slot from scratch with one click and confirmation dialog |
 | **Refresh publication** | `ALTER SUBSCRIPTION … REFRESH PUBLICATION` without full resync |
 | **Stats interval** | Configurable auto-refresh interval for status page |
@@ -51,9 +58,9 @@ Common use cases: live migrations, reporting replicas, data warehousing, zero-do
 - `pg_hba.conf` entry: `host replication <repl_user> <subscriber_ip>/32 md5`
 
 ### Destination (Subscriber)
-- PostgreSQL 10+
+- PostgreSQL 10+ (including Cloud SQL for PostgreSQL)
 - An admin user with `CREATE` privilege on the target database (or `pg_create_subscription` role on PG 16+)
-- Tables already created (schema is **not** replicated automatically — see [Schema sync](#schema-synchronization))
+- Tables created automatically by the built-in schema sync, or manually before starting replication
 
 ---
 
@@ -110,21 +117,57 @@ The script creates a `.venv`, installs pip and npm dependencies on first run, st
 
 ---
 
+## Typical Workflow
+
+1. **Connect** — enter source admin DSN, source replication DSN, and destination admin DSN
+2. **Analyse** — browse the database tree; select tables or schemas to replicate
+3. **Sync roles** _(optional)_ — open *Roles & Grants Migration* in the Status tab to migrate users and permissions to destination
+4. **Setup replication** — choose a publication label, verify schema diff, create missing tables, then click *Apply Replication*
+5. **Monitor** — watch per-table progress, slot lag and worker health in the Status tab
+6. **Post-migration** — use *Sequence Sync* and *Index Sync* panels to finish the migration
+
+---
+
 ## Schema Synchronization
 
-PostgreSQL logical replication does **not** replicate DDL (table definitions, indexes, sequences). Before starting replication you must create matching tables on the destination:
+The UI performs an inline schema diff before applying replication and can create missing tables on the destination automatically — no manual `pg_dump` required.
+
+For complex scenarios (views, triggers, custom types) use:
 
 ```bash
-# Copy schema only (no data) from source to destination
 pg_dump --schema-only -n public source_db | psql destination_db
-
-# For specific schemas:
-pg_dump --schema-only -n schema1 -n schema2 source_db | psql destination_db
 ```
 
-The UI shows a reminder and the `pg_dump` command before the Apply step.
+> **Sequences** (serial / identity columns) are not replicated. After migration use the *Sequence Sync* panel (Status tab) to align sequence values.
 
-> **Sequences** (serial / identity columns) are not replicated. After failover, reset sequences manually or use `pg_dump --schema-only` to copy current values.
+---
+
+## Roles & Grants Migration
+
+The **Roles & Grants Migration** panel (Status tab) generates `pg_dumpall --globals-only` compatible SQL and applies it on the destination:
+
+- `CREATE ROLE` / `ALTER ROLE` for all non-system roles
+- Role membership grants (`GRANT role TO member`)
+- Per-database schema grants, table grants and `ALTER DEFAULT PRIVILEGES`
+- Password hashes (when accessible — unavailable on Cloud SQL / RDS, commented out with a warning)
+- **Cloud SQL aware** — `SUPERUSER` / `NOSUPERUSER` options are automatically stripped when the destination is detected as Cloud SQL
+
+All statements are shown for review before applying. Individual statements can be deselected, and the full SQL can be copied to the clipboard.
+
+---
+
+## Publication & Subscription Naming
+
+Names follow the pattern:
+
+```
+{8 random chars}_pub_{label}   e.g.  a3f9b2c1_pub_mydb_public
+{8 random chars}_sub_{label}   e.g.  a3f9b2c1_sub_mydb_public
+```
+
+- Label is user-defined, sanitised to `[a-zA-Z0-9_]`, max **50 characters** (PostgreSQL `NAMEDATALEN = 63` minus 13 chars overhead)
+- Live character counter with colour feedback (yellow > 80 %, red at limit)
+- Legacy formats (`pg_sync_pub_label`) are recognised and round-trip correctly
 
 ---
 
@@ -142,8 +185,9 @@ The UI shows a reminder and the `pg_dump` command before the Apply step.
 ┌──────────────▼──────────────────────┐
 │ Backend  (FastAPI + asyncpg)        │
 │ • /api/connections  — connect/test  │
-│ • /api/analysis     — schema sizes  │
+│ • /api/analysis     — schema/tables │
 │ • /api/replication  — pub/sub/slots │
+│ • /api/roles        — roles/grants  │
 │ • /api/profiles     — workspaces    │
 └──────┬───────────────────┬──────────┘
        │ asyncpg           │ asyncpg
@@ -166,17 +210,25 @@ Key endpoints:
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/connections/connect` | Connect to source + destination, run pre-flight checks |
-| `GET` | `/api/analysis/schemas` | List schemas, tables, sizes, replica identity |
+| `GET` | `/api/analysis/databases` | List databases with sizes and dest existence flag |
+| `GET` | `/api/analysis/database-schema-list` | Lazy-load schemas for a database |
+| `GET` | `/api/analysis/schema-tables` | Lazy-load tables for a schema |
+| `GET` | `/api/analysis/published-tables` | Tables grouped by publication name |
 | `POST` | `/api/replication/publication` | Create or update publication |
 | `POST` | `/api/replication/subscription` | Create or update subscription |
+| `GET` | `/api/replication/publication-config` | Full publication config including subscriptions |
+| `POST` | `/api/replication/schema-check` | Diff tables between source and destination |
+| `POST` | `/api/replication/schema-sync` | Create missing tables on destination |
 | `GET` | `/api/replication/progress` | Per-table sync status |
 | `GET` | `/api/replication/worker-stats` | `pg_stat_subscription` — worker health |
-| `GET` | `/api/replication/source-stats` | `pg_stat_replication` — lag details |
-| `GET` | `/api/replication/conflicts` | Disabled subscriptions + replication origins |
-| `POST` | `/api/replication/skip-lsn` | Skip conflicting LSN |
+| `GET` | `/api/replication/sequences` | Sequence drift between source and destination |
+| `POST` | `/api/replication/sequences/sync` | Align sequence values on destination |
 | `POST` | `/api/replication/reset/{name}` | Drop and recreate subscription from scratch |
+| `GET` | `/api/roles/diff` | Generate role/grant DDL statements (pg_dumpall compatible) |
+| `POST` | `/api/roles/apply` | Apply selected role/grant statements on destination |
 | `GET` | `/api/profiles` | List saved workspace profiles |
 | `POST` | `/api/profiles` | Save new workspace profile |
+| `PATCH` | `/api/profiles/{id}` | Update workspace profile |
 
 ---
 
@@ -202,7 +254,7 @@ host  replication  replicator  <subscriber_ip>/32  md5
 ```
 
 ### Tables missing on destination
-Run `pg_dump --schema-only` before creating the subscription (see [Schema sync](#schema-synchronization)).
+Use the built-in schema sync (Setup tab → schema diff panel) to create missing tables automatically before applying replication.
 
 ### Slot lag growing / disk full on source
 If the subscriber becomes unreachable, the replication slot retains WAL indefinitely. Drop the slot from the UI (Slots tab → Drop) or:
@@ -216,11 +268,14 @@ Find the LSN in the subscription worker logs, then use the UI (Status → Confli
 ALTER SUBSCRIPTION my_sub SKIP (LSN '0/1234ABCD');
 ```
 
+### Cloud SQL — roles migration fails with permission error
+Cloud SQL does not expose `pg_authid.rolpassword`. Password statements are automatically commented out in the Roles & Grants panel. Apply the remaining statements and set passwords manually on destination.
+
 ---
 
 ## Security Notes
 
-- DSN passwords are stored in `data/config.json` and `data/profiles.json` on the server volume — protect volume access accordingly
+- DSN passwords are stored encrypted in `data/config.json` and `data/profiles.json` on the server volume — protect volume access accordingly
 - The API has no authentication layer; run behind a reverse proxy with access control when exposing beyond localhost
 - Column lists in publications do not prevent a replication user from reading unpublished columns via other means
 
