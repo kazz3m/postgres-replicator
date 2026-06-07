@@ -42,7 +42,7 @@ const PUB_FIXED = PREFIX_LEN + 1 + 4  // "xxxxxxxx_pub_" = 13 (with separator be
 const SUB_FIXED = PREFIX_LEN + 1 + 4  // "xxxxxxxx_sub_" = 13
 export const LABEL_MAX = PG_NAME_MAX - PUB_FIXED  // 63 - 13 = 50
 
-function randomPrefix(): string {
+export function randomPrefix(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
   return Array.from({ length: PREFIX_LEN }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
 }

@@ -5,7 +5,7 @@ import { Spinner } from '../components/Spinner'
 import { Badge } from '../components/Badge'
 import {
   ChevronDown, ChevronRight, Database, HardDrive, Table,
-  Search, ChevronsDownUp, ChevronsUpDown, PlusCircle, CheckCircle, AlertTriangle,
+  Search, ChevronsUpDown, PlusCircle, CheckCircle, AlertTriangle, Play,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -15,6 +15,7 @@ interface Props {
   pgMajor: number
   onSelectionChange: (tables: Set<string>, schemas: Set<string>) => void
   onOpenPublication?: (config: PublicationServerConfig) => void
+  onCreateReplication?: (db: string, schema: string) => void
 }
 
 function tableKey(db: string, schema: string, table: string) { return `${db}.${schema}.${table}` }
@@ -31,6 +32,108 @@ function SchemaCheckbox({ checked, indeterminate, onChange }: {
   )
 }
 
+// ── Publications panel — collapsible list of found publications in a DB ──────
+
+interface PublicationsPanelProps {
+  dbName: string
+  publishedMap: Record<string, string[]>  // "schema.table" → [pub_names]
+  onOpenPublication?: (config: PublicationServerConfig) => void
+}
+
+function PublicationsPanel({ dbName, publishedMap, onOpenPublication }: PublicationsPanelProps) {
+  const [expanded, setExpanded] = useState(false)
+  const [loadingPub, setLoadingPub] = useState<string | null>(null)
+  const [expandedPubs, setExpandedPubs] = useState<Set<string>>(new Set())
+
+  // Build a map: pub_name → table list
+  const pubTables = Object.entries(publishedMap).reduce<Record<string, string[]>>((acc, [table, pubs]) => {
+    pubs.forEach(pub => {
+      if (!acc[pub]) acc[pub] = []
+      acc[pub].push(table)
+    })
+    return acc
+  }, {})
+
+  const pubNames = Object.keys(pubTables).sort()
+  if (pubNames.length === 0) return null
+
+  async function handleOpen(pub: string, e: React.MouseEvent) {
+    e.stopPropagation()
+    if (!onOpenPublication) return
+    setLoadingPub(pub)
+    try {
+      const { data } = await replicationApi.publicationConfig(pub)
+      onOpenPublication(data)
+    } catch {
+      // ignore
+    } finally {
+      setLoadingPub(null)
+    }
+  }
+
+  function togglePub(pub: string) {
+    setExpandedPubs(prev => {
+      const next = new Set(prev)
+      next.has(pub) ? next.delete(pub) : next.add(pub)
+      return next
+    })
+  }
+
+  return (
+    <div className="border-t border-gray-700 bg-gray-950/60">
+      <button
+        className="w-full flex items-center gap-2 px-4 py-2 text-xs text-amber-400 hover:bg-gray-800/60 select-none"
+        onClick={() => setExpanded(e => !e)}
+      >
+        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        <span className="font-semibold">{pubNames.length} publication{pubNames.length !== 1 ? 's' : ''} found on source</span>
+        <span className="ml-1 text-gray-500">— click to manage</span>
+      </button>
+
+      {expanded && (
+        <div className="px-4 pb-3 space-y-1.5">
+          {pubNames.map(pub => {
+            const tables = pubTables[pub]
+            const isExpPub = expandedPubs.has(pub)
+            return (
+              <div key={pub} className="border border-amber-800/50 rounded bg-amber-950/20">
+                <div
+                  className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-amber-900/20 select-none"
+                  onClick={() => togglePub(pub)}
+                >
+                  {isExpPub ? <ChevronDown size={11} className="text-amber-500 shrink-0" /> : <ChevronRight size={11} className="text-amber-500 shrink-0" />}
+                  <span className="font-mono text-xs text-amber-300 flex-1 truncate">{pub}</span>
+                  <span className="text-xs text-gray-500 shrink-0">{tables.length} table{tables.length !== 1 ? 's' : ''}</span>
+                  <button
+                    onClick={e => handleOpen(pub, e)}
+                    disabled={loadingPub === pub}
+                    className="flex items-center gap-1 text-xs bg-blue-800/60 hover:bg-blue-700/60 border border-blue-700 text-blue-300 px-2 py-0.5 rounded disabled:opacity-50 shrink-0"
+                    title="Open this publication in Setup tab"
+                  >
+                    {loadingPub === pub ? <Spinner size={2} /> : <Play size={10} />}
+                    Manage
+                  </button>
+                </div>
+                {isExpPub && (
+                  <div className="px-3 pb-2">
+                    <div className="flex flex-wrap gap-1">
+                      {tables.map(t => (
+                        <span key={t} className="font-mono text-xs bg-gray-800 text-gray-300 border border-gray-700 rounded px-1.5 py-0.5">
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Schema node — lazy loads its own tables ───────────────────────────────────
 
 interface SchemaNodeProps {
@@ -43,12 +146,13 @@ interface SchemaNodeProps {
   publishedMap: Record<string, string[]>
   onSelectionChange: (tables: Set<string>, schemas: Set<string>) => void
   onOpenPublication?: (config: PublicationServerConfig) => void
+  onCreateReplication?: (db: string, schema: string) => void
   initiallyExpanded: boolean
 }
 
 function SchemaNode({
   dbName, schema, pgMajor, search, selectedTables, selectedSchemas,
-  publishedMap, onSelectionChange, onOpenPublication, initiallyExpanded,
+  publishedMap, onSelectionChange, onOpenPublication, onCreateReplication, initiallyExpanded,
 }: SchemaNodeProps) {
   const [loadingPub, setLoadingPub] = useState<string | null>(null)
 
@@ -175,6 +279,16 @@ function SchemaNode({
             <span className="text-xs text-gray-400">All schema</span>
           </div>
         )}
+        {onCreateReplication && (
+          <button
+            onClick={e => { e.stopPropagation(); onCreateReplication(dbName, schema.schema_name) }}
+            className="flex items-center gap-1 text-xs bg-green-900/40 hover:bg-green-800/60 border border-green-700/60 hover:border-green-600 text-green-400 px-2 py-0.5 rounded ml-2 shrink-0 transition-colors"
+            title={`Create new replication for schema "${schema.schema_name}"`}
+          >
+            <Play size={10} />
+            Create replication
+          </button>
+        )}
       </div>
 
       {/* Table list — lazy loaded */}
@@ -290,11 +404,12 @@ interface DbNodeProps {
   selectedSchemas: Set<string>
   onSelectionChange: (tables: Set<string>, schemas: Set<string>) => void
   onOpenPublication?: (config: PublicationServerConfig) => void
+  onCreateReplication?: (db: string, schema: string) => void
   initiallyExpanded: boolean
 }
 
 function DbNode({
-  db, pgMajor, search, selectedTables, selectedSchemas, onSelectionChange, onOpenPublication, initiallyExpanded,
+  db, pgMajor, search, selectedTables, selectedSchemas, onSelectionChange, onOpenPublication, onCreateReplication, initiallyExpanded,
 }: DbNodeProps) {
   const qc = useQueryClient()
   const [expanded, setExpanded] = useState(initiallyExpanded)
@@ -421,10 +536,19 @@ function DbNode({
               publishedMap={publishedMap}
               onSelectionChange={onSelectionChange}
               onOpenPublication={onOpenPublication}
+              onCreateReplication={onCreateReplication}
               initiallyExpanded={false}
             />
           ))}
         </div>
+      )}
+      {/* Publications panel — shown when db is expanded and publications exist */}
+      {expanded && Object.keys(publishedMap).length > 0 && (
+        <PublicationsPanel
+          dbName={db.database}
+          publishedMap={publishedMap}
+          onOpenPublication={onOpenPublication}
+        />
       )}
     </div>
   )
@@ -432,7 +556,7 @@ function DbNode({
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export function AnalysisPage({ selectedTables, selectedSchemas, pgMajor, onSelectionChange, onOpenPublication }: Props) {
+export function AnalysisPage({ selectedTables, selectedSchemas, pgMajor, onSelectionChange, onOpenPublication, onCreateReplication }: Props) {
   const [search, setSearch] = useState('')
 
   const { data: databases, isLoading, error } = useQuery({
@@ -514,6 +638,7 @@ export function AnalysisPage({ selectedTables, selectedSchemas, pgMajor, onSelec
             selectedSchemas={selectedSchemas}
             onSelectionChange={onSelectionChange}
             onOpenPublication={onOpenPublication}
+            onCreateReplication={onCreateReplication}
             initiallyExpanded={
               [...selectedTables].some(k => k.startsWith(`${db.database}.`)) ||
               [...selectedSchemas].some(k => k.startsWith(`${db.database}.`))

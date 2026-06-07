@@ -7,6 +7,7 @@ import { StatusPage } from './pages/StatusPage'
 import { connectionsApi, analysisApi, SchemaInfo } from './api/client'
 import { ConnectionProfile, ReplicationConfig, touchProfile, updateProfile } from './utils/profiles'
 import { PublicationServerConfig } from './api/client'
+import { randomPrefix, LABEL_MAX } from './pages/ReplicationSetupPage'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 
@@ -229,6 +230,23 @@ export default function App() {
     setTab('setup')
   }
 
+  // ── Create new replication from schema row in Analysis ───────────────────────
+
+  function handleCreateReplication(db: string, schema: string) {
+    const prefix = randomPrefix()
+    const label = schema.trim().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '').slice(0, LABEL_MAX)
+    const pub_name = label ? `${prefix}_pub_${label}` : `${prefix}_pub`
+    const sub_name = label ? `${prefix}_sub_${label}` : `${prefix}_sub`
+    const cfg: ReplicationConfig = { pub_name, sub_name, copy_data: true, database: db }
+    setReplConfigs(prev => {
+      const next = { ...prev, [pub_name]: cfg }
+      if (activeProfileId) void updateProfile(activeProfileId, { replication_configs: next })
+      return next
+    })
+    setActiveSetupPub(pub_name)
+    setTab('setup')
+  }
+
   // ── Disconnect ────────────────────────────────────────────────────────────
 
   function handleDisconnect() {
@@ -333,6 +351,7 @@ export default function App() {
             pgMajor={pgMajor}
             onSelectionChange={handleSelectionChange}
             onOpenPublication={handleOpenPublication}
+            onCreateReplication={handleCreateReplication}
           />
         )}
         {tab === 'setup' && (
