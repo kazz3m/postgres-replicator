@@ -30,6 +30,7 @@ class RolesDiffResponse(BaseModel):
     statements: List[RoleStatement]
     skipped_system_roles: List[str]
     password_available: bool   # False on Cloud SQL / RDS
+    dest_is_cloudsql: bool     # True → SUPERUSER/REPLICATION options stripped
 
 
 class RolesApplyRequest(BaseModel):
@@ -56,16 +57,22 @@ def _q(s: str) -> str:
     return '"' + s.replace('"', '""') + '"'
 
 
-def _role_options(row: dict, password_available: bool) -> str:
-    """Build ALTER ROLE ... WITH ... option string from pg_authid row."""
+def _role_options(row: dict, dest_is_cloudsql: bool = False) -> str:
+    """Build ALTER ROLE ... WITH ... option string from pg_authid row.
+
+    Cloud SQL (destination) rejects SUPERUSER, NOSUPERUSER, REPLICATION,
+    NOREPLICATION and BYPASSRLS — those options are omitted when dest_is_cloudsql.
+    """
     parts = []
-    parts.append("SUPERUSER" if row["rolsuper"] else "NOSUPERUSER")
+    if not dest_is_cloudsql:
+        parts.append("SUPERUSER" if row["rolsuper"] else "NOSUPERUSER")
     parts.append("INHERIT" if row["rolinherit"] else "NOINHERIT")
     parts.append("CREATEROLE" if row["rolcreaterole"] else "NOCREATEROLE")
     parts.append("CREATEDB" if row["rolcreatedb"] else "NOCREATEDB")
     parts.append("LOGIN" if row["rolcanlogin"] else "NOLOGIN")
-    parts.append("REPLICATION" if row["rolreplication"] else "NOREPLICATION")
-    parts.append("BYPASSRLS" if row["rolbypassrls"] else "NOBYPASSRLS")
+    if not dest_is_cloudsql:
+        parts.append("REPLICATION" if row["rolreplication"] else "NOREPLICATION")
+        parts.append("BYPASSRLS" if row["rolbypassrls"] else "NOBYPASSRLS")
     if row["rolconnlimit"] != -1:
         parts.append(f"CONNECTION LIMIT {row['rolconnlimit']}")
     if row["rolvaliduntil"] is not None:
@@ -99,6 +106,7 @@ async def _globals_statements(
     src_conn: asyncpg.Connection,
     dest_roles: set,
     password_available: bool,
+    dest_is_cloudsql: bool = False,
 ) -> List[RoleStatement]:
     stmts: List[RoleStatement] = []
 
@@ -116,7 +124,7 @@ async def _globals_statements(
     for row in rows:
         name = row["rolname"]
         exists = name in dest_roles
-        options = _role_options(dict(row), password_available)
+        options = _role_options(dict(row), dest_is_cloudsql=dest_is_cloudsql)
 
         if not exists:
             stmts.append(RoleStatement(
@@ -310,6 +318,11 @@ async def roles_diff(include_databases: bool = True):
         except asyncpg.InsufficientPrivilegeError:
             password_available = False
 
+        # Detect Cloud SQL on destination — it always has the cloudsqlsuperuser role
+        dest_is_cloudsql = await dest_conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = 'cloudsqlsuperuser')"
+        )
+
         # Roles already present on destination
         dest_role_rows = await dest_conn.fetch(
             "SELECT rolname FROM pg_roles WHERE rolname NOT LIKE 'pg\\_%'"
@@ -324,7 +337,9 @@ async def roles_diff(include_databases: bool = True):
 
         skipped = [r for r in dest_roles if r.startswith("pg_")]
 
-        stmts = await _globals_statements(src_conn, dest_roles, password_available)
+        stmts = await _globals_statements(
+            src_conn, dest_roles, password_available, dest_is_cloudsql=dest_is_cloudsql
+        )
 
     # Per-database grants — use separate connections outside the pool
     if include_databases:
@@ -348,6 +363,7 @@ async def roles_diff(include_databases: bool = True):
         statements=stmts,
         skipped_system_roles=skipped,
         password_available=password_available,
+        dest_is_cloudsql=dest_is_cloudsql,
     )
 
 

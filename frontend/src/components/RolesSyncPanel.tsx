@@ -248,6 +248,16 @@ export function RolesSyncPanel() {
 
           {data && !isLoading && (
             <>
+              {data.dest_is_cloudsql && (
+                <div className="mx-4 mt-3 text-xs text-blue-400 bg-blue-950/30 border border-blue-800 rounded px-3 py-2 flex items-start gap-2">
+                  <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                  <span>
+                    Destination is <strong>Cloud SQL</strong> — <code>SUPERUSER</code>, <code>NOSUPERUSER</code>,
+                    {' '}<code>REPLICATION</code>, <code>NOREPLICATION</code> and <code>BYPASSRLS</code> options
+                    are automatically stripped from all statements.
+                  </span>
+                </div>
+              )}
               {!data.password_available && (
                 <div className="mx-4 mt-3 text-xs text-amber-400 bg-amber-950/30 border border-amber-800 rounded px-3 py-2 flex items-start gap-2">
                   <AlertTriangle size={13} className="shrink-0 mt-0.5" />

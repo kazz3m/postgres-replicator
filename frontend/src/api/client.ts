@@ -158,6 +158,7 @@ export interface RolesDiffResponse {
   statements: RoleStatement[]
   skipped_system_roles: string[]
   password_available: boolean
+  dest_is_cloudsql: boolean
 }
 
 export interface StatementResult {
