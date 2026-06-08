@@ -264,7 +264,7 @@ export function StatusPage({ initialSnapshot }: Props) {
             return s
           }, 0)
           const copyPct = totalSourceBytes > 0 ? Math.min(100, totalCopiedBytes / totalSourceBytes * 100) : null
-          const showCopyProgress = tablesWithSource.length > 0 && synced < total
+          const showCopyProgress = tablesWithSource.length > 0
 
           return (
             <div key={sub.sub_name} className="border-b border-gray-800 last:border-0">
