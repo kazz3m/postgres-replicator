@@ -231,6 +231,8 @@ export const replicationApi = {
     api.post<SchemaSyncResult[]>('/replication/schema-sync', { publication, create_indexes: createIndexes }),
   schemaSyncByTables: (tables: string[], createIndexes: 'before' | 'after' = 'after', database?: string) =>
     api.post<SchemaSyncResult[]>('/replication/schema-sync', { tables, create_indexes: createIndexes, database }),
+  schemaDropRecreate: (tables: string[], database?: string) =>
+    api.post<SchemaSyncResult[]>('/replication/schema-drop-recreate', { tables, database }),
   copyProgress: () =>
     api.get<CopyProgressResponse>('/replication/copy-progress'),
   analyzeTables: (tables: string[]) =>

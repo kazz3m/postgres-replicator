@@ -201,6 +201,7 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
   const [diffs, setDiffs] = useState<TableSchemaDiff[] | null>(null)
   const [checking, setChecking] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [dropping, setDropping] = useState(false)
   const [syncResults, setSyncResults] = useState<SchemaSyncResult[] | null>(null)
   const [createIndexes, setCreateIndexes] = useState<'before' | 'after'>('after')
   const [error, setError] = useState('')
@@ -232,6 +233,23 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
       setError(extractError(e))
     } finally {
       setSyncing(false)
+    }
+  }
+
+  async function runDropRecreate() {
+    if (!window.confirm(`Drop and recreate ${incompatible.length} incompatible table(s) on destination? Existing data will be lost.`))
+      return
+    setDropping(true); setError(''); setSyncResults(null)
+    try {
+      const { data } = await replicationApi.schemaDropRecreate(
+        incompatible.map(d => d.table), database
+      )
+      setSyncResults(data)
+      await runCheck()
+    } catch (e: any) {
+      setError(extractError(e))
+    } finally {
+      setDropping(false)
     }
   }
 
@@ -273,24 +291,39 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
           )}
         </div>
         <div className="flex items-center gap-2">
-          {!allOk && missing.length > 0 && diffs && (
+          {!allOk && diffs && (missing.length > 0 || incompatible.length > 0) && (
             <>
-              <select
-                value={createIndexes}
-                onChange={e => setCreateIndexes(e.target.value as 'before' | 'after')}
-                className="text-xs bg-gray-800 border border-gray-600 rounded px-2 py-1 focus:outline-none"
-              >
-                <option value="after">Indexes: after replication</option>
-                <option value="before">Indexes: before replication</option>
-              </select>
-              <button
-                onClick={runSync}
-                disabled={syncing}
-                className="flex items-center gap-1.5 text-xs bg-orange-700 hover:bg-orange-600 disabled:opacity-50 px-3 py-1.5 rounded font-semibold"
-              >
-                {syncing && <Spinner size={3} />}
-                Create {missing.length} missing table{missing.length !== 1 ? 's' : ''}
-              </button>
+              {missing.length > 0 && (
+                <>
+                  <select
+                    value={createIndexes}
+                    onChange={e => setCreateIndexes(e.target.value as 'before' | 'after')}
+                    className="text-xs bg-gray-800 border border-gray-600 rounded px-2 py-1 focus:outline-none"
+                  >
+                    <option value="after">Indexes: after replication</option>
+                    <option value="before">Indexes: before replication</option>
+                  </select>
+                  <button
+                    onClick={runSync}
+                    disabled={syncing || dropping}
+                    className="flex items-center gap-1.5 text-xs bg-orange-700 hover:bg-orange-600 disabled:opacity-50 px-3 py-1.5 rounded font-semibold"
+                  >
+                    {syncing && <Spinner size={3} />}
+                    Create {missing.length} missing table{missing.length !== 1 ? 's' : ''}
+                  </button>
+                </>
+              )}
+              {incompatible.length > 0 && (
+                <button
+                  onClick={runDropRecreate}
+                  disabled={syncing || dropping}
+                  className="flex items-center gap-1.5 text-xs bg-red-800 hover:bg-red-700 disabled:opacity-50 px-3 py-1.5 rounded font-semibold"
+                  title="Drop incompatible tables on destination and recreate from source schema"
+                >
+                  {dropping && <Spinner size={3} />}
+                  Drop & recreate {incompatible.length} incompatible
+                </button>
+              )}
             </>
           )}
           <button onClick={runCheck} disabled={checking} className="p-1.5 rounded hover:bg-gray-700" title="Re-check">
