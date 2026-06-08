@@ -1,9 +1,27 @@
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from .routers import connections, analysis, replication, profiles, roles
 from .db import close_pools
+
+
+class _IgnoreClientDisconnect(logging.Filter):
+    """Suppress noisy but harmless client-disconnect errors from uvicorn."""
+    _IGNORED = (
+        "connection was closed in the middle of operation",
+        "An existing connection was forcibly closed",
+        "ConnectionResetError",
+        "ConnectionDoesNotExistError",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(s in msg for s in self._IGNORED)
+
+
+logging.getLogger("uvicorn.error").addFilter(_IgnoreClientDisconnect())
 
 
 @asynccontextmanager
