@@ -500,17 +500,30 @@ async def copy_progress():
 
     import asyncpg as _asyncpg
 
-    # WAL lag per slot from source (filter internal pg_sync workers)
+    import re as _re
+    _sync_worker_slot = _re.compile(r'^pg_\d+_sync_\d+$')
+
+    # WAL lag + active state per logical slot from source.
+    # Exclude internal table-sync worker slots (pg_<pid>_sync_<reloid>).
     async with src_pool.acquire() as src_conn:
         slot_rows = await src_conn.fetch("""
             SELECT slot_name, active,
                    COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn), 0) AS lag_bytes
             FROM pg_replication_slots
             WHERE slot_type = 'logical'
-              AND slot_name NOT LIKE 'pg\\_18%'
             ORDER BY slot_name
         """)
-    slot_map = {r["slot_name"]: r for r in slot_rows}
+        # pg_stat_replication: state per application_name (= slot_name for logical subs)
+        repl_rows = await src_conn.fetch("""
+            SELECT application_name, state
+            FROM pg_stat_replication
+        """)
+    repl_state_map = {r["application_name"]: r["state"] for r in repl_rows}
+    # Only keep real subscription slots (exclude worker sync slots)
+    slot_map = {
+        r["slot_name"]: r for r in slot_rows
+        if not _sync_worker_slot.match(r["slot_name"])
+    }
 
     # Get all destination databases
     dest_pool_default = await get_dest_pool(state.dest_dsn)
@@ -522,6 +535,12 @@ async def copy_progress():
         """)]
 
     state_label = {'i':'initializing','d':'copying','f':'synced','s':'synced','r':'ready','e':'error'}
+
+    def _decode_state(v) -> str:
+        """Normalize srsubstate — asyncpg may return bytes on Windows."""
+        if isinstance(v, (bytes, bytearray)):
+            return v.decode()
+        return v or ""
 
     # Per-database query: subscription + tables + copy progress in one shot.
     # pg_subscription JOIN is preferred; Cloud SQL fallback uses pg_stat_subscription.
@@ -577,12 +596,13 @@ async def copy_progress():
                     slot_name=slot_name,
                     database=r["database"],
                     lag_bytes=slot_info["lag_bytes"] if slot_info else 0,
-                    active=slot_info["active"] if slot_info else False,
+                    slot_active=slot_info["active"] if slot_info else False,
+                    repl_state=repl_state_map.get(slot_name),
                     tables=[],
                     copying_active=False,
                 )
 
-            sub_state = r["sub_state"]
+            sub_state = _decode_state(r["sub_state"])
             tuples_done, tuples_total = r["tuples_done"], r["tuples_total"]
             copy_pct: Optional[float] = None
             if sub_state == 'd' and tuples_total > 0:
@@ -641,7 +661,8 @@ async def copy_progress():
                 slot_name=slot_name,
                 database=None,
                 lag_bytes=slot_info["lag_bytes"],
-                active=slot_info["active"],
+                slot_active=slot_info["active"],
+                repl_state=repl_state_map.get(slot_name),
                 tables=[],
                 copying_active=False,
             )

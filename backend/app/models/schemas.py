@@ -106,7 +106,8 @@ class SubscriptionProgress(BaseModel):
     slot_name: str
     database: Optional[str]      # source/dest database name
     lag_bytes: int
-    active: bool
+    slot_active: bool            # pg_replication_slots.active
+    repl_state: Optional[str]    # pg_stat_replication.state (streaming/catchup/backup/…)
     tables: List["TableCopyProgress"]
     copying_active: bool
 

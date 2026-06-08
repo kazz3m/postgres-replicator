@@ -259,7 +259,21 @@ export function StatusPage({ initialSnapshot }: Props) {
               <div className="px-4 py-2.5 flex flex-wrap items-center gap-3 text-xs">
                 <Database size={12} className="text-gray-500 shrink-0" />
                 <span className="font-mono text-gray-300 font-medium">{sub.sub_name}</span>
-                <Badge label={sub.active ? 'active' : 'inactive'} variant={sub.active ? 'green' : 'gray'} />
+                {/* Slot active + replication state */}
+                <Badge
+                  label={sub.slot_active ? 'active' : 'inactive'}
+                  variant={sub.slot_active ? 'green' : 'gray'}
+                />
+                {sub.repl_state && (
+                  <span className={clsx(
+                    'text-xs border rounded px-1.5 py-0.5 font-mono',
+                    sub.repl_state === 'streaming' ? 'bg-green-950 border-green-800 text-green-300' :
+                    sub.repl_state === 'catchup'   ? 'bg-yellow-950 border-yellow-800 text-yellow-300' :
+                    'bg-gray-800 border-gray-700 text-gray-300'
+                  )}>
+                    {sub.repl_state}
+                  </span>
+                )}
 
                 {/* Database badge */}
                 {sub.database && (
@@ -310,9 +324,9 @@ export function StatusPage({ initialSnapshot }: Props) {
 
                 <button
                   onClick={() => setConfirmDropSlot(sub.slot_name)}
-                  disabled={actionLoading || sub.active}
+                  disabled={actionLoading || sub.slot_active}
                   className="text-xs text-red-500/60 hover:text-red-400 border border-red-900/50 hover:border-red-800 px-1.5 py-0.5 rounded disabled:opacity-30 transition-colors"
-                  title={sub.active ? 'Cannot drop active slot' : 'Drop slot'}
+                  title={sub.slot_active ? 'Cannot drop active slot' : 'Drop slot'}
                 >
                   Drop slot
                 </button>

@@ -168,7 +168,8 @@ export interface SubscriptionProgress {
   slot_name: string
   database: string | null
   lag_bytes: number
-  active: boolean
+  slot_active: boolean       // pg_replication_slots.active
+  repl_state: string | null  // pg_stat_replication.state (streaming/catchup/…)
   tables: TableCopyProgress[]
   copying_active: boolean
 }
