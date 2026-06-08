@@ -23,10 +23,13 @@ def _require_connection():
 @router.post("/publication")
 async def create_or_update_publication(config: PublicationConfig):
     _require_connection()
+    import asyncpg as _asyncpg
+    # Use a dedicated connection to the correct source database.
+    # get_source_pool() caches by identity — passing a different DSN is ignored
+    # if the pool already exists. Direct connect is the only safe option here.
     src_dsn = dsn_for_database(state.source_dsn, config.database) if config.database else state.source_dsn
-    pool = await get_source_pool(src_dsn)
-
-    async with pool.acquire() as conn:
+    conn = await _asyncpg.connect(src_dsn, timeout=15)
+    try:
         version_num = await conn.fetchval("SELECT current_setting('server_version_num')::int")
         major = version_num // 10000
 
@@ -44,7 +47,6 @@ async def create_or_update_publication(config: PublicationConfig):
             await conn.execute(f'DROP PUBLICATION IF EXISTS "{config.publication_name}"')
 
         if config.target.schemas:
-            # Validate each schema exists and quote safely — prevents SQL injection
             valid = await conn.fetch(
                 "SELECT quote_ident(nspname) AS safe_name "
                 "FROM pg_namespace WHERE nspname = ANY($1)",
@@ -57,7 +59,6 @@ async def create_or_update_publication(config: PublicationConfig):
                 f'CREATE PUBLICATION "{config.publication_name}" FOR TABLES IN SCHEMA {schemas_sql}'
             )
         elif config.target.tables:
-            # Validate each table exists and quote safely — prevents SQL injection
             valid = await conn.fetch(
                 "SELECT quote_ident(table_schema)||'.'||quote_ident(table_name) AS safe_name "
                 "FROM information_schema.tables "
@@ -72,6 +73,8 @@ async def create_or_update_publication(config: PublicationConfig):
             )
         else:
             raise HTTPException(400, "Specify at least one schema or table.")
+    finally:
+        await conn.close()
 
     return {"status": "ok", "publication_name": config.publication_name, "updated": bool(exists)}
 
