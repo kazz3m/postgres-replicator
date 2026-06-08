@@ -201,8 +201,12 @@ async def list_publications():
 async def create_or_update_subscription(config: SubscriptionConfig):
     _require_connection()
 
-    # Use dedicated replication DSN if provided, otherwise fall back to admin DSN
+    # Use dedicated replication DSN if provided, otherwise fall back to admin DSN.
+    # If a specific database is requested, replace the database in the DSN so the
+    # subscriber connects to the correct source database (not the DSN default).
     conn_dsn = state.source_repl_dsn if state.source_repl_dsn else config.source_dsn
+    if config.database:
+        conn_dsn = dsn_for_database(conn_dsn, config.database)
 
     # Validate DSN format and prevent dollar-quoting escape
     if not re.match(r'^postgres(ql)?://', conn_dsn):
@@ -1008,16 +1012,19 @@ async def sync_sequences(body: dict):
 
 # ── Schema DDL sync ───────────────────────────────────────────────────────────
 
-async def _diff_table_list(table_pairs: list[tuple[str, str]]) -> list[TableSchemaDiff]:
-    """Core diff logic — accepts list of (schema, table) pairs."""
-    src_pool = await get_source_pool(state.source_dsn)
+async def _diff_table_list(table_pairs: list[tuple[str, str]], database: str | None = None) -> list[TableSchemaDiff]:
+    """Core diff logic — accepts list of (schema, table) pairs.
+    database: if provided, connects to that specific source database instead of DSN default.
+    """
+    import asyncpg as _asyncpg
+    src_dsn = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    src_conn = await _asyncpg.connect(src_dsn, timeout=15)
     dest_pool = await get_dest_pool(state.dest_dsn)
     results = []
+    try:
+        for schema_name, table_name in table_pairs:
+            fqn = f"{schema_name}.{table_name}"
 
-    for schema_name, table_name in table_pairs:
-        fqn = f"{schema_name}.{table_name}"
-
-        async with src_pool.acquire() as src_conn:
             src_cols = await src_conn.fetch("""
                 SELECT column_name, udt_name AS data_type
                 FROM information_schema.columns
@@ -1025,43 +1032,44 @@ async def _diff_table_list(table_pairs: list[tuple[str, str]]) -> list[TableSche
                 ORDER BY ordinal_position
             """, schema_name, table_name)
 
-        async with dest_pool.acquire() as dest_conn:
-            dest_cols = await dest_conn.fetch("""
-                SELECT column_name, udt_name AS data_type
-                FROM information_schema.columns
-                WHERE table_schema = $1 AND table_name = $2
-                ORDER BY ordinal_position
-            """, schema_name, table_name)
-            table_exists = await dest_conn.fetchval(
-                "SELECT 1 FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2",
-                schema_name, table_name,
-            )
+            async with dest_pool.acquire() as dest_conn:
+                dest_cols = await dest_conn.fetch("""
+                    SELECT column_name, udt_name AS data_type
+                    FROM information_schema.columns
+                    WHERE table_schema = $1 AND table_name = $2
+                    ORDER BY ordinal_position
+                """, schema_name, table_name)
+                table_exists = await dest_conn.fetchval(
+                    "SELECT 1 FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2",
+                    schema_name, table_name,
+                )
 
-        dest_col_map = {r["column_name"]: r for r in dest_cols}
-        col_diffs = []
-        compatible = bool(table_exists)
+            dest_col_map = {r["column_name"]: r for r in dest_cols}
+            col_diffs = []
+            compatible = bool(table_exists)
 
-        for src_col in src_cols:
-            cname = src_col["column_name"]
-            src_type = src_col["data_type"]
-            dest_col = dest_col_map.get(cname)
-            match = bool(dest_col and dest_col["data_type"] == src_type)
-            if not match:
-                compatible = False
-            col_diffs.append(ColumnDiff(
-                column_name=cname,
-                source_type=src_type,
-                dest_type=dest_col["data_type"] if dest_col else None,
-                match=match,
+            for src_col in src_cols:
+                cname = src_col["column_name"]
+                src_type = src_col["data_type"]
+                dest_col = dest_col_map.get(cname)
+                match = bool(dest_col and dest_col["data_type"] == src_type)
+                if not match:
+                    compatible = False
+                col_diffs.append(ColumnDiff(
+                    column_name=cname,
+                    source_type=src_type,
+                    dest_type=dest_col["data_type"] if dest_col else None,
+                    match=match,
+                ))
+
+            results.append(TableSchemaDiff(
+                table=fqn,
+                exists_on_dest=bool(table_exists),
+                columns=col_diffs,
+                compatible=compatible,
             ))
-
-        results.append(TableSchemaDiff(
-            table=fqn,
-            exists_on_dest=bool(table_exists),
-            columns=col_diffs,
-            compatible=compatible,
-        ))
-
+    finally:
+        await src_conn.close()
     return results
 
 
@@ -1089,6 +1097,7 @@ async def schema_check(body: dict):
     """
     _require_connection()
     raw_tables: list[str] = body.get("tables", [])
+    database: str | None = body.get("database")
     if not raw_tables:
         return []
     pairs = []
@@ -1097,7 +1106,7 @@ async def schema_check(body: dict):
             continue
         schema, table = t.split(".", 1)
         pairs.append((schema, table))
-    return await _diff_table_list(pairs)
+    return await _diff_table_list(pairs, database=database)
 
 
 async def _get_table_indexes(src_conn, schema_name: str, table_name: str) -> list[IndexInfo]:
@@ -1224,22 +1233,22 @@ async def schema_sync(body: dict):
     """
     _require_connection()
     publication = body.get("publication")
-    tables_direct: list[str] = body.get("tables", [])  # alternative: explicit table list
+    tables_direct: list[str] = body.get("tables", [])
+    database: str | None = body.get("database")
     if not publication and not tables_direct:
         raise HTTPException(400, "publication or tables required")
-    # create_indexes: "before" = create indexes right after table creation
-    #                 "after"  = skip (user creates manually or calls /schema/create-indexes)
-    # Default: "after" (safe during initial large copy — indexes slow down INSERT)
     create_indexes_when: str = body.get("create_indexes", "after")
 
     if publication:
         diffs = await schema_diff(publication)
     else:
         pairs = [t.split(".", 1) for t in tables_direct if "." in t]
-        diffs = await _diff_table_list([(p[0], p[1]) for p in pairs])
+        diffs = await _diff_table_list([(p[0], p[1]) for p in pairs], database=database)
     results = []
 
-    src_pool = await get_source_pool(state.source_dsn)
+    import asyncpg as _asyncpg
+    src_dsn = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    src_pool_conn = await _asyncpg.connect(src_dsn, timeout=15)
     dest_pool = await get_dest_pool(state.dest_dsn)
 
     for diff in diffs:
@@ -1259,8 +1268,8 @@ async def schema_sync(body: dict):
 
         try:
             # Build CREATE TABLE DDL from pg_catalog on source
-            async with src_pool.acquire() as src_conn:
-                cols = await src_conn.fetch("""
+            src_conn = src_pool_conn
+            cols = await src_conn.fetch("""
                     SELECT
                         a.attname AS col,
                         pg_catalog.format_type(a.atttypid, a.atttypmod) AS col_type,
@@ -1278,7 +1287,7 @@ async def schema_sync(body: dict):
                     ORDER BY a.attnum
                 """, schema_name, table_name)
 
-                pk_cols = await src_conn.fetch("""
+            pk_cols = await src_conn.fetch("""
                     SELECT a.attname
                     FROM pg_index i
                     JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
@@ -1289,8 +1298,8 @@ async def schema_sync(body: dict):
                     ORDER BY array_position(i.indkey, a.attnum)
                 """, schema_name, table_name)
 
-                # Detect partitioned table (relkind='p') and get PARTITION BY clause
-                partition_info = await src_conn.fetchrow("""
+            # Detect partitioned table (relkind='p') and get PARTITION BY clause
+            partition_info = await src_conn.fetchrow("""
                     SELECT c.relkind,
                            c.relispartition,
                            pg_get_partkeydef(c.oid) AS partkeydef,
@@ -1305,10 +1314,10 @@ async def schema_sync(body: dict):
                     WHERE n.nspname = $1 AND c.relname = $2
                 """, schema_name, table_name)
 
-                # Get child partitions if this is a partitioned table
-                child_partitions = []
-                if partition_info and partition_info["relkind"] == "p":
-                    child_partitions = await src_conn.fetch("""
+            # Get child partitions if this is a partitioned table
+            child_partitions = []
+            if partition_info and partition_info["relkind"] == "p":
+                child_partitions = await src_conn.fetch("""
                         SELECT
                             cn.nspname AS child_schema,
                             cc.relname AS child_table,
@@ -1388,8 +1397,7 @@ async def schema_sync(body: dict):
             # before replication starts so destination is ready to serve queries)
             index_results: list[IndexInfo] = []
             if create_indexes_when == "before":
-                async with src_pool.acquire() as src_conn:
-                    idx_list = await _get_table_indexes(src_conn, schema_name, table_name)
+                idx_list = await _get_table_indexes(src_pool_conn, schema_name, table_name)
                 async with dest_pool.acquire() as dest_conn:
                     for idx in idx_list:
                         try:
@@ -1416,4 +1424,5 @@ async def schema_sync(body: dict):
                 detail=str(e),
             ))
 
+    await src_pool_conn.close()
     return results

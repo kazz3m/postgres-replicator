@@ -41,6 +41,7 @@ class SubscriptionConfig(BaseModel):
     publication_name: str = "pg_sync_pub"
     source_dsn: str
     copy_data: bool = True
+    database: Optional[str] = None  # source database; if set, overrides DSN default in CONNECTION string
 
 
 class ReplicationSlotInfo(BaseModel):
