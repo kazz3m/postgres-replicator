@@ -1536,9 +1536,19 @@ async def schema_sync(body: dict):
                 except Exception:
                     pass  # partition may already exist
 
-            # Optionally create indexes immediately
+            # Index strategy:
+            # - Partitioned parent (relkind='p'): always create indexes immediately —
+            #   PostgreSQL automatically propagates them to all child partitions,
+            #   so they must exist before data arrives via replication.
+            # - Child partition (relispartition=True): skip — indexes are inherited
+            #   from the parent; creating them separately causes duplicates.
+            # - Plain table: respect create_indexes_when setting.
             index_results: list[IndexInfo] = []
-            if create_indexes_when == "before":
+            should_create_indexes = (
+                is_partitioned or  # always before for partitioned parents
+                (not is_partition and create_indexes_when == "before")
+            )
+            if should_create_indexes and not is_partition:
                 idx_list = await _get_table_indexes(src_pool_conn, schema_name, table_name)
                 for idx in idx_list:
                     try:
@@ -1551,8 +1561,12 @@ async def schema_sync(body: dict):
                 table=diff.table,
                 action="created",
                 detail=(
-                    f"Table created with {len(index_results)} index(es)."
-                    if create_indexes_when == "before" and index_results
+                    f"Partitioned table created with {len(index_results)} index(es) (propagated to partitions)."
+                    if is_partitioned and index_results
+                    else f"Table created with {len(index_results)} index(es)."
+                    if index_results
+                    else "Table created."
+                    if is_partition
                     else "Table created. Indexes NOT created — use 'Create indexes' after replication completes."
                 ),
                 indexes=index_results,

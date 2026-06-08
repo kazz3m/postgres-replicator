@@ -203,7 +203,7 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
   const [syncing, setSyncing] = useState(false)
   const [dropping, setDropping] = useState(false)
   const [syncResults, setSyncResults] = useState<SchemaSyncResult[] | null>(null)
-  const [createIndexes, setCreateIndexes] = useState<'before' | 'after'>('after')
+  const [createIndexes, setCreateIndexes] = useState<'before' | 'after'>('before')
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
@@ -300,8 +300,8 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
                     onChange={e => setCreateIndexes(e.target.value as 'before' | 'after')}
                     className="text-xs bg-gray-800 border border-gray-600 rounded px-2 py-1 focus:outline-none"
                   >
+                    <option value="before">Indexes: before replication (recommended for partitioned tables)</option>
                     <option value="after">Indexes: after replication</option>
-                    <option value="before">Indexes: before replication</option>
                   </select>
                   <button
                     onClick={runSync}
