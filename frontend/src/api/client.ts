@@ -25,7 +25,7 @@ export interface SchemaInfo {
   total_size_bytes: number; total_size_pretty: string
 }
 export interface ReplicationTarget { schemas?: string[]; tables?: string[] }
-export interface PublicationConfig { publication_name: string; target: ReplicationTarget }
+export interface PublicationConfig { publication_name: string; target: ReplicationTarget; database?: string }
 
 export interface PublicationServerConfig {
   pub_name: string

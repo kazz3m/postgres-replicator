@@ -475,7 +475,10 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
     // Step 1 — create publication
     setStep(0, { state: 'running' })
     try {
-      await replicationApi.createPublication({ publication_name: pubName, target })
+      const database = replConfigs[pubName]?.database
+        ?? (selectedTables.size > 0 ? [...selectedTables][0].split('.')[0] : undefined)
+        ?? (selectedSchemas.size > 0 ? [...selectedSchemas][0].split('.')[0] : undefined)
+      await replicationApi.createPublication({ publication_name: pubName, target, database })
       setStep(0, { state: 'ok', detail: `FOR ${selectedSchemas.size > 0 ? 'TABLES IN SCHEMA' : 'TABLE'} ${selectedSchemas.size > 0 ? Array.from(selectedSchemas).map(toSchema).join(', ') : Array.from(selectedTables).map(toSchemaTable).slice(0, 3).join(', ') + (selectedTables.size > 3 ? ` +${selectedTables.size - 3} more` : '')}` })
     } catch (e: any) {
       const msg = extractError(e)

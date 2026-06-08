@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from typing import List
 import asyncpg
 from ..models.schemas import SchemaInfo, TableInfo
-from ..db import get_source_pool, get_dest_pool
+from ..db import get_source_pool, get_dest_pool, dsn_for_database
 from .. import state
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
@@ -14,15 +14,6 @@ def _require_connection():
     if not state.source_dsn:
         raise HTTPException(400, "Not connected. Call /api/connections/connect first.")
 
-
-def _dsn_for_database(base_dsn: str, database: str) -> str:
-    """Swap the database name in a DSN while preserving all other parameters."""
-    import urllib.parse
-    parsed = urllib.parse.urlparse(base_dsn)
-    # path is /dbname[?flags] — replace just the dbname part
-    new_path = "/" + urllib.parse.quote(database, safe="")
-    new = parsed._replace(path=new_path)
-    return urllib.parse.urlunparse(new)
 
 
 @router.get("/databases")
@@ -71,7 +62,7 @@ async def list_database_schema_list(database: str):
     Called when user expands a database node — fast, no per-table stats.
     """
     _require_connection()
-    db_dsn = _dsn_for_database(state.source_dsn, database)
+    db_dsn = dsn_for_database(state.source_dsn, database)
     try:
         conn = await asyncpg.connect(db_dsn, timeout=10)
     except Exception as e:
@@ -113,7 +104,7 @@ async def list_schema_tables(database: str, schema: str):
     Called when user expands a schema node — lazy loaded.
     """
     _require_connection()
-    db_dsn = _dsn_for_database(state.source_dsn, database)
+    db_dsn = dsn_for_database(state.source_dsn, database)
     try:
         conn = await asyncpg.connect(db_dsn, timeout=10)
     except Exception as e:
@@ -165,7 +156,7 @@ async def list_schema_tables(database: str, schema: str):
 async def list_database_schemas(database: str):
     """Legacy endpoint — returns all schemas+tables. Kept for backward compat."""
     _require_connection()
-    db_dsn = _dsn_for_database(state.source_dsn, database)
+    db_dsn = dsn_for_database(state.source_dsn, database)
     try:
         conn = await asyncpg.connect(db_dsn, timeout=10)
     except Exception as e:
@@ -240,7 +231,7 @@ async def ensure_database(body: dict):
         raise HTTPException(400, f"Invalid database name: '{database}'")
 
     # Connect to maintenance DB on destination (CREATE DATABASE cannot run in tx)
-    maint_dsn = _dsn_for_database(state.dest_dsn, "postgres")
+    maint_dsn = dsn_for_database(state.dest_dsn, "postgres")
     try:
         conn = await asyncpg.connect(maint_dsn, timeout=10)
     except Exception as e:
@@ -269,7 +260,7 @@ async def published_tables(database: str):
     Used by the UI to warn when selecting tables already being replicated.
     """
     _require_connection()
-    db_dsn = _dsn_for_database(state.source_dsn, database)
+    db_dsn = dsn_for_database(state.source_dsn, database)
     try:
         conn = await asyncpg.connect(db_dsn, timeout=10)
     except Exception as e:

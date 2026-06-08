@@ -33,6 +33,7 @@ class ReplicationTarget(BaseModel):
 class PublicationConfig(BaseModel):
     publication_name: str = "pg_sync_pub"
     target: ReplicationTarget
+    database: Optional[str] = None  # source database name; None = use DSN default
 
 
 class SubscriptionConfig(BaseModel):

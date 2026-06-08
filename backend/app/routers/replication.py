@@ -7,7 +7,7 @@ from ..models.schemas import (
     SequenceInfo, TableSchemaDiff, ColumnDiff, SchemaSyncResult,
     IndexInfo, IndexCreateResult, TableCopyProgress, CopyProgressResponse,
 )
-from ..db import get_source_pool, get_dest_pool
+from ..db import get_source_pool, get_dest_pool, dsn_for_database
 from .. import state
 
 router = APIRouter(prefix="/api/replication", tags=["replication"])
@@ -23,7 +23,8 @@ def _require_connection():
 @router.post("/publication")
 async def create_or_update_publication(config: PublicationConfig):
     _require_connection()
-    pool = await get_source_pool(state.source_dsn)
+    src_dsn = dsn_for_database(state.source_dsn, config.database) if config.database else state.source_dsn
+    pool = await get_source_pool(src_dsn)
 
     async with pool.acquire() as conn:
         version_num = await conn.fetchval("SELECT current_setting('server_version_num')::int")
