@@ -498,27 +498,42 @@ async def copy_progress():
     dest_pool = await get_dest_pool(state.dest_dsn)
     src_pool  = await get_source_pool(state.source_dsn)
 
-    # Get all subscriptions from destination.
-    # pg_subscription requires superuser on Cloud SQL — fall back to pg_stat_subscription
-    # which is readable by pg_monitor and subscription owner.
-    async with dest_pool.acquire() as dest_conn:
+    # Get all subscriptions across all destination databases.
+    # Subscription is per-database in PG — we must connect to each DB separately.
+    # pg_subscription requires superuser (Cloud SQL); fallback to pg_stat_subscription.
+    import asyncpg as _asyncpg
+
+    dest_pool_default = await get_dest_pool(state.dest_dsn)
+    async with dest_pool_default.acquire() as _dc:
+        dest_db_names = [r["datname"] for r in await _dc.fetch("""
+            SELECT datname FROM pg_database
+            WHERE datistemplate = false AND datname NOT IN ('postgres', 'template0', 'template1')
+            ORDER BY datname
+        """)]
+
+    sub_rows = []
+    for db_name in dest_db_names:
+        db_dsn = dsn_for_database(state.dest_dsn, db_name)
         try:
-            sub_rows = await dest_conn.fetch("""
-                SELECT s.subname, s.subslotname,
-                       (regexp_match(s.subconninfo, 'dbname=([^ ]+)'))[1] AS database
-                FROM pg_subscription s
-                ORDER BY s.subname
-            """)
+            db_conn = await _asyncpg.connect(db_dsn, timeout=10)
         except Exception:
-            # Cloud SQL / restricted env: pg_subscription not readable
-            # pg_stat_subscription has no subslotname — use subname as slot name (our convention)
-            sub_rows = await dest_conn.fetch("""
-                SELECT subname, subname AS subslotname, NULL::text AS database
-                FROM pg_stat_subscription
-                WHERE subrelid IS NULL
-                GROUP BY subname
-                ORDER BY subname
-            """)
+            continue
+        try:
+            try:
+                rows = await db_conn.fetch("""
+                    SELECT subname, subslotname, $1::text AS database
+                    FROM pg_subscription ORDER BY subname
+                """, db_name)
+            except Exception:
+                rows = await db_conn.fetch("""
+                    SELECT subname, subname AS subslotname, $1::text AS database
+                    FROM pg_stat_subscription
+                    WHERE subrelid IS NULL
+                    GROUP BY subname ORDER BY subname
+                """, db_name)
+            sub_rows.extend(rows)
+        finally:
+            await db_conn.close()
 
     # Get WAL lag per slot from source
     async with src_pool.acquire() as src_conn:
