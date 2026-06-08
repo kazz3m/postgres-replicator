@@ -511,7 +511,12 @@ async def copy_progress():
             ORDER BY datname
         """)]
 
-    sub_rows = []
+    # Collect subscriptions per database — deduplicate by subname keeping the
+    # database where the subscription name actually matches (contains the db name),
+    # otherwise keep first occurrence. This handles Cloud SQL where
+    # pg_stat_subscription may surface subscriptions across databases.
+    seen_subs: dict[str, dict] = {}  # subname -> row dict
+
     for db_name in dest_db_names:
         db_dsn = dsn_for_database(state.dest_dsn, db_name)
         try:
@@ -531,9 +536,18 @@ async def copy_progress():
                     WHERE subrelid IS NULL
                     GROUP BY subname ORDER BY subname
                 """, db_name)
-            sub_rows.extend(rows)
+            for row in rows:
+                sname = row["subname"]
+                row_dict = {"subname": sname, "subslotname": row["subslotname"], "database": db_name}
+                if sname not in seen_subs:
+                    seen_subs[sname] = row_dict
+                elif db_name in sname:
+                    # Prefer the database whose name appears in the subscription name
+                    seen_subs[sname] = row_dict
         finally:
             await db_conn.close()
+
+    sub_rows = list(seen_subs.values())
 
     # Get WAL lag per slot from source
     async with src_pool.acquire() as src_conn:
