@@ -1350,6 +1350,12 @@ async def schema_sync(body: dict):
         if row:
             table_meta[(s, t)] = dict(row)
 
+    def _relkind(v) -> str:
+        """Normalize pg relkind — asyncpg may return bytes on some platforms."""
+        if isinstance(v, (bytes, bytearray)):
+            return v.decode()
+        return v or ""
+
     # Sort: partitioned parents first, then plain tables, then child partitions last
     def sort_key(d):
         s, t = d.table.split(".", 1)
@@ -1361,12 +1367,6 @@ async def schema_sync(body: dict):
     diffs = sorted(diffs, key=sort_key)
 
     rebuilt_parents: set[tuple[str, str]] = set()  # track parents already rebuilt
-
-    def _relkind(v) -> str:
-        """Normalize pg relkind — asyncpg may return bytes on some platforms."""
-        if isinstance(v, (bytes, bytearray)):
-            return v.decode()
-        return v or ""
 
     for diff in diffs:
         if diff.exists_on_dest:
