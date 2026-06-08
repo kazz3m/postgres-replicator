@@ -348,6 +348,9 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
               'text-yellow-400': r.action === 'incompatible',
             })}>
               {r.action === 'created' ? '✓' : r.action === 'error' ? '✗' : '·'} {r.table}
+              {r.action === 'error' && r.detail && (
+                <span className="ml-2 text-red-300 font-normal font-mono">{r.detail}</span>
+              )}
             </span>
           ))}
         </div>
