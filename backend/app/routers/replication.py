@@ -1327,8 +1327,28 @@ async def schema_sync(body: dict):
     src_pool_conn  = await _asyncpg.connect(src_dsn,  timeout=15)
     dest_pool_conn = await _asyncpg.connect(dest_dsn, timeout=15)
 
-    import logging as _log2
-    _log2.getLogger("uvicorn.error").info(f"schema_sync diffs: {[(d.table, d.exists_on_dest, d.compatible) for d in diffs]}")
+    # Detect which missing tables are partitions — need to be created after their parent.
+    # Query source for partition info on all missing tables at once.
+    missing_tables = [d for d in diffs if not d.exists_on_dest]
+    if missing_tables:
+        partition_check = await src_pool_conn.fetch("""
+            SELECT n.nspname AS schema_name, c.relname AS table_name,
+                   c.relispartition
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE (n.nspname, c.relname) = ANY(
+                SELECT unnest($1::text[]), unnest($2::text[])
+            )
+        """,
+            [d.table.split(".", 1)[0] for d in missing_tables],
+            [d.table.split(".", 1)[1] for d in missing_tables],
+        )
+        is_partition_map = {(r["schema_name"], r["table_name"]): r["relispartition"]
+                            for r in partition_check}
+        # Sort: non-partitions first, partitions last
+        diffs = sorted(diffs, key=lambda d: (
+            is_partition_map.get(tuple(d.table.split(".", 1)), False)
+        ))
 
     for diff in diffs:
         if diff.exists_on_dest:
@@ -1462,6 +1482,45 @@ async def schema_sync(body: dict):
                 )
 
             await dest_pool_conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"')
+
+            # If this is a partition, verify the parent table on dest is actually partitioned.
+            # If not (e.g. created incorrectly as a plain table), drop and recreate it.
+            if is_partition and partition_info["parent_schema"] and partition_info["parent_table"]:
+                ps, pt = partition_info["parent_schema"], partition_info["parent_table"]
+                parent_relkind = await dest_pool_conn.fetchval("""
+                    SELECT c.relkind FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = $1 AND c.relname = $2
+                """, ps, pt)
+                if parent_relkind is not None and parent_relkind != 'p':
+                    # Parent exists but is not partitioned — rebuild it from source
+                    await dest_pool_conn.execute(f'DROP TABLE IF EXISTS "{ps}"."{pt}" CASCADE')
+                    # Recreate parent from source DDL
+                    parent_cols = await src_pool_conn.fetch("""
+                        SELECT a.attname AS col,
+                               pg_catalog.format_type(a.atttypid, a.atttypmod) AS col_type,
+                               a.attnotnull AS not_null,
+                               pg_get_expr(d.adbin, d.adrelid) AS col_default,
+                               a.attidentity AS identity
+                        FROM pg_attribute a
+                        JOIN pg_class c ON c.oid = a.attrelid
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+                        WHERE n.nspname = $1 AND c.relname = $2
+                          AND a.attnum > 0 AND NOT a.attisdropped
+                        ORDER BY a.attnum
+                    """, ps, pt)
+                    parent_partkey = await src_pool_conn.fetchval(
+                        "SELECT pg_get_partkeydef(c.oid) FROM pg_class c "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE n.nspname = $1 AND c.relname = $2", ps, pt)
+                    if parent_partkey:
+                        p_col_defs = [f"  {qi(c['col'])} {c['col_type']}" for c in parent_cols]
+                        parent_ddl = (f'CREATE TABLE "{ps}"."{pt}" (\n'
+                                      + ",\n".join(p_col_defs)
+                                      + f"\n) PARTITION BY {parent_partkey};")
+                        await dest_pool_conn.execute(parent_ddl)
+
             await dest_pool_conn.execute(ddl)
             # Create child partitions for partitioned tables
             for cp in child_partitions:
