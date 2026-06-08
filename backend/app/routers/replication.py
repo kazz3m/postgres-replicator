@@ -1354,7 +1354,7 @@ async def schema_sync(body: dict):
     def sort_key(d):
         s, t = d.table.split(".", 1)
         meta = table_meta.get((s, t), {})
-        if meta.get("relkind") == "p":       return 0  # partitioned parent
+        if _relkind(meta.get("relkind")) == "p":  return 0  # partitioned parent
         if meta.get("relispartition"):        return 2  # child partition
         return 1                                        # plain table
 
@@ -1362,10 +1362,11 @@ async def schema_sync(body: dict):
 
     rebuilt_parents: set[tuple[str, str]] = set()  # track parents already rebuilt
 
-    import logging as _slog
-    _slog.getLogger("uvicorn.error").info(
-        f"schema_sync order: {[(d.table, d.exists_on_dest, table_meta.get(tuple(d.table.split('.',1)),{}).get('relkind'), table_meta.get(tuple(d.table.split('.',1)),{}).get('relispartition')) for d in diffs if not d.exists_on_dest]}"
-    )
+    def _relkind(v) -> str:
+        """Normalize pg relkind — asyncpg may return bytes on some platforms."""
+        if isinstance(v, (bytes, bytearray)):
+            return v.decode()
+        return v or ""
 
     for diff in diffs:
         if diff.exists_on_dest:
@@ -1433,7 +1434,7 @@ async def schema_sync(body: dict):
                     col_def += " NOT NULL"
                 col_defs.append(col_def)
 
-            is_partitioned = partition_info and partition_info["relkind"] == "p"
+            is_partitioned = partition_info and _relkind(partition_info.get("relkind")) == "p"
             is_partition   = partition_info and partition_info["relispartition"]
 
             if is_partitioned:
@@ -1463,7 +1464,6 @@ async def schema_sync(body: dict):
                     + "\n);"
                 )
 
-            _slog.getLogger("uvicorn.error").info(f"schema_sync DDL for {diff.table}: {ddl[:120]}")
             await dest_pool_conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"')
 
             # If this is a partition, verify the parent table on dest is actually partitioned.
@@ -1477,10 +1477,7 @@ async def schema_sync(body: dict):
                         JOIN pg_namespace n ON n.oid = c.relnamespace
                         WHERE n.nspname = $1 AND c.relname = $2
                     """, ps, pt)
-                    _slog.getLogger("uvicorn.error").info(
-                        f"schema_sync parent check {ps}.{pt}: relkind={parent_relkind!r}"
-                    )
-                    if parent_relkind is not None and parent_relkind != 'p':
+                    if _relkind(parent_relkind) != 'p':
                         # Parent exists but is not partitioned — rebuild
                         await dest_pool_conn.execute(f'DROP TABLE IF EXISTS "{ps}"."{pt}" CASCADE')
                         parent_cols = await src_pool_conn.fetch("""
