@@ -1525,16 +1525,10 @@ async def schema_sync(body: dict):
                         rebuilt_parents.add((ps, pt))
 
             await dest_pool_conn.execute(ddl)
-            # Create child partitions for partitioned tables
-            for cp in child_partitions:
-                child_ddl = (
-                    f'CREATE TABLE IF NOT EXISTS "{cp["child_schema"]}"."{cp["child_table"]}" '
-                    f'PARTITION OF "{schema_name}"."{table_name}" {cp["partbound"]};'
-                )
-                try:
-                    await dest_pool_conn.execute(child_ddl)
-                except Exception:
-                    pass  # partition may already exist
+            # Child partitions are NOT created here — they appear as separate
+            # entries in diffs (sorted after their parent) and are created
+            # individually. Creating them here would duplicate work and cause
+            # the second partition to be dropped when rebuilding the parent.
 
             # Index strategy:
             # - Partitioned parent (relkind='p'): always create indexes immediately —
