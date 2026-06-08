@@ -44,7 +44,7 @@ function lagColor(bytes: number): string {
 function statusVariant(s: string): 'green' | 'yellow' | 'blue' | 'red' | 'gray' {
   if (s === 'synced' || s === 'ready') return 'green'
   if (s === 'copying') return 'blue'
-  if (s === 'initializing') return 'yellow'
+  if (s === 'initializing' || s === 'catching up') return 'yellow'
   if (s === 'error') return 'red'
   return 'gray'
 }
@@ -248,7 +248,7 @@ export function StatusPage({ initialSnapshot }: Props) {
         {/* Per-subscription rows */}
         {copyData?.subscriptions?.map(sub => {
           const total = sub.tables.length
-          const synced = sub.tables.filter(t => ['f','s','r'].includes(t.sub_state)).length
+          const synced = sub.tables.filter(t => ['s','r'].includes(t.sub_state)).length
           const unanalyzed = sub.tables.filter(t => !t.last_analyze).map(t => `${t.schema_name}.${t.table_name}`)
           const lag = sub.lag_bytes ?? 0
           const subExpanded = expandedSubs.has(sub.sub_name)

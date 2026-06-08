@@ -534,7 +534,7 @@ async def copy_progress():
             ORDER BY datname
         """)]
 
-    state_label = {'i':'initializing','d':'copying','f':'synced','s':'synced','r':'ready','e':'error'}
+    state_label = {'i':'initializing','d':'copying','f':'catching up','s':'synced','r':'ready','e':'error'}
 
     def _decode_state(v) -> str:
         """Normalize srsubstate — asyncpg may return bytes on Windows."""
