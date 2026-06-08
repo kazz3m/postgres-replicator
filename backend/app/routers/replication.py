@@ -1327,28 +1327,38 @@ async def schema_sync(body: dict):
     src_pool_conn  = await _asyncpg.connect(src_dsn,  timeout=15)
     dest_pool_conn = await _asyncpg.connect(dest_dsn, timeout=15)
 
-    # Detect which missing tables are partitions — need to be created after their parent.
-    # Query source for partition info on all missing tables at once.
+    # For each missing table, fetch relkind + partition info from source.
+    # Build a map: (schema, table) -> {relkind, relispartition, partkeydef, partbound, parent_schema, parent_table}
     missing_tables = [d for d in diffs if not d.exists_on_dest]
-    if missing_tables:
-        partition_check = await src_pool_conn.fetch("""
-            SELECT n.nspname AS schema_name, c.relname AS table_name,
-                   c.relispartition
+    table_meta: dict[tuple[str, str], dict] = {}
+    for d in missing_tables:
+        s, t = d.table.split(".", 1)
+        row = await src_pool_conn.fetchrow("""
+            SELECT c.relkind,
+                   c.relispartition,
+                   pg_get_partkeydef(c.oid)          AS partkeydef,
+                   pg_get_expr(c.relpartbound, c.oid) AS partbound,
+                   pn.nspname                          AS parent_schema,
+                   pc.relname                          AS parent_table
             FROM pg_class c
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE (n.nspname, c.relname) = ANY(
-                SELECT unnest($1::text[]), unnest($2::text[])
-            )
-        """,
-            [d.table.split(".", 1)[0] for d in missing_tables],
-            [d.table.split(".", 1)[1] for d in missing_tables],
-        )
-        is_partition_map = {(r["schema_name"], r["table_name"]): r["relispartition"]
-                            for r in partition_check}
-        # Sort: non-partitions first, partitions last
-        diffs = sorted(diffs, key=lambda d: (
-            is_partition_map.get(tuple(d.table.split(".", 1)), False)
-        ))
+            JOIN pg_namespace n  ON n.oid = c.relnamespace
+            LEFT JOIN pg_inherits  inh ON inh.inhrelid  = c.oid
+            LEFT JOIN pg_class  pc  ON pc.oid  = inh.inhparent
+            LEFT JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+            WHERE n.nspname = $1 AND c.relname = $2
+        """, s, t)
+        if row:
+            table_meta[(s, t)] = dict(row)
+
+    # Sort: partitioned parents first, then plain tables, then child partitions last
+    def sort_key(d):
+        s, t = d.table.split(".", 1)
+        meta = table_meta.get((s, t), {})
+        if meta.get("relkind") == "p":       return 0  # partitioned parent
+        if meta.get("relispartition"):        return 2  # child partition
+        return 1                                        # plain table
+
+    diffs = sorted(diffs, key=sort_key)
 
     rebuilt_parents: set[tuple[str, str]] = set()  # track parents already rebuilt
 
@@ -1399,40 +1409,8 @@ async def schema_sync(body: dict):
                     ORDER BY array_position(i.indkey, a.attnum)
                 """, schema_name, table_name)
 
-            # Detect partitioned table (relkind='p') and get PARTITION BY clause
-            partition_info = await src_conn.fetchrow("""
-                    SELECT c.relkind,
-                           c.relispartition,
-                           pg_get_partkeydef(c.oid) AS partkeydef,
-                           pg_get_expr(c.relpartbound, c.oid) AS partbound,
-                           pn.nspname AS parent_schema,
-                           pc.relname AS parent_table
-                    FROM pg_class c
-                    JOIN pg_namespace n ON n.oid = c.relnamespace
-                    LEFT JOIN pg_inherits i ON i.inhrelid = c.oid
-                    LEFT JOIN pg_class pc ON pc.oid = i.inhparent
-                    LEFT JOIN pg_namespace pn ON pn.oid = pc.relnamespace
-                    WHERE n.nspname = $1 AND c.relname = $2
-                """, schema_name, table_name)
-
-            # Get child partitions if this is a partitioned table
-            child_partitions = []
-            if partition_info and partition_info["relkind"] == "p":
-                child_partitions = await src_conn.fetch("""
-                        SELECT
-                            cn.nspname AS child_schema,
-                            cc.relname AS child_table,
-                            pg_get_expr(cc.relpartbound, cc.oid) AS partbound
-                        FROM pg_inherits i
-                        JOIN pg_class cc ON cc.oid = i.inhrelid
-                        JOIN pg_namespace cn ON cn.oid = cc.relnamespace
-                        WHERE i.inhparent = (
-                            SELECT c.oid FROM pg_class c
-                            JOIN pg_namespace n ON n.oid = c.relnamespace
-                            WHERE n.nspname = $1 AND c.relname = $2
-                        )
-                        ORDER BY cc.relname
-                    """, schema_name, table_name)
+            # Use pre-fetched partition metadata (avoids redundant queries)
+            partition_info = table_meta.get((schema_name, table_name), {})
 
             def qi(name: str) -> str:
                 return '"' + name.replace('"', '""') + '"'
@@ -1462,13 +1440,10 @@ async def schema_sync(body: dict):
                     + f"\n) PARTITION BY {partkeydef};"
                 )
             elif is_partition:
-                # Child partition — attach to parent with FOR VALUES clause
+                # Child partition — PARTITION OF syntax, no column list needed
                 parent_schema = partition_info["parent_schema"]
                 parent_table  = partition_info["parent_table"]
                 partbound     = partition_info["partbound"]
-                if pk_cols:
-                    pk_list = ", ".join(qi(r["attname"]) for r in pk_cols)
-                    col_defs.append(f"  PRIMARY KEY ({pk_list})")
                 ddl = (
                     f'CREATE TABLE IF NOT EXISTS "{schema_name}"."{table_name}" '
                     f'PARTITION OF "{parent_schema}"."{parent_table}" {partbound};'
