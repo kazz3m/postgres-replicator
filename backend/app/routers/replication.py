@@ -498,14 +498,27 @@ async def copy_progress():
     dest_pool = await get_dest_pool(state.dest_dsn)
     src_pool  = await get_source_pool(state.source_dsn)
 
-    # Get all subscriptions from destination with their slot names and databases
+    # Get all subscriptions from destination.
+    # pg_subscription requires superuser on Cloud SQL — fall back to pg_stat_subscription
+    # which is readable by pg_monitor and subscription owner.
     async with dest_pool.acquire() as dest_conn:
-        sub_rows = await dest_conn.fetch("""
-            SELECT s.subname, s.subslotname,
-                   (regexp_match(s.subconninfo, 'dbname=([^ ]+)'))[1] AS database
-            FROM pg_subscription s
-            ORDER BY s.subname
-        """)
+        try:
+            sub_rows = await dest_conn.fetch("""
+                SELECT s.subname, s.subslotname,
+                       (regexp_match(s.subconninfo, 'dbname=([^ ]+)'))[1] AS database
+                FROM pg_subscription s
+                ORDER BY s.subname
+            """)
+        except Exception:
+            # Cloud SQL / restricted env: pg_subscription not readable
+            # pg_stat_subscription has no subslotname — use subname as slot name (our convention)
+            sub_rows = await dest_conn.fetch("""
+                SELECT subname, subname AS subslotname, NULL::text AS database
+                FROM pg_stat_subscription
+                WHERE subrelid IS NULL
+                GROUP BY subname
+                ORDER BY subname
+            """)
 
     # Get WAL lag per slot from source
     async with src_pool.acquire() as src_conn:
