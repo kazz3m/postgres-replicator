@@ -1327,6 +1327,9 @@ async def schema_sync(body: dict):
     src_pool_conn  = await _asyncpg.connect(src_dsn,  timeout=15)
     dest_pool_conn = await _asyncpg.connect(dest_dsn, timeout=15)
 
+    import logging as _log2
+    _log2.getLogger("uvicorn.error").info(f"schema_sync diffs: {[(d.table, d.exists_on_dest, d.compatible) for d in diffs]}")
+
     for diff in diffs:
         if diff.exists_on_dest:
             if diff.compatible:
@@ -1494,6 +1497,8 @@ async def schema_sync(body: dict):
             ))
 
         except Exception as e:
+            import logging as _log
+            _log.getLogger("uvicorn.error").error(f"schema_sync error for {diff.table}: {e}")
             results.append(SchemaSyncResult(
                 table=diff.table,
                 action="error",
