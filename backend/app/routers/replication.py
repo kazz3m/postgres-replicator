@@ -208,17 +208,16 @@ async def create_or_update_subscription(config: SubscriptionConfig):
     if config.database:
         conn_dsn = dsn_for_database(conn_dsn, config.database)
 
-    import logging as _logging
-    _logging.getLogger("uvicorn.error").info(
-        f"CREATE SUBSCRIPTION conn_dsn host={conn_dsn.split('@')[-1] if '@' in conn_dsn else conn_dsn} "
-        f"database={config.database!r}"
-    )
 
     # Validate DSN format and prevent dollar-quoting escape
     if not re.match(r'^postgres(ql)?://', conn_dsn):
         raise HTTPException(400, "Connection DSN must start with postgresql:// or postgres://")
     if "$conn_str$" in conn_dsn:
         raise HTTPException(400, "Connection DSN contains an illegal sequence.")
+
+    import asyncpg as _asyncpg_sub
+    src_dsn_db  = dsn_for_database(state.source_dsn, config.database) if config.database else state.source_dsn
+    dest_dsn_db = dsn_for_database(state.dest_dsn,   config.database) if config.database else state.dest_dsn
 
     # Fix #1: hard-block when wal_level != logical on source
     src_pool = await get_source_pool(state.source_dsn)
@@ -231,12 +230,15 @@ async def create_or_update_subscription(config: SubscriptionConfig):
                 f"Set wal_level = logical in postgresql.conf and restart PostgreSQL."
             )
 
-        # Fix #5: fetch tables included in this publication so we can verify
-        # they exist on destination before committing — avoids silent error state
-        pub_tables = await src_conn.fetch(
+    # Check publication exists in the correct database on source
+    src_db_conn = await _asyncpg_sub.connect(src_dsn_db, timeout=15)
+    try:
+        pub_tables = await src_db_conn.fetch(
             "SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = $1",
             config.publication_name,
         )
+    finally:
+        await src_db_conn.close()
 
     if not pub_tables:
         raise HTTPException(
@@ -244,12 +246,12 @@ async def create_or_update_subscription(config: SubscriptionConfig):
             f"Publication '{config.publication_name}' does not exist on source or contains no tables."
         )
 
-    # Fix #5: verify every published table exists on destination
-    dest_pool = await get_dest_pool(state.dest_dsn)
-    async with dest_pool.acquire() as dest_conn:
+    # Verify every published table exists on destination (correct database)
+    dest_db_conn = await _asyncpg_sub.connect(dest_dsn_db, timeout=15)
+    try:
         missing = []
         for row in pub_tables:
-            exists_on_dest = await dest_conn.fetchval(
+            exists_on_dest = await dest_db_conn.fetchval(
                 "SELECT 1 FROM information_schema.tables "
                 "WHERE table_schema = $1 AND table_name = $2",
                 row["schemaname"], row["tablename"],
@@ -263,16 +265,18 @@ async def create_or_update_subscription(config: SubscriptionConfig):
                 f"Tables missing on destination (apply schema DDL first): {', '.join(missing)}"
             )
 
-        exists = await dest_conn.fetchval(
+        exists = await dest_db_conn.fetchval(
             "SELECT 1 FROM pg_subscription WHERE subname = $1", config.subscription_name
         )
         if exists:
-            await dest_conn.execute(
+            await dest_db_conn.execute(
                 f'ALTER SUBSCRIPTION "{config.subscription_name}" DISABLE'
             )
-            await dest_conn.execute(
+            await dest_db_conn.execute(
                 f'DROP SUBSCRIPTION IF EXISTS "{config.subscription_name}"'
             )
+    finally:
+        await dest_db_conn.close()
 
     # CREATE SUBSCRIPTION uses a dedicated connection (not shared pool) with a
     # statement_timeout. The command makes destination PG connect back to source —
