@@ -70,8 +70,15 @@ export function StatusPage({ initialSnapshot }: Props) {
   const [schemaPub, setSchemaPub] = useState<string | null>(null)
   // Index panel after stop
   const [indexPub, setIndexPub] = useState<string | null>(null)
-  // Progress table expanded/collapsed
-  const [tablesPanelExpanded, setTablesPanelExpanded] = useState(false)
+  // Progress table expanded per subscription
+  const [expandedSubs, setExpandedSubs] = useState<Set<string>>(new Set())
+  function toggleSubExpanded(subName: string) {
+    setExpandedSubs(prev => {
+      const next = new Set(prev)
+      next.has(subName) ? next.delete(subName) : next.add(subName)
+      return next
+    })
+  }
   // ANALYZE state
   const [analyzingTables, setAnalyzingTables] = useState(false)
 
@@ -244,7 +251,7 @@ export function StatusPage({ initialSnapshot }: Props) {
           const synced = sub.tables.filter(t => ['f','s','r'].includes(t.sub_state)).length
           const unanalyzed = sub.tables.filter(t => !t.last_analyze).map(t => `${t.schema_name}.${t.table_name}`)
           const lag = sub.lag_bytes ?? 0
-          const subExpanded = tablesPanelExpanded
+          const subExpanded = expandedSubs.has(sub.sub_name)
 
           return (
             <div key={sub.sub_name} className="border-b border-gray-800 last:border-0">
@@ -294,7 +301,7 @@ export function StatusPage({ initialSnapshot }: Props) {
 
                 {/* Show/hide tables */}
                 <button
-                  onClick={() => setTablesPanelExpanded(e => !e)}
+                  onClick={() => toggleSubExpanded(sub.sub_name)}
                   className="flex items-center gap-1 text-gray-400 hover:text-gray-200 ml-auto"
                 >
                   {subExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
@@ -318,7 +325,8 @@ export function StatusPage({ initialSnapshot }: Props) {
                     <tr className="text-gray-500 border-b border-gray-700 bg-gray-950/40">
                       <th className="px-4 py-1.5 text-left">Schema.Table</th>
                       <th className="px-4 py-1.5 text-left">Status</th>
-                      <th className="px-4 py-1.5 text-right">Size</th>
+                      <th className="px-4 py-1.5 text-right">Dest size</th>
+                      <th className="px-4 py-1.5 text-right">Source size</th>
                       <th className="px-4 py-1.5 text-right">Rows copied</th>
                       <th className="px-4 py-1.5 text-left w-40">Progress</th>
                       <th className="px-4 py-1.5 text-left">Analyzed</th>
@@ -341,22 +349,34 @@ export function StatusPage({ initialSnapshot }: Props) {
                           </td>
                           <td className="px-4 py-1.5 text-right text-gray-400">{fmtBytes(row.table_size_bytes)}</td>
                           <td className="px-4 py-1.5 text-right text-gray-400">
+                            {row.source_size_bytes != null
+                              ? <span className={clsx({ 'text-blue-300': isCopying })}>{fmtBytes(row.source_size_bytes)}</span>
+                              : '–'}
+                          </td>
+                          <td className="px-4 py-1.5 text-right text-gray-400">
                             {isCopying && row.tuples_total != null && row.tuples_total > 0
                               ? <><span className="text-blue-300">{(row.tuples_done ?? 0).toLocaleString()}</span>{' / '}{row.tuples_total.toLocaleString()}</>
                               : isDone ? <span className="text-green-500">done</span> : '–'}
                           </td>
                           <td className="px-4 py-1.5">
-                            {isCopying ? (
+                            {(() => {
+                              // Use bytes_processed/source_size as progress when tuples unknown
+                              const bytePct = (isCopying && row.source_size_bytes && row.source_size_bytes > 0 && row.bytes_processed != null && row.bytes_processed > 0)
+                                ? Math.min(100, row.bytes_processed / row.source_size_bytes * 100)
+                                : null
+                              const pct = row.copy_pct ?? bytePct
+                              return isCopying ? (
                               <div className="space-y-0.5">
-                                <ProgressBar pct={row.copy_pct} color="blue" />
-                                <span className="text-gray-500">{row.copy_pct != null ? `${row.copy_pct.toFixed(1)}%` : 'estimating...'}</span>
+                                <ProgressBar pct={pct} color="blue" />
+                                <span className="text-gray-500">{pct != null ? `${pct.toFixed(1)}%` : 'estimating...'}</span>
                               </div>
                             ) : isDone ? (
                               <div className="space-y-0.5">
                                 <ProgressBar pct={100} color="green" />
                                 <span className="text-green-600 text-xs">100%</span>
                               </div>
-                            ) : <span className="text-gray-600">–</span>}
+                            ) : <span className="text-gray-600">–</span>
+                            })()}
                           </td>
                           <td className="px-4 py-1.5">
                             {row.last_analyze ? (

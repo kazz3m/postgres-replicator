@@ -600,9 +600,37 @@ async def copy_progress():
                 tuples_total=tuples_total if sub_state == 'd' else None,
                 bytes_processed=r["bytes_processed"] if sub_state == 'd' else None,
                 table_size_bytes=r["table_size_bytes"],
+                source_size_bytes=None,  # filled in below
                 copy_pct=copy_pct,
                 last_analyze=last_analyze.isoformat() if last_analyze else None,
             ))
+
+    # Enrich with source table sizes (pg_table_size = heap only, no indexes)
+    # Group tables by source database, then one query per database
+    from collections import defaultdict
+    tables_by_db: dict[str, list] = defaultdict(list)
+    for sub in subs_by_name.values():
+        if sub.database:
+            for t in sub.tables:
+                tables_by_db[sub.database].append(t)
+
+    for db_name, db_tables in tables_by_db.items():
+        src_db_dsn = dsn_for_database(state.source_dsn, db_name)
+        try:
+            src_db_conn = await _asyncpg.connect(src_db_dsn, timeout=10)
+            size_rows = await src_db_conn.fetch("""
+                SELECT n.nspname AS schema_name, c.relname AS table_name,
+                       pg_table_size(c.oid) AS size_bytes
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relkind IN ('r', 'p')
+            """)
+            await src_db_conn.close()
+            src_size_map = {(r["schema_name"], r["table_name"]): r["size_bytes"] for r in size_rows}
+            for t in db_tables:
+                t.source_size_bytes = src_size_map.get((t.schema_name, t.table_name))
+        except Exception:
+            pass
 
     # Also add subscriptions that have no tables yet (newly created)
     for slot_name, slot_info in slot_map.items():

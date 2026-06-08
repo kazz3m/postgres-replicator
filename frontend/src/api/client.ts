@@ -158,6 +158,7 @@ export interface TableCopyProgress {
   tuples_total: number | null
   bytes_processed: number | null
   table_size_bytes: number
+  source_size_bytes: number | null  // heap size on source (no indexes)
   copy_pct: number | null
   last_analyze: string | null   // ISO timestamp or null if never analyzed
 }

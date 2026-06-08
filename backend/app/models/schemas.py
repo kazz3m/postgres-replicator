@@ -91,8 +91,10 @@ class TableCopyProgress(BaseModel):
     tuples_done: Optional[int]
     tuples_total: Optional[int]
     bytes_processed: Optional[int]
-    # size from pg_class (always available)
+    # size on destination (heap only, no indexes)
     table_size_bytes: int
+    # size on source (heap only) — better progress estimate during initial copy
+    source_size_bytes: Optional[int]
     # derived
     copy_pct: Optional[float]   # None if not in copy phase or tuples_total == 0
     # statistics freshness on destination
