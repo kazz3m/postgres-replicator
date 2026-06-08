@@ -1014,12 +1014,14 @@ async def sync_sequences(body: dict):
 
 async def _diff_table_list(table_pairs: list[tuple[str, str]], database: str | None = None) -> list[TableSchemaDiff]:
     """Core diff logic — accepts list of (schema, table) pairs.
-    database: if provided, connects to that specific source database instead of DSN default.
+    database: if provided, connects to that specific database on BOTH source and destination.
+    Logical replication requires matching database names on both sides.
     """
     import asyncpg as _asyncpg
-    src_dsn = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
-    src_conn = await _asyncpg.connect(src_dsn, timeout=15)
-    dest_pool = await get_dest_pool(state.dest_dsn)
+    src_dsn  = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    dest_dsn = dsn_for_database(state.dest_dsn,   database) if database else state.dest_dsn
+    src_conn  = await _asyncpg.connect(src_dsn,  timeout=15)
+    dest_conn = await _asyncpg.connect(dest_dsn, timeout=15)
     results = []
     try:
         for schema_name, table_name in table_pairs:
@@ -1032,14 +1034,13 @@ async def _diff_table_list(table_pairs: list[tuple[str, str]], database: str | N
                 ORDER BY ordinal_position
             """, schema_name, table_name)
 
-            async with dest_pool.acquire() as dest_conn:
-                dest_cols = await dest_conn.fetch("""
+            dest_cols = await dest_conn.fetch("""
                     SELECT column_name, udt_name AS data_type
                     FROM information_schema.columns
                     WHERE table_schema = $1 AND table_name = $2
                     ORDER BY ordinal_position
                 """, schema_name, table_name)
-                table_exists = await dest_conn.fetchval(
+            table_exists = await dest_conn.fetchval(
                     "SELECT 1 FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2",
                     schema_name, table_name,
                 )
@@ -1070,6 +1071,7 @@ async def _diff_table_list(table_pairs: list[tuple[str, str]], database: str | N
             ))
     finally:
         await src_conn.close()
+        await dest_conn.close()
     return results
 
 
@@ -1247,9 +1249,10 @@ async def schema_sync(body: dict):
     results = []
 
     import asyncpg as _asyncpg
-    src_dsn = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
-    src_pool_conn = await _asyncpg.connect(src_dsn, timeout=15)
-    dest_pool = await get_dest_pool(state.dest_dsn)
+    src_dsn  = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    dest_dsn = dsn_for_database(state.dest_dsn,   database) if database else state.dest_dsn
+    src_pool_conn  = await _asyncpg.connect(src_dsn,  timeout=15)
+    dest_pool_conn = await _asyncpg.connect(dest_dsn, timeout=15)
 
     for diff in diffs:
         if diff.exists_on_dest:
@@ -1379,32 +1382,29 @@ async def schema_sync(body: dict):
                     + "\n);"
                 )
 
-            async with dest_pool.acquire() as dest_conn:
-                await dest_conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"')
-                await dest_conn.execute(ddl)
-                # Create child partitions for partitioned tables
-                for cp in child_partitions:
-                    child_ddl = (
-                        f'CREATE TABLE IF NOT EXISTS "{cp["child_schema"]}"."{cp["child_table"]}" '
-                        f'PARTITION OF "{schema_name}"."{table_name}" {cp["partbound"]};'
-                    )
-                    try:
-                        await dest_conn.execute(child_ddl)
-                    except Exception:
-                        pass  # partition may already exist
+            await dest_pool_conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"')
+            await dest_pool_conn.execute(ddl)
+            # Create child partitions for partitioned tables
+            for cp in child_partitions:
+                child_ddl = (
+                    f'CREATE TABLE IF NOT EXISTS "{cp["child_schema"]}"."{cp["child_table"]}" '
+                    f'PARTITION OF "{schema_name}"."{table_name}" {cp["partbound"]};'
+                )
+                try:
+                    await dest_pool_conn.execute(child_ddl)
+                except Exception:
+                    pass  # partition may already exist
 
-            # Optionally create indexes immediately (useful when applying schema
-            # before replication starts so destination is ready to serve queries)
+            # Optionally create indexes immediately
             index_results: list[IndexInfo] = []
             if create_indexes_when == "before":
                 idx_list = await _get_table_indexes(src_pool_conn, schema_name, table_name)
-                async with dest_pool.acquire() as dest_conn:
-                    for idx in idx_list:
-                        try:
-                            await dest_conn.execute(idx.index_def)
-                            index_results.append(idx)
-                        except Exception:
-                            pass  # best-effort; individual errors don't fail table sync
+                for idx in idx_list:
+                    try:
+                        await dest_pool_conn.execute(idx.index_def)
+                        index_results.append(idx)
+                    except Exception:
+                        pass
 
             results.append(SchemaSyncResult(
                 table=diff.table,
@@ -1425,6 +1425,7 @@ async def schema_sync(body: dict):
             ))
 
     await src_pool_conn.close()
+    await dest_pool_conn.close()
     return results
 
 
@@ -1446,9 +1447,10 @@ async def schema_drop_recreate(body: dict):
     diffs = await _diff_table_list([(p[0], p[1]) for p in pairs], database=database)
 
     import asyncpg as _asyncpg
-    src_dsn = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
-    src_conn = await _asyncpg.connect(src_dsn, timeout=15)
-    dest_pool = await get_dest_pool(state.dest_dsn)
+    src_dsn  = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    dest_dsn = dsn_for_database(state.dest_dsn,   database) if database else state.dest_dsn
+    src_conn  = await _asyncpg.connect(src_dsn,  timeout=15)
+    dest_conn_dr = await _asyncpg.connect(dest_dsn, timeout=15)
     results = []
 
     try:
@@ -1459,8 +1461,7 @@ async def schema_drop_recreate(body: dict):
             schema_name, table_name = diff.table.split(".", 1)
             try:
                 # Drop on destination
-                async with dest_pool.acquire() as dest_conn:
-                    await dest_conn.execute(f'DROP TABLE IF EXISTS "{schema_name}"."{table_name}" CASCADE')
+                await dest_conn_dr.execute(f'DROP TABLE IF EXISTS "{schema_name}"."{table_name}" CASCADE')
 
                 # Recreate — reuse same DDL logic as schema_sync
                 cols = await src_conn.fetch("""
@@ -1507,13 +1508,13 @@ async def schema_drop_recreate(body: dict):
                 ddl = (f'CREATE TABLE "{schema_name}"."{table_name}" (\n'
                        + ",\n".join(col_defs) + "\n);")
 
-                async with dest_pool.acquire() as dest_conn:
-                    await dest_conn.execute(ddl)
+                await dest_conn_dr.execute(ddl)
 
                 results.append(SchemaSyncResult(table=diff.table, action="created", detail="Dropped and recreated"))
             except Exception as e:
                 results.append(SchemaSyncResult(table=diff.table, action="error", detail=str(e)))
     finally:
         await src_conn.close()
+        await dest_conn_dr.close()
 
     return results
