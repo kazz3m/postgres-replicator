@@ -1350,6 +1350,8 @@ async def schema_sync(body: dict):
             is_partition_map.get(tuple(d.table.split(".", 1)), False)
         ))
 
+    rebuilt_parents: set[tuple[str, str]] = set()  # track parents already rebuilt
+
     for diff in diffs:
         if diff.exists_on_dest:
             if diff.compatible:
@@ -1487,39 +1489,40 @@ async def schema_sync(body: dict):
             # If not (e.g. created incorrectly as a plain table), drop and recreate it.
             if is_partition and partition_info["parent_schema"] and partition_info["parent_table"]:
                 ps, pt = partition_info["parent_schema"], partition_info["parent_table"]
-                parent_relkind = await dest_pool_conn.fetchval("""
-                    SELECT c.relkind FROM pg_class c
-                    JOIN pg_namespace n ON n.oid = c.relnamespace
-                    WHERE n.nspname = $1 AND c.relname = $2
-                """, ps, pt)
-                if parent_relkind is not None and parent_relkind != 'p':
-                    # Parent exists but is not partitioned — rebuild it from source
-                    await dest_pool_conn.execute(f'DROP TABLE IF EXISTS "{ps}"."{pt}" CASCADE')
-                    # Recreate parent from source DDL
-                    parent_cols = await src_pool_conn.fetch("""
-                        SELECT a.attname AS col,
-                               pg_catalog.format_type(a.atttypid, a.atttypmod) AS col_type,
-                               a.attnotnull AS not_null,
-                               pg_get_expr(d.adbin, d.adrelid) AS col_default,
-                               a.attidentity AS identity
-                        FROM pg_attribute a
-                        JOIN pg_class c ON c.oid = a.attrelid
+                if (ps, pt) not in rebuilt_parents:
+                    parent_relkind = await dest_pool_conn.fetchval("""
+                        SELECT c.relkind FROM pg_class c
                         JOIN pg_namespace n ON n.oid = c.relnamespace
-                        LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
                         WHERE n.nspname = $1 AND c.relname = $2
-                          AND a.attnum > 0 AND NOT a.attisdropped
-                        ORDER BY a.attnum
                     """, ps, pt)
-                    parent_partkey = await src_pool_conn.fetchval(
-                        "SELECT pg_get_partkeydef(c.oid) FROM pg_class c "
-                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
-                        "WHERE n.nspname = $1 AND c.relname = $2", ps, pt)
-                    if parent_partkey:
-                        p_col_defs = [f"  {qi(c['col'])} {c['col_type']}" for c in parent_cols]
-                        parent_ddl = (f'CREATE TABLE "{ps}"."{pt}" (\n'
-                                      + ",\n".join(p_col_defs)
-                                      + f"\n) PARTITION BY {parent_partkey};")
-                        await dest_pool_conn.execute(parent_ddl)
+                    if parent_relkind is not None and parent_relkind != 'p':
+                        # Parent exists but is not partitioned — rebuild once
+                        await dest_pool_conn.execute(f'DROP TABLE IF EXISTS "{ps}"."{pt}" CASCADE')
+                        parent_cols = await src_pool_conn.fetch("""
+                            SELECT a.attname AS col,
+                                   pg_catalog.format_type(a.atttypid, a.atttypmod) AS col_type,
+                                   a.attnotnull AS not_null,
+                                   pg_get_expr(d.adbin, d.adrelid) AS col_default,
+                                   a.attidentity AS identity
+                            FROM pg_attribute a
+                            JOIN pg_class c ON c.oid = a.attrelid
+                            JOIN pg_namespace n ON n.oid = c.relnamespace
+                            LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+                            WHERE n.nspname = $1 AND c.relname = $2
+                              AND a.attnum > 0 AND NOT a.attisdropped
+                            ORDER BY a.attnum
+                        """, ps, pt)
+                        parent_partkey = await src_pool_conn.fetchval(
+                            "SELECT pg_get_partkeydef(c.oid) FROM pg_class c "
+                            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                            "WHERE n.nspname = $1 AND c.relname = $2", ps, pt)
+                        if parent_partkey:
+                            p_col_defs = [f"  {qi(c['col'])} {c['col_type']}" for c in parent_cols]
+                            parent_ddl = (f'CREATE TABLE "{ps}"."{pt}" (\n'
+                                          + ",\n".join(p_col_defs)
+                                          + f"\n) PARTITION BY {parent_partkey};")
+                            await dest_pool_conn.execute(parent_ddl)
+                        rebuilt_parents.add((ps, pt))
 
             await dest_pool_conn.execute(ddl)
             # Create child partitions for partitioned tables
