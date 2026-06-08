@@ -253,6 +253,19 @@ export function StatusPage({ initialSnapshot }: Props) {
           const lag = sub.lag_bytes ?? 0
           const subExpanded = expandedSubs.has(sub.sub_name)
 
+          // Aggregate copy progress across all tables in this subscription
+          // source_size_bytes = heap size on source (best estimate of total to copy)
+          // For copying tables use bytes_processed; for done tables use source_size_bytes as copied
+          const tablesWithSource = sub.tables.filter(t => t.source_size_bytes != null && t.source_size_bytes > 0)
+          const totalSourceBytes = tablesWithSource.reduce((s, t) => s + (t.source_size_bytes ?? 0), 0)
+          const totalCopiedBytes = tablesWithSource.reduce((s, t) => {
+            if (['f','s','r'].includes(t.sub_state)) return s + (t.source_size_bytes ?? 0)
+            if (t.sub_state === 'd' && t.bytes_processed != null) return s + t.bytes_processed
+            return s
+          }, 0)
+          const copyPct = totalSourceBytes > 0 ? Math.min(100, totalCopiedBytes / totalSourceBytes * 100) : null
+          const showCopyProgress = tablesWithSource.length > 0 && synced < total
+
           return (
             <div key={sub.sub_name} className="border-b border-gray-800 last:border-0">
               {/* Subscription summary row */}
@@ -287,6 +300,24 @@ export function StatusPage({ initialSnapshot }: Props) {
                   <span className={clsx('font-mono', synced === total ? 'text-green-400' : 'text-blue-400')}>
                     {synced}/{total} tables synced
                   </span>
+                )}
+
+                {/* Aggregate copy progress */}
+                {showCopyProgress && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-gray-500">copied:</span>
+                    <span className="font-mono text-blue-300">{fmtBytes(totalCopiedBytes)}</span>
+                    <span className="text-gray-600">/</span>
+                    <span className="font-mono text-gray-400">{fmtBytes(totalSourceBytes)}</span>
+                    {copyPct != null && (
+                      <>
+                        <span className="text-gray-500">({copyPct.toFixed(1)}%)</span>
+                        <div className="w-24">
+                          <ProgressBar pct={copyPct} color="blue" />
+                        </div>
+                      </>
+                    )}
+                  </div>
                 )}
 
                 {/* WAL lag */}
