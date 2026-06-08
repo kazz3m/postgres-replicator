@@ -6,6 +6,7 @@ from ..models.schemas import (
     ReplicationSlotInfo, SubscriptionStatus, TableReplicationProgress,
     SequenceInfo, TableSchemaDiff, ColumnDiff, SchemaSyncResult,
     IndexInfo, IndexCreateResult, TableCopyProgress, CopyProgressResponse,
+    SubscriptionProgress,
 )
 from ..db import get_source_pool, get_dest_pool, dsn_for_database
 from .. import state
@@ -488,104 +489,124 @@ async def replication_progress():
 @router.get("/copy-progress", response_model=CopyProgressResponse)
 async def copy_progress():
     """
-    Rich progress endpoint combining:
-    - pg_subscription_rel state per table (from destination)
-    - pg_stat_progress_copy live COPY stats (from destination, PG 14+)
-    - pg_class table sizes (from destination)
-    - pg_replication_slots WAL lag (from source)
+    Per-subscription progress: tables grouped by subscription with database info.
+    Filters out internal pg_sync_* worker slots.
     """
     _require_connection()
+    import asyncpg as _asyncpg
+
     dest_pool = await get_dest_pool(state.dest_dsn)
     src_pool  = await get_source_pool(state.source_dsn)
 
+    # Get all subscriptions from destination with their slot names and databases
     async with dest_pool.acquire() as dest_conn:
-        rows = await dest_conn.fetch("""
-            SELECT
-                n.nspname                                        AS schema_name,
-                c.relname                                        AS table_name,
-                sr.srsubstate                                    AS sub_state,
-                COALESCE(cp.tuples_processed, 0)                 AS tuples_done,
-                COALESCE(NULLIF(c.reltuples::bigint, -1), 0)     AS tuples_total,
-                COALESCE(cp.bytes_processed, 0)                  AS bytes_processed,
-                COALESCE(pg_relation_size(c.oid), 0)             AS table_size_bytes,
-                GREATEST(psu.last_analyze, psu.last_autoanalyze) AS last_analyze
-            FROM pg_subscription_rel sr
-            JOIN pg_class           c   ON c.oid  = sr.srrelid
-            JOIN pg_namespace       n   ON n.oid  = c.relnamespace
-            LEFT JOIN pg_stat_progress_copy cp  ON cp.relid = c.oid
-            LEFT JOIN pg_stat_user_tables   psu ON psu.relid = c.oid
-            ORDER BY n.nspname, c.relname
+        sub_rows = await dest_conn.fetch("""
+            SELECT s.subname, s.subslotname,
+                   (regexp_match(s.subconninfo, 'dbname=([^ ]+)'))[1] AS database
+            FROM pg_subscription s
+            ORDER BY s.subname
         """)
 
-    state_label = {
-        'i': 'initializing',
-        'd': 'copying',
-        'f': 'synced',
-        's': 'synced',
-        'r': 'ready',
-        'e': 'error',
-    }
-
-    tables = []
-    copying_active = False
-    for r in rows:
-        sub_state = r["sub_state"]
-        status = state_label.get(sub_state, 'unknown')
-        if sub_state == 'd':
-            copying_active = True
-
-        tuples_done  = r["tuples_done"]
-        tuples_total = r["tuples_total"]
-        copy_pct: Optional[float] = None
-        if sub_state == 'd' and tuples_total > 0:
-            copy_pct = min(100.0, tuples_done / tuples_total * 100)
-        elif sub_state in ('f', 's', 'r'):
-            copy_pct = 100.0
-
-        last_analyze = r["last_analyze"]
-        tables.append(TableCopyProgress(
-            schema_name=r["schema_name"],
-            table_name=r["table_name"],
-            sub_state=sub_state,
-            status=status,
-            tuples_done=tuples_done if sub_state == 'd' else None,
-            tuples_total=tuples_total if sub_state == 'd' else None,
-            bytes_processed=r["bytes_processed"] if sub_state == 'd' else None,
-            table_size_bytes=r["table_size_bytes"],
-            copy_pct=copy_pct,
-            last_analyze=last_analyze.isoformat() if last_analyze else None,
-        ))
-
-    # WAL lag from source replication slots
+    # Get WAL lag per slot from source
     async with src_pool.acquire() as src_conn:
         slot_rows = await src_conn.fetch("""
-            SELECT slot_name, plugin, slot_type, active,
-                   restart_lsn::text,
-                   confirmed_flush_lsn::text,
-                   COALESCE(
-                       pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn),
-                       0
-                   ) AS lag_bytes
+            SELECT slot_name, active,
+                   COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn), 0) AS lag_bytes
             FROM pg_replication_slots
             WHERE slot_type = 'logical'
+              AND slot_name NOT LIKE 'pg_%sync%'
             ORDER BY slot_name
         """)
+    slot_map = {r["slot_name"]: r for r in slot_rows}
 
-    wal_slots = [ReplicationSlotInfo(
-        slot_name=r["slot_name"],
-        plugin=r["plugin"] or "",
-        slot_type=r["slot_type"],
-        active=r["active"],
-        restart_lsn=r["restart_lsn"],
-        confirmed_flush_lsn=r["confirmed_flush_lsn"],
-        lag_bytes=r["lag_bytes"],
-    ) for r in slot_rows]
+    state_label = {'i':'initializing','d':'copying','f':'synced','s':'synced','r':'ready','e':'error'}
 
-    return CopyProgressResponse(
-        tables=tables,
-        wal_slots=wal_slots,
-        copying_active=copying_active,
-    )
+    def build_tables(rows) -> tuple[list, bool]:
+        tables, copying = [], False
+        for r in rows:
+            sub_state = r["sub_state"]
+            if sub_state == 'd':
+                copying = True
+            tuples_done, tuples_total = r["tuples_done"], r["tuples_total"]
+            copy_pct: Optional[float] = None
+            if sub_state == 'd' and tuples_total > 0:
+                copy_pct = min(100.0, tuples_done / tuples_total * 100)
+            elif sub_state in ('f', 's', 'r'):
+                copy_pct = 100.0
+            last_analyze = r["last_analyze"]
+            tables.append(TableCopyProgress(
+                schema_name=r["schema_name"], table_name=r["table_name"],
+                sub_state=sub_state, status=state_label.get(sub_state, 'unknown'),
+                tuples_done=tuples_done if sub_state == 'd' else None,
+                tuples_total=tuples_total if sub_state == 'd' else None,
+                bytes_processed=r["bytes_processed"] if sub_state == 'd' else None,
+                table_size_bytes=r["table_size_bytes"],
+                copy_pct=copy_pct,
+                last_analyze=last_analyze.isoformat() if last_analyze else None,
+            ))
+        return tables, copying
+
+    TABLE_QUERY = """
+        SELECT n.nspname AS schema_name, c.relname AS table_name,
+               sr.srsubstate AS sub_state,
+               COALESCE(cp.tuples_processed, 0) AS tuples_done,
+               COALESCE(NULLIF(c.reltuples::bigint, -1), 0) AS tuples_total,
+               COALESCE(cp.bytes_processed, 0) AS bytes_processed,
+               COALESCE(pg_relation_size(c.oid), 0) AS table_size_bytes,
+               GREATEST(psu.last_analyze, psu.last_autoanalyze) AS last_analyze
+        FROM pg_subscription_rel sr
+        JOIN pg_subscription s ON s.oid = sr.srsubid
+        JOIN pg_class c ON c.oid = sr.srrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        LEFT JOIN pg_stat_progress_copy cp ON cp.relid = c.oid
+        LEFT JOIN pg_stat_user_tables psu ON psu.relid = c.oid
+        WHERE s.subname = $1
+        ORDER BY n.nspname, c.relname
+    """
+
+    subscriptions = []
+    global_copying = False
+
+    for sub in sub_rows:
+        sub_name = sub["subname"]
+        slot_name = sub["subslotname"] or sub_name
+
+        # Try to get database from subconninfo, fall back to parsing sub_name
+        database = sub["database"]
+        if not database:
+            # Extract from slot/sub name pattern: {prefix}_sub_{db}_{schema}
+            parts = slot_name.split("_sub_", 1)
+            if len(parts) == 2:
+                database = parts[1].split("_")[0] if "_" in parts[1] else parts[1]
+
+        slot_info = slot_map.get(slot_name)
+        lag_bytes = slot_info["lag_bytes"] if slot_info else 0
+        active = slot_info["active"] if slot_info else False
+
+        # Query tables for this subscription in the correct database
+        dest_dsn_db = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
+        try:
+            db_conn = await _asyncpg.connect(dest_dsn_db, timeout=10)
+            rows = await db_conn.fetch(TABLE_QUERY, sub_name)
+            await db_conn.close()
+        except Exception:
+            rows = []
+
+        tables, copying = build_tables(rows)
+        if copying:
+            global_copying = True
+
+        subscriptions.append(SubscriptionProgress(
+            sub_name=sub_name,
+            slot_name=slot_name,
+            database=database,
+            lag_bytes=lag_bytes,
+            active=active,
+            tables=tables,
+            copying_active=copying,
+        ))
+
+    return CopyProgressResponse(subscriptions=subscriptions, copying_active=global_copying)
 
 
 # ── Analyze ───────────────────────────────────────────────────────────────────

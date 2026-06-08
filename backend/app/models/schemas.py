@@ -99,11 +99,19 @@ class TableCopyProgress(BaseModel):
     last_analyze: Optional[str]  # ISO timestamp or None if never analyzed
 
 
-class CopyProgressResponse(BaseModel):
+class SubscriptionProgress(BaseModel):
+    sub_name: str
+    slot_name: str
+    database: Optional[str]      # source/dest database name
+    lag_bytes: int
+    active: bool
     tables: List["TableCopyProgress"]
-    # WAL lag per slot — sourced from pg_replication_slots on source
-    wal_slots: List[ReplicationSlotInfo]
-    # True when at least one table is still in copy (d) state
+    copying_active: bool
+
+
+class CopyProgressResponse(BaseModel):
+    subscriptions: List["SubscriptionProgress"]
+    # True when at least one table across all subs is still copying
     copying_active: bool
 
 

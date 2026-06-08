@@ -162,9 +162,18 @@ export interface TableCopyProgress {
   last_analyze: string | null   // ISO timestamp or null if never analyzed
 }
 
-export interface CopyProgressResponse {
+export interface SubscriptionProgress {
+  sub_name: string
+  slot_name: string
+  database: string | null
+  lag_bytes: number
+  active: boolean
   tables: TableCopyProgress[]
-  wal_slots: ReplicationSlotInfo[]
+  copying_active: boolean
+}
+
+export interface CopyProgressResponse {
+  subscriptions: SubscriptionProgress[]
   copying_active: boolean
 }
 
