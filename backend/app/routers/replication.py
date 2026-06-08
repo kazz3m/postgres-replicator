@@ -1409,9 +1409,12 @@ async def schema_sync(body: dict):
                         ORDER BY cc.relname
                     """, schema_name, table_name)
 
+            def qi(name: str) -> str:
+                return '"' + name.replace('"', '""') + '"'
+
             col_defs = []
             for c in cols:
-                col_def = f"  {c['col']} {c['col_type']}"
+                col_def = f"  {qi(c['col'])} {c['col_type']}"
                 if c["identity"] == "a":
                     col_def += " GENERATED ALWAYS AS IDENTITY"
                 elif c["identity"] == "d":
@@ -1439,7 +1442,7 @@ async def schema_sync(body: dict):
                 parent_table  = partition_info["parent_table"]
                 partbound     = partition_info["partbound"]
                 if pk_cols:
-                    pk_list = ", ".join(r["attname"] for r in pk_cols)
+                    pk_list = ", ".join(qi(r["attname"]) for r in pk_cols)
                     col_defs.append(f"  PRIMARY KEY ({pk_list})")
                 ddl = (
                     f'CREATE TABLE IF NOT EXISTS "{schema_name}"."{table_name}" '
@@ -1447,7 +1450,7 @@ async def schema_sync(body: dict):
                 )
             else:
                 if pk_cols:
-                    pk_list = ", ".join(r["attname"] for r in pk_cols)
+                    pk_list = ", ".join(qi(r["attname"]) for r in pk_cols)
                     col_defs.append(f"  PRIMARY KEY ({pk_list})")
                 ddl = (
                     f'CREATE TABLE IF NOT EXISTS "{schema_name}"."{table_name}" (\n'
@@ -1562,9 +1565,12 @@ async def schema_drop_recreate(body: dict):
                     ORDER BY array_position(i.indkey, a.attnum)
                 """, schema_name, table_name)
 
+                def _qi(n: str) -> str:
+                    return '"' + n.replace('"', '""') + '"'
+
                 col_defs = []
                 for c in cols:
-                    col_def = f"  {c['col']} {c['col_type']}"
+                    col_def = f"  {_qi(c['col'])} {c['col_type']}"
                     if c["identity"] == "a":
                         col_def += " GENERATED ALWAYS AS IDENTITY"
                     elif c["identity"] == "d":
@@ -1576,7 +1582,7 @@ async def schema_drop_recreate(body: dict):
                     col_defs.append(col_def)
 
                 if pk_cols:
-                    col_defs.append(f"  PRIMARY KEY ({', '.join(r['attname'] for r in pk_cols)})")
+                    col_defs.append(f"  PRIMARY KEY ({', '.join(_qi(r['attname']) for r in pk_cols)})")
 
                 ddl = (f'CREATE TABLE "{schema_name}"."{table_name}" (\n'
                        + ",\n".join(col_defs) + "\n);")
