@@ -1468,16 +1468,20 @@ async def schema_sync(body: dict):
 
             # If this is a partition, verify the parent table on dest is actually partitioned.
             # If not (e.g. created incorrectly as a plain table), drop and recreate it.
-            if is_partition and partition_info["parent_schema"] and partition_info["parent_table"]:
+            if is_partition and partition_info.get("parent_schema") and partition_info.get("parent_table"):
                 ps, pt = partition_info["parent_schema"], partition_info["parent_table"]
                 if (ps, pt) not in rebuilt_parents:
+                    rebuilt_parents.add((ps, pt))  # mark before any work to prevent repeat
                     parent_relkind = await dest_pool_conn.fetchval("""
                         SELECT c.relkind FROM pg_class c
                         JOIN pg_namespace n ON n.oid = c.relnamespace
                         WHERE n.nspname = $1 AND c.relname = $2
                     """, ps, pt)
+                    _slog.getLogger("uvicorn.error").info(
+                        f"schema_sync parent check {ps}.{pt}: relkind={parent_relkind!r}"
+                    )
                     if parent_relkind is not None and parent_relkind != 'p':
-                        # Parent exists but is not partitioned — rebuild once
+                        # Parent exists but is not partitioned — rebuild
                         await dest_pool_conn.execute(f'DROP TABLE IF EXISTS "{ps}"."{pt}" CASCADE')
                         parent_cols = await src_pool_conn.fetch("""
                             SELECT a.attname AS col,
@@ -1503,7 +1507,6 @@ async def schema_sync(body: dict):
                                           + ",\n".join(p_col_defs)
                                           + f"\n) PARTITION BY {parent_partkey};")
                             await dest_pool_conn.execute(parent_ddl)
-                        rebuilt_parents.add((ps, pt))
 
             await dest_pool_conn.execute(ddl)
             # Child partitions are NOT created here — they appear as separate
