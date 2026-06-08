@@ -208,6 +208,12 @@ async def create_or_update_subscription(config: SubscriptionConfig):
     if config.database:
         conn_dsn = dsn_for_database(conn_dsn, config.database)
 
+    import logging as _logging
+    _logging.getLogger("uvicorn.error").info(
+        f"CREATE SUBSCRIPTION conn_dsn host={conn_dsn.split('@')[-1] if '@' in conn_dsn else conn_dsn} "
+        f"database={config.database!r}"
+    )
+
     # Validate DSN format and prevent dollar-quoting escape
     if not re.match(r'^postgres(ql)?://', conn_dsn):
         raise HTTPException(400, "Connection DSN must start with postgresql:// or postgres://")
