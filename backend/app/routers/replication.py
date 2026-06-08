@@ -1362,6 +1362,11 @@ async def schema_sync(body: dict):
 
     rebuilt_parents: set[tuple[str, str]] = set()  # track parents already rebuilt
 
+    import logging as _slog
+    _slog.getLogger("uvicorn.error").info(
+        f"schema_sync order: {[(d.table, d.exists_on_dest, table_meta.get(tuple(d.table.split('.',1)),{}).get('relkind'), table_meta.get(tuple(d.table.split('.',1)),{}).get('relispartition')) for d in diffs if not d.exists_on_dest]}"
+    )
+
     for diff in diffs:
         if diff.exists_on_dest:
             if diff.compatible:
@@ -1458,6 +1463,7 @@ async def schema_sync(body: dict):
                     + "\n);"
                 )
 
+            _slog.getLogger("uvicorn.error").info(f"schema_sync DDL for {diff.table}: {ddl[:120]}")
             await dest_pool_conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"')
 
             # If this is a partition, verify the parent table on dest is actually partitioned.
