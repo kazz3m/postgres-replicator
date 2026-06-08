@@ -296,7 +296,7 @@ async def create_or_update_subscription(config: SubscriptionConfig):
     async def _do_create_subscription() -> None:
         dedicated_conn = None
         try:
-            dedicated_conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
+            dedicated_conn = await _asyncpg.connect(dest_dsn_db, timeout=15)
             copy_data_sql = "true" if config.copy_data else "false"
             await dedicated_conn.execute("SET statement_timeout = '30s'")
             await dedicated_conn.execute(f"""
