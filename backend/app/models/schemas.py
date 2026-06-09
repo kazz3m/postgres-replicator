@@ -85,6 +85,7 @@ class StatsRefreshInterval(BaseModel):
 class TableCopyProgress(BaseModel):
     schema_name: str
     table_name: str
+    table_oid: Optional[int] = None   # pg_class.oid — useful for debugging
     sub_state: str          # i/d/f/s/r/e raw char
     status: str             # initializing/copying/synced/ready/error
     # COPY phase (only populated while sub_state == 'd')

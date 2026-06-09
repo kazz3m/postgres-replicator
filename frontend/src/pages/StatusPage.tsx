@@ -388,6 +388,11 @@ export function StatusPage({ initialSnapshot }: Props) {
                           })}>
                           <td className="px-4 py-1.5 font-mono">
                             <span className="text-gray-500">{row.schema_name}.</span>{row.table_name}
+                            {row.table_oid != null && (
+                              <span className="ml-2 text-gray-600 text-[10px]" title="pg_class.oid">
+                                oid:{row.table_oid}
+                              </span>
+                            )}
                           </td>
                           <td className="px-4 py-1.5">
                             <Badge label={row.status} variant={statusVariant(row.status)} />

@@ -152,6 +152,7 @@ export const analysisApi = {
 export interface TableCopyProgress {
   schema_name: string
   table_name: string
+  table_oid: number | null
   sub_state: string       // i/d/f/s/r/e
   status: string          // initializing/copying/synced/ready/error
   tuples_done: number | null

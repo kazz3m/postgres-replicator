@@ -553,6 +553,7 @@ async def copy_progress():
             current_database() AS database,
             n.nspname  AS schema_name,
             c.relname  AS table_name,
+            c.oid      AS table_oid,
             sr.srsubstate AS sub_state,
             COALESCE(cp.tuples_processed, 0)             AS tuples_done,
             COALESCE(NULLIF(c.reltuples::bigint, -1), 0) AS tuples_total,
@@ -615,6 +616,7 @@ async def copy_progress():
             last_analyze = r["last_analyze"]
             subs_by_name[sub_name].tables.append(TableCopyProgress(
                 schema_name=r["schema_name"], table_name=r["table_name"],
+                table_oid=r["table_oid"],
                 sub_state=sub_state, status=state_label.get(sub_state, 'unknown'),
                 tuples_done=tuples_done if sub_state == 'd' else None,
                 tuples_total=tuples_total if sub_state == 'd' else None,
