@@ -501,7 +501,7 @@ async def copy_progress():
     import asyncpg as _asyncpg
 
     import re as _re
-    _sync_worker_slot = _re.compile(r'^pg_\d+_sync_\d+$')
+    _sync_worker_slot = _re.compile(r'^pg_\d+_sync_\d+')
 
     # WAL lag + active state per logical slot from source.
     # Exclude internal table-sync worker slots (pg_<pid>_sync_<reloid>).
