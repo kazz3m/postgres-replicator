@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { replicationApi, ReplicationSlotInfo, SubscriptionInfo, TableCopyProgress, CopyProgressResponse } from '../api/client'
 import { Badge } from '../components/Badge'
@@ -98,6 +98,34 @@ export function StatusPage({ initialSnapshot }: Props) {
         : interval * 1000,
     retry: 1,
   })
+
+  // Source table sizes — fetched once per database, never re-polled.
+  // Key: "database/schema.table" → bytes
+  const sourceSizesRef = useRef<Record<string, number>>({})
+  const fetchedDatabasesRef = useRef<Set<string>>(new Set())
+  const [sourceSizesVersion, setSourceSizesVersion] = useState(0)
+
+  useEffect(() => {
+    const databases = new Set(
+      (copyData?.subscriptions ?? []).map(s => s.database).filter(Boolean) as string[]
+    )
+    databases.forEach(db => {
+      if (fetchedDatabasesRef.current.has(db)) return
+      fetchedDatabasesRef.current.add(db)
+      replicationApi.sourceTableSizes(db).then(res => {
+        const entries = res.data
+        Object.entries(entries).forEach(([qualified, bytes]) => {
+          sourceSizesRef.current[`${db}/${qualified}`] = bytes
+        })
+        setSourceSizesVersion(v => v + 1)
+      }).catch(() => {/* silently ignore — sizes shown as '–' */})
+    })
+  }, [copyData?.subscriptions?.map(s => s.database).join(',')])
+
+  function getSourceSize(database: string | null, schema: string, table: string): number | null {
+    if (!database) return null
+    return sourceSizesRef.current[`${database}/${schema}.${table}`] ?? null
+  }
 
   const { data: slots, refetch: refetchSlots } = useQuery({
     queryKey: ['slots'],
@@ -253,13 +281,15 @@ export function StatusPage({ initialSnapshot }: Props) {
           const lag = sub.lag_bytes ?? 0
           const subExpanded = expandedSubs.has(sub.sub_name)
 
-          // Aggregate copy progress across all tables in this subscription
-          // source_size_bytes = heap size on source (best estimate of total to copy)
-          // For copying tables use bytes_processed; for done tables use source_size_bytes as copied
-          const tablesWithSource = sub.tables.filter(t => t.source_size_bytes != null && t.source_size_bytes > 0)
-          const totalSourceBytes = tablesWithSource.reduce((s, t) => s + (t.source_size_bytes ?? 0), 0)
+          // Aggregate copy progress across all tables in this subscription.
+          // Source sizes come from sourceSizesRef (fetched once, not polled).
+          // sourceSizesVersion dependency ensures re-render when ref is populated.
+          void sourceSizesVersion
+          const tablesWithSource = sub.tables.filter(t => getSourceSize(sub.database, t.schema_name, t.table_name) != null)
+          const totalSourceBytes = tablesWithSource.reduce((s, t) => s + (getSourceSize(sub.database, t.schema_name, t.table_name) ?? 0), 0)
           const totalCopiedBytes = tablesWithSource.reduce((s, t) => {
-            if (['f','s','r'].includes(t.sub_state)) return s + (t.source_size_bytes ?? 0)
+            const srcSize = getSourceSize(sub.database, t.schema_name, t.table_name) ?? 0
+            if (['f','s','r'].includes(t.sub_state)) return s + srcSize
             if (t.sub_state === 'd' && t.bytes_processed != null) return s + t.bytes_processed
             return s
           }, 0)
@@ -381,6 +411,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                     {sub.tables.map((row: TableCopyProgress) => {
                       const isCopying = row.sub_state === 'd'
                       const isDone = ['f','s','r'].includes(row.sub_state)
+                      const srcSize = getSourceSize(sub.database, row.schema_name, row.table_name)
                       return (
                         <tr key={`${row.schema_name}.${row.table_name}`}
                           className={clsx('border-b border-gray-800', {
@@ -399,9 +430,9 @@ export function StatusPage({ initialSnapshot }: Props) {
                           </td>
                           <td className="px-4 py-1.5 text-right text-gray-400">{fmtBytes(row.table_size_bytes)}</td>
                           <td className="px-4 py-1.5 text-right text-gray-400">
-                            {row.source_size_bytes != null
-                              ? <span className={clsx({ 'text-blue-300': isCopying })}>{fmtBytes(row.source_size_bytes)}</span>
-                              : '–'}
+                            {srcSize != null
+                              ? <span className={clsx({ 'text-blue-300': isCopying })}>{fmtBytes(srcSize)}</span>
+                              : <span className="text-gray-600 animate-pulse">…</span>}
                           </td>
                           <td className="px-4 py-1.5 text-right text-gray-400">
                             {isCopying && row.tuples_total != null && row.tuples_total > 0
@@ -411,8 +442,8 @@ export function StatusPage({ initialSnapshot }: Props) {
                           <td className="px-4 py-1.5">
                             {(() => {
                               // Use bytes_processed/source_size as progress when tuples unknown
-                              const bytePct = (isCopying && row.source_size_bytes && row.source_size_bytes > 0 && row.bytes_processed != null && row.bytes_processed > 0)
-                                ? Math.min(100, row.bytes_processed / row.source_size_bytes * 100)
+                              const bytePct = (isCopying && srcSize && srcSize > 0 && row.bytes_processed != null && row.bytes_processed > 0)
+                                ? Math.min(100, row.bytes_processed / srcSize * 100)
                                 : null
                               const pct = row.copy_pct ?? bytePct
                               return isCopying ? (

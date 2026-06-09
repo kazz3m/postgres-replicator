@@ -247,6 +247,8 @@ export const replicationApi = {
     api.post<SchemaSyncResult[]>('/replication/schema-drop-recreate', { tables, database }),
   copyProgress: () =>
     api.get<CopyProgressResponse>('/replication/copy-progress'),
+  sourceTableSizes: (database: string) =>
+    api.get<Record<string, number>>(`/replication/source-table-sizes?database=${encodeURIComponent(database)}`),
   analyzeTables: (tables: string[]) =>
     api.post<{ results: { table: string; ok: boolean; error?: string }[] }>('/replication/analyze', { tables }),
   publicationConfig: (name: string) =>

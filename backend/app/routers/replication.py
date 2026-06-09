@@ -627,33 +627,6 @@ async def copy_progress():
                 last_analyze=last_analyze.isoformat() if last_analyze else None,
             ))
 
-    # Enrich with source table sizes (pg_table_size = heap only, no indexes)
-    # Group tables by source database, then one query per database
-    from collections import defaultdict
-    tables_by_db: dict[str, list] = defaultdict(list)
-    for sub in subs_by_name.values():
-        if sub.database:
-            for t in sub.tables:
-                tables_by_db[sub.database].append(t)
-
-    for db_name, db_tables in tables_by_db.items():
-        src_db_dsn = dsn_for_database(state.source_dsn, db_name)
-        try:
-            src_db_conn = await _asyncpg.connect(src_db_dsn, timeout=10)
-            size_rows = await src_db_conn.fetch("""
-                SELECT n.nspname AS schema_name, c.relname AS table_name,
-                       pg_table_size(c.oid) AS size_bytes
-                FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE c.relkind IN ('r', 'p')
-            """)
-            await src_db_conn.close()
-            src_size_map = {(r["schema_name"], r["table_name"]): r["size_bytes"] for r in size_rows}
-            for t in db_tables:
-                t.source_size_bytes = src_size_map.get((t.schema_name, t.table_name))
-        except Exception:
-            pass
-
     # Also add subscriptions that have no tables yet (newly created)
     for slot_name, slot_info in slot_map.items():
         # Match slot to subscription name (our convention: slot_name == sub_name)
@@ -672,6 +645,34 @@ async def copy_progress():
     subscriptions = sorted(subs_by_name.values(), key=lambda s: s.sub_name)
 
     return CopyProgressResponse(subscriptions=subscriptions, copying_active=global_copying)
+
+
+# ── Source table sizes (lazy, fetched once by the frontend) ──────────────────
+
+@router.get("/source-table-sizes")
+async def source_table_sizes(database: str):
+    """
+    Heap sizes for all tables in one source database.
+    Intended to be called once per database on first load — not polled.
+    Returns { "schema.table": bytes, ... }
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+    src_dsn = dsn_for_database(state.source_dsn, database)
+    try:
+        conn = await _asyncpg.connect(src_dsn, timeout=15)
+        rows = await conn.fetch("""
+            SELECT n.nspname || '.' || c.relname AS qualified,
+                   pg_table_size(c.oid) AS size_bytes
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind IN ('r', 'p')
+              AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+        """)
+        await conn.close()
+    except Exception as e:
+        raise HTTPException(502, f"Cannot connect to source database '{database}': {e}")
+    return {r["qualified"]: r["size_bytes"] for r in rows}
 
 
 # ── Analyze ───────────────────────────────────────────────────────────────────
