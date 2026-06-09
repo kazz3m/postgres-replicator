@@ -90,25 +90,31 @@ async def drop_publication(name: str):
 
 
 @router.get("/publication-config")
-async def get_publication_config(name: str):
+async def get_publication_config(name: str, database: str | None = None):
     """
     Load full configuration for an existing publication: tables/schemas it covers,
     plus all linked subscriptions on destination. Used by UI to pre-fill Setup page.
+    database: source database where the publication lives (required for non-default databases).
     """
     _require_connection()
-    src_pool = await get_source_pool(state.source_dsn)
-    dest_pool = await get_dest_pool(state.dest_dsn)
+    import asyncpg as _asyncpg
 
-    async with src_pool.acquire() as src_conn:
+    src_dsn  = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    dest_dsn = dsn_for_database(state.dest_dsn,   database) if database else state.dest_dsn
+
+    src_conn  = await _asyncpg.connect(src_dsn,  timeout=15)
+    dest_conn = await _asyncpg.connect(dest_dsn, timeout=15)
+    try:
         version_num = await src_conn.fetchval("SELECT current_setting('server_version_num')::int")
         major = version_num // 10000
-        database = await src_conn.fetchval("SELECT current_database()")
+        if not database:
+            database = await src_conn.fetchval("SELECT current_database()")
 
         pub = await src_conn.fetchrow(
-            "SELECT pubname, puballtables, pubinsert, pubupdate, pubdelete "
-            "FROM pg_publication WHERE pubname = $1", name
+            "SELECT pubname, puballtables FROM pg_publication WHERE pubname = $1", name
         )
         if not pub:
+            await src_conn.close(); await dest_conn.close()
             raise HTTPException(404, f"Publication '{name}' not found on source.")
 
         tables = await src_conn.fetch(
@@ -127,8 +133,7 @@ async def get_publication_config(name: str):
             """, name)
             schemas = [r["nspname"] for r in schema_rows]
 
-    subs = []
-    async with dest_pool.acquire() as dest_conn:
+        subs = []
         try:
             subs = await dest_conn.fetch(
                 "SELECT subname, subenabled, subslotname "
@@ -136,9 +141,7 @@ async def get_publication_config(name: str):
                 name,
             )
         except Exception:
-            # pg_subscription requires superuser or pg_monitor — fall back gracefully
             try:
-                # pg_stat_subscription is accessible to non-superusers
                 subs = await dest_conn.fetch(
                     "SELECT s.subname, true AS subenabled, NULL::text AS subslotname "
                     "FROM pg_stat_subscription s "
@@ -148,21 +151,22 @@ async def get_publication_config(name: str):
             except Exception:
                 subs = []
 
-    return {
-        "pub_name": name,
-        "database": database,
-        "puballtables": pub["puballtables"],
-        "tables": [f"{r['schemaname']}.{r['tablename']}" for r in tables],
-        "schemas": schemas,
-        "subscriptions": [
-            {
-                "sub_name": r["subname"],
-                "enabled": r["subenabled"],
-                "slot_name": r["subslotname"],
-            }
-            for r in subs
-        ],
-    }
+        result = {
+            "pub_name": name,
+            "database": database,
+            "puballtables": pub["puballtables"],
+            "tables": [f"{r['schemaname']}.{r['tablename']}" for r in tables],
+            "schemas": schemas,
+            "subscriptions": [
+                {"sub_name": r["subname"], "enabled": r["subenabled"], "slot_name": r["subslotname"]}
+                for r in subs
+            ],
+        }
+    finally:
+        await src_conn.close()
+        await dest_conn.close()
+
+    return result
 
 
 @router.get("/publications")

@@ -273,8 +273,8 @@ export const replicationApi = {
     ),
   analyzeTables: (tables: string[]) =>
     api.post<{ results: { table: string; ok: boolean; error?: string }[] }>('/replication/analyze', { tables }),
-  publicationConfig: (name: string) =>
-    api.get<PublicationServerConfig>(`/replication/publication-config?name=${encodeURIComponent(name)}`),
+  publicationConfig: (name: string, database?: string) =>
+    api.get<PublicationServerConfig>(`/replication/publication-config?name=${encodeURIComponent(name)}${database ? `&database=${encodeURIComponent(database)}` : ''}`),
   listIndexes: (publication: string) =>
     api.get<IndexInfo[]>(`/replication/schema-indexes?publication=${encodeURIComponent(publication)}`),
   createIndexes: (publication?: string, tables?: string[]) =>

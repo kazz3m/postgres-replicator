@@ -62,7 +62,7 @@ function PublicationsPanel({ dbName, publishedMap, onOpenPublication }: Publicat
     if (!onOpenPublication) return
     setLoadingPub(pub)
     try {
-      const { data } = await replicationApi.publicationConfig(pub)
+      const { data } = await replicationApi.publicationConfig(pub, dbName)
       onOpenPublication(data)
     } catch {
       // ignore
@@ -163,7 +163,7 @@ function SchemaNode({
     if (!onOpenPublication) return
     setLoadingPub(pub)
     try {
-      const { data } = await replicationApi.publicationConfig(pub)
+      const { data } = await replicationApi.publicationConfig(pub, dbName)
       onOpenPublication(data)
     } catch {
       // ignore — badge stays static if fetch fails
