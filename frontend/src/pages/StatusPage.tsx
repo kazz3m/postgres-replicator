@@ -459,7 +459,6 @@ export function StatusPage({ initialSnapshot }: Props) {
                                   const pct = est > 0 ? Math.min(100, done / est * 100) : null
                                   return <>
                                     <span className="text-blue-300">{done.toLocaleString()}</span>
-                                    {est > 0 && <span className="text-gray-600"> / {est.toLocaleString()}</span>}
                                     {pct != null && <span className="text-gray-500"> ({pct.toFixed(1)}%)</span>}
                                   </>
                                 })()
