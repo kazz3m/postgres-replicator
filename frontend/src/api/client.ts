@@ -258,6 +258,8 @@ export const replicationApi = {
     api.get<Record<string, unknown>>(`/replication/debug-table?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}&database=${encodeURIComponent(database)}&sub_name=${encodeURIComponent(subName)}`),
   debugSubscription: (subName: string, database: string) =>
     api.get<Record<string, unknown>>(`/replication/debug-subscription?sub_name=${encodeURIComponent(subName)}&database=${encodeURIComponent(database)}`),
+  skipLsn: (subName: string, lsn: string) =>
+    api.post<{ status: string; subscription_name: string; lsn: string }>('/replication/skip-lsn', { subscription_name: subName, lsn }),
   setReplicaIdentityFull: (tables: string[], database: string) =>
     api.post<{ results: { table: string; ok: boolean; error?: string }[]; applied: number; failed: number }>(
       '/replication/set-replica-identity-full', { tables, database }

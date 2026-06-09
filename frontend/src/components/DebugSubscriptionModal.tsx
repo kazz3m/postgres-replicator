@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { replicationApi } from '../api/client'
 import { Spinner } from './Spinner'
-import { X, RefreshCw, AlertTriangle, CheckCircle, ShieldCheck } from 'lucide-react'
+import { X, RefreshCw, AlertTriangle, CheckCircle, ShieldCheck, SkipForward } from 'lucide-react'
 import clsx from 'clsx'
 
 interface Props {
@@ -50,6 +50,10 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
   const [error, setError] = useState('')
   const [riApplying, setRiApplying] = useState(false)
   const [riResults, setRiResults] = useState<{ table: string; ok: boolean; error?: string }[] | null>(null)
+  const [skipLsnModal, setSkipLsnModal] = useState(false)
+  const [skipLsnValue, setSkipLsnValue] = useState('')
+  const [skipLsnApplying, setSkipLsnApplying] = useState(false)
+  const [skipLsnResult, setSkipLsnResult] = useState<{ ok: boolean; msg: string } | null>(null)
 
   async function load() {
     setLoading(true); setError('')
@@ -80,6 +84,21 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
       setRiResults([{ table: '—', ok: false, error: e instanceof Error ? e.message : String(e) }])
     } finally {
       setRiApplying(false)
+    }
+  }
+
+  async function doSkipLsn() {
+    if (!skipLsnValue.trim()) return
+    setSkipLsnApplying(true); setSkipLsnResult(null)
+    try {
+      await replicationApi.skipLsn(subName, skipLsnValue.trim())
+      setSkipLsnResult({ ok: true, msg: `Skipped to LSN ${skipLsnValue.trim()}. Apply worker will resume from the next transaction.` })
+      setSkipLsnModal(false)
+      setTimeout(load, 1500) // refresh after worker restarts
+    } catch (e: unknown) {
+      setSkipLsnResult({ ok: false, msg: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setSkipLsnApplying(false)
     }
   }
 
@@ -206,6 +225,34 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                         <KV label="Sent–replay diff" value={fmtBytes(statRepl.send_replay_diff as number)} warn={(statRepl.send_replay_diff as number) > 100 * 1024 ** 2} />
                       </>
                     ) : <span className="text-gray-500 text-xs">No active WAL sender for this subscription</span>}
+                  </Section>
+
+                  {/* Skip LSN */}
+                  <Section title="Skip transaction (LSN)">
+                    <p className="text-xs text-gray-500 mb-2">
+                      Use when apply worker is stuck on an error (e.g. "could not map filenode to relation OID", duplicate key, missing row).
+                      Skips one transaction at the given LSN. The recommended LSN to skip is <strong className="text-gray-300">Sent LSN</strong> from pg_stat_replication above — that is the transaction currently failing.
+                    </p>
+                    {skipLsnResult && (
+                      <div className={clsx('mb-2 flex items-center gap-1.5 text-xs p-2 rounded border',
+                        skipLsnResult.ok ? 'bg-green-950/40 border-green-800 text-green-300' : 'bg-red-950/40 border-red-800 text-red-300'
+                      )}>
+                        {skipLsnResult.ok ? <CheckCircle size={11} /> : <AlertTriangle size={11} />}
+                        {skipLsnResult.msg}
+                      </div>
+                    )}
+                    <button
+                      onClick={() => {
+                        const suggested = statRepl?.sent_lsn ? String(statRepl.sent_lsn) : ''
+                        setSkipLsnValue(suggested)
+                        setSkipLsnModal(true)
+                        setSkipLsnResult(null)
+                      }}
+                      className="flex items-center gap-1.5 text-xs bg-orange-900/30 hover:bg-orange-800/50 border border-orange-700/60 text-orange-300 px-3 py-1.5 rounded transition-colors"
+                    >
+                      <SkipForward size={11} />
+                      Skip LSN{statRepl?.sent_lsn ? ` (pre-fill: ${statRepl.sent_lsn})` : '…'}
+                    </button>
                   </Section>
 
                   {walsenderBlockers.length > 0 && (
@@ -413,6 +460,68 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
           )}
         </div>
       </div>
+
+      {/* Skip LSN confirm modal */}
+      {skipLsnModal && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/80" onClick={() => setSkipLsnModal(false)}>
+          <div className="bg-gray-900 border border-orange-700 rounded-lg shadow-2xl w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start gap-3 mb-4">
+              <AlertTriangle size={20} className="text-orange-400 shrink-0 mt-0.5" />
+              <div>
+                <h3 className="font-semibold text-white mb-1">Skip transaction at LSN</h3>
+                <p className="text-xs text-gray-400">
+                  <code className="text-orange-300">ALTER SUBSCRIPTION "{subName}" SKIP (LSN '...')</code>
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-gray-800 rounded p-3 mb-4 text-xs text-gray-300 space-y-1.5">
+              <p>This will <strong className="text-white">skip one transaction</strong> at the specified LSN. The apply worker will resume from the next transaction.</p>
+              <p className="text-yellow-300">⚠ Data in the skipped transaction will <strong>not</strong> be applied on destination. Use only when the transaction is known to be irrelevant (e.g. changes to a dropped table, test data) or when you accept the data divergence.</p>
+              <p>Common cause: <code className="text-gray-200">could not map filenode to relation OID</code> — the table was dropped on source after the WAL was written.</p>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-xs text-gray-400 mb-1">LSN to skip <span className="text-gray-600">(format: X/XXXXXXXX)</span></label>
+              <input
+                type="text"
+                value={skipLsnValue}
+                onChange={e => setSkipLsnValue(e.target.value)}
+                placeholder="e.g. 168BE/62D787D0"
+                className="w-full bg-gray-800 border border-gray-600 focus:border-orange-500 rounded px-3 py-2 text-sm font-mono text-white outline-none"
+                autoFocus
+              />
+              {statRepl?.sent_lsn != null && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Suggested: <button className="text-orange-400 hover:text-orange-300 underline font-mono" onClick={() => setSkipLsnValue(String(statRepl!.sent_lsn))}>{String(statRepl.sent_lsn)}</button> (Sent LSN — transaction currently failing)
+                </p>
+              )}
+            </div>
+
+            {skipLsnResult && !skipLsnResult.ok && (
+              <div className="mb-3 flex items-center gap-1.5 text-xs text-red-300 bg-red-950/40 border border-red-800 rounded p-2">
+                <AlertTriangle size={11} /> {skipLsnResult.msg}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setSkipLsnModal(false)}
+                className="text-xs text-gray-400 hover:text-gray-200 border border-gray-700 px-4 py-2 rounded"
+              >Cancel</button>
+              <button
+                onClick={doSkipLsn}
+                disabled={skipLsnApplying || !skipLsnValue.trim()}
+                className="flex items-center gap-1.5 text-xs bg-orange-700 hover:bg-orange-600 text-white px-4 py-2 rounded disabled:opacity-40 transition-colors"
+              >
+                {skipLsnApplying ? <Spinner size={2} /> : <SkipForward size={11} />}
+                Confirm Skip LSN
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   )
 }
