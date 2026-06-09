@@ -45,6 +45,11 @@ const STATE_LABELS: Record<string, string> = {
   i: 'initializing', d: 'copying', f: 'catching up', s: 'synced', r: 'ready', e: 'error',
 }
 
+function truncate(s: string | null | undefined, n = 80): string {
+  if (!s) return '—'
+  return s.length > n ? s.slice(0, n) + '…' : s
+}
+
 function LocksTable({ locks }: { locks: Record<string, unknown>[] }) {
   return (
     <table className="w-full text-xs">
@@ -70,7 +75,7 @@ function LocksTable({ locks }: { locks: Record<string, unknown>[] }) {
               </span>
             </td>
             <td className="py-1 pr-2 font-mono">{l.query_age_s != null ? String(l.query_age_s) : '—'}</td>
-            <td className="py-1 text-gray-400 truncate max-w-[200px]" title={String(l.query ?? '')}>{String(l.query ?? '—')}</td>
+            <td className="py-1 text-gray-400 font-mono text-[10px] whitespace-nowrap overflow-hidden max-w-[260px]" title={String(l.query ?? '')}>{truncate(String(l.query ?? ''), 90)}</td>
           </tr>
         ))}
       </tbody>
@@ -117,6 +122,12 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
   const schemaMismatches = schemaDiff.filter(c => !c.match)
   const stateRaw = subRel?.srsubstate as string | undefined
   const stateLabel = stateRaw ? (STATE_LABELS[stateRaw] ?? stateRaw) : undefined
+  const destOidStr = destTable?.oid != null ? String(destTable.oid) : null
+  const slotOidRe = /\bpg_\d+_sync_(\d+)_/
+  const thisTableBlockers = replBlockers.filter(b => {
+    const m = String(b.wait_statement ?? '').match(slotOidRe)
+    return m ? m[1] === destOidStr : false
+  })
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={onClose}>
@@ -168,10 +179,10 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
                   <span><strong>{blockedSrcLocks.length} blocked lock(s) on source</strong> — may be blocking replication reads.</span>
                 </div>
               )}
-              {replBlockers.length > 0 && (
+              {thisTableBlockers.length > 0 && (
                 <div className="mb-2 flex items-start gap-2 bg-red-950/60 border border-red-800 rounded p-3 text-xs text-red-300">
                   <AlertTriangle size={13} className="shrink-0 mt-0.5" />
-                  <span><strong>{replBlockers.length} process(es) blocking replication worker on source</strong> — CREATE_REPLICATION_SLOT / COPY is waiting.</span>
+                  <span><strong>{thisTableBlockers.length} process(es) blocking CREATE_REPLICATION_SLOT for this table</strong> — held by: {thisTableBlockers.map(b => String(b.hold_user)).join(', ')}</span>
                 </div>
               )}
               {schemaMismatches.length > 0 && (
@@ -296,15 +307,11 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
 
               {/* Replication blockers on source — global, not per-table */}
               {replBlockers.length > 0 && (() => {
-                // Parse OID from slot name: pg_<pid>_sync_<table_oid>_<extra>
-                // Match against dest table OID to highlight rows for this table
-                const destOid = destTable?.oid != null ? String(destTable.oid) : null
-                const slotOidRe = /\bpg_\d+_sync_(\d+)_/
                 return (
                   <Section title={`Replication blockers on source — global (${replBlockers.length})`}>
                     <p className="text-xs text-gray-500 mb-2">
                       Shows all processes blocking replication workers on source, not just this table.
-                      Rows matching this table's dest OID ({destOid ?? '?'}) are highlighted.
+                      Rows matching this table's dest OID ({destOidStr ?? '?'}) are highlighted.
                     </p>
                     <table className="w-full text-xs">
                       <thead>
@@ -322,7 +329,7 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
                           const stmt = String(b.wait_statement ?? '')
                           const m = stmt.match(slotOidRe)
                           const slotOid = m ? m[1] : null
-                          const isThisTable = destOid != null && slotOid === destOid
+                          const isThisTable = destOidStr != null && slotOid === destOidStr
                           return (
                             <tr key={i} className={clsx('border-b border-gray-800',
                               isThisTable ? 'bg-orange-950/50 border-orange-800' : 'bg-red-950/10'
@@ -332,14 +339,14 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
                               <td className="py-1 pr-3 font-mono">{String(b.hold_pid)}</td>
                               <td className="py-1 pr-3 text-red-300">{String(b.hold_user)}</td>
                               <td className="py-1 pr-3 font-mono">{b.wait_age_s != null ? String(b.wait_age_s) : '—'}</td>
-                              <td className="py-1 font-mono text-[10px] max-w-xs" title={stmt}>
+                              <td className="py-1 font-mono text-[10px] whitespace-nowrap overflow-hidden max-w-[320px]" title={stmt}>
                                 {isThisTable && (
-                                  <span className="mr-1.5 text-orange-400 font-bold" title={`slot OID ${slotOid} matches dest OID ${destOid}`}>▶ this table</span>
+                                  <span className="mr-1.5 text-orange-400 font-bold">▶ this table </span>
                                 )}
                                 {slotOid && !isThisTable && (
-                                  <span className="mr-1.5 text-gray-500" title={`slot for dest OID ${slotOid}`}>oid:{slotOid}</span>
+                                  <span className="mr-1.5 text-gray-500">oid:{slotOid} </span>
                                 )}
-                                <span className="text-gray-300 truncate">{stmt.length > 80 ? stmt.slice(0, 80) + '…' : stmt}</span>
+                                <span className="text-gray-300">{truncate(stmt, 100)}</span>
                               </td>
                             </tr>
                           )
