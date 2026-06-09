@@ -130,7 +130,7 @@ export function StatusPage({ initialSnapshot }: Props) {
 
   // Source table sizes — fetched once per database, never re-polled.
   // Key: "database/schema.table" → bytes
-  const sourceSizesRef = useRef<Record<string, { size_bytes: number; row_estimate: number | null }>>({})
+  const sourceSizesRef = useRef<Record<string, { size_bytes: number; row_estimate: number | null; replica_identity: string; has_pk: boolean }>>({})
   const fetchedDatabasesRef = useRef<Set<string>>(new Set())
   const [sourceSizesVersion, setSourceSizesVersion] = useState(0)
 
@@ -162,6 +162,11 @@ export function StatusPage({ initialSnapshot }: Props) {
   }
   function getSourceRowEstimate(database: string | null, schema: string, table: string): number | null {
     return getSourceInfo(database, schema, table)?.row_estimate ?? null
+  }
+  function getSourceReplicaInfo(database: string | null, schema: string, table: string) {
+    const info = getSourceInfo(database, schema, table)
+    if (!info) return null
+    return { replica_identity: info.replica_identity, has_pk: info.has_pk }
   }
 
   const { data: slots, refetch: refetchSlots } = useQuery({
@@ -487,6 +492,8 @@ export function StatusPage({ initialSnapshot }: Props) {
                       const isDone = ['f','s','r'].includes(row.sub_state)
                       const srcSize = getSourceSize(sub.database, row.schema_name, row.table_name)
                       const srcRowEst = getSourceRowEstimate(sub.database, row.schema_name, row.table_name)
+                      const replicaInfo = getSourceReplicaInfo(sub.database, row.schema_name, row.table_name)
+                      const riProblem = replicaInfo && (!replicaInfo.has_pk || replicaInfo.replica_identity === 'nothing')
                       return (
                         <tr key={`${row.schema_name}.${row.table_name}`}
                           className={clsx('border-b border-gray-800', {
@@ -497,6 +504,24 @@ export function StatusPage({ initialSnapshot }: Props) {
                             {row.table_oid != null && (
                               <span className="ml-2 text-gray-600 text-[10px]" title="pg_class.oid">
                                 oid:{row.table_oid}
+                              </span>
+                            )}
+                            {replicaInfo && (
+                              <span
+                                className={clsx('ml-2 text-[10px] px-1 py-0.5 rounded border font-sans',
+                                  riProblem
+                                    ? 'bg-red-950/60 border-red-800 text-red-400'
+                                    : 'bg-gray-800 border-gray-700 text-gray-500'
+                                )}
+                                title={`Replica identity: ${replicaInfo.replica_identity} | PK: ${replicaInfo.has_pk}`}
+                              >
+                                {replicaInfo.has_pk ? 'PK' : 'no PK'}
+                                {' · '}
+                                {replicaInfo.replica_identity === 'default' ? 'RI:default'
+                                  : replicaInfo.replica_identity === 'full' ? 'RI:full'
+                                  : replicaInfo.replica_identity === 'nothing' ? 'RI:nothing ⚠'
+                                  : replicaInfo.replica_identity === 'index' ? 'RI:index'
+                                  : `RI:${replicaInfo.replica_identity}`}
                               </span>
                             )}
                           </td>

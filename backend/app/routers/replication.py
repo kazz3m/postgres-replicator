@@ -854,6 +854,38 @@ async def debug_subscription(sub_name: str, database: str):
         except Exception as e:
             result["walsender_blockers_error"] = str(e)
 
+        # Tables without PK or with problematic REPLICA IDENTITY in this subscription
+        try:
+            ri_rows = await sc.fetch("""
+                SELECT n.nspname || '.' || c.relname AS qualified,
+                       CASE c.relreplident
+                           WHEN 'd' THEN 'default'
+                           WHEN 'f' THEN 'full'
+                           WHEN 'i' THEN 'index'
+                           WHEN 'n' THEN 'nothing'
+                           ELSE c.relreplident::text
+                       END AS replica_identity,
+                       EXISTS (
+                           SELECT 1 FROM pg_index i
+                           WHERE i.indrelid = c.oid AND i.indisprimary
+                       ) AS has_pk
+                FROM pg_publication_tables pt
+                JOIN pg_class c ON c.relname = pt.tablename
+                JOIN pg_namespace n ON n.nspname = pt.schemaname AND n.oid = c.relnamespace
+                WHERE pt.pubname IN (
+                    SELECT unnest(subpublications) FROM pg_subscription WHERE subname = $1
+                )
+                ORDER BY n.nspname, c.relname
+            """, sub_name)
+            all_tables = [dict(r) for r in ri_rows]
+            result["replica_identity_issues"] = [
+                r for r in all_tables
+                if not r["has_pk"] or r["replica_identity"] in ("nothing", "full")
+            ]
+            result["replica_identity_all"] = all_tables
+        except Exception as e:
+            result["replica_identity_error"] = str(e)
+
         await sc.close()
 
     return result
@@ -1162,7 +1194,18 @@ async def source_table_sizes(database: str):
         rows = await conn.fetch("""
             SELECT n.nspname || '.' || c.relname AS qualified,
                    c.relpages::bigint * current_setting('block_size')::bigint AS size_bytes,
-                   CASE WHEN c.reltuples > 0 THEN c.reltuples::bigint ELSE NULL END AS row_estimate
+                   CASE WHEN c.reltuples > 0 THEN c.reltuples::bigint ELSE NULL END AS row_estimate,
+                   CASE c.relreplident
+                       WHEN 'd' THEN 'default'
+                       WHEN 'f' THEN 'full'
+                       WHEN 'i' THEN 'index'
+                       WHEN 'n' THEN 'nothing'
+                       ELSE c.relreplident::text
+                   END AS replica_identity,
+                   EXISTS (
+                       SELECT 1 FROM pg_index i
+                       WHERE i.indrelid = c.oid AND i.indisprimary
+                   ) AS has_pk
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE c.relkind IN ('r', 'p')
@@ -1171,7 +1214,12 @@ async def source_table_sizes(database: str):
         await conn.close()
     except Exception as e:
         raise HTTPException(502, f"Cannot connect to source database '{database}': {e}")
-    return {r["qualified"]: {"size_bytes": r["size_bytes"], "row_estimate": r["row_estimate"]} for r in rows}
+    return {r["qualified"]: {
+        "size_bytes": r["size_bytes"],
+        "row_estimate": r["row_estimate"],
+        "replica_identity": r["replica_identity"],
+        "has_pk": r["has_pk"],
+    } for r in rows}
 
 
 # ── Analyze ───────────────────────────────────────────────────────────────────

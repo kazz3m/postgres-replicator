@@ -75,6 +75,7 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
   const statRepl    = data?.stat_replication as R | null | undefined
   const applyLocks  = (data?.apply_worker_locks as R[] | undefined) ?? []
   const walsenderBlockers = (data?.walsender_blockers as R[] | undefined) ?? []
+  const riIssues    = (data?.replica_identity_issues as R[] | undefined) ?? []
 
   const applyDown   = !applyWorker?.pid
   const lagBytes    = slot?.lag_bytes as number | undefined
@@ -136,6 +137,12 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                 <div className="mb-2 flex items-start gap-2 bg-red-950/60 border border-red-800 rounded p-3 text-xs text-red-300">
                   <AlertTriangle size={13} className="shrink-0 mt-0.5" />
                   <span><strong>{walsenderBlockers.length} process(es) blocking WAL sender on source</strong></span>
+                </div>
+              )}
+              {riIssues.length > 0 && (
+                <div className="mb-2 flex items-start gap-2 bg-yellow-950/60 border border-yellow-800 rounded p-3 text-xs text-yellow-300">
+                  <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                  <span><strong>{riIssues.length} table(s) without PK or with REPLICA IDENTITY issues</strong> — UPDATE/DELETE may fail or not replicate correctly.</span>
                 </div>
               )}
               {lagBytes != null && lagBytes > 10 * 1024 ** 3 && (
@@ -297,6 +304,45 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                           <td className="py-1 text-gray-400">{l.wait_event ? `${l.wait_event_type}/${l.wait_event}` : '—'}</td>
                         </tr>
                       ))}
+                    </tbody>
+                  </table>
+                </Section>
+              )}
+
+              {/* Replica identity issues */}
+              {riIssues.length > 0 && (
+                <Section title={`Tables without PK or with REPLICA IDENTITY issues (${riIssues.length})`}>
+                  <table className="w-full text-xs">
+                    <thead><tr className="text-gray-500 border-b border-gray-700">
+                      <th className="text-left py-1 pr-4">Table</th>
+                      <th className="text-left py-1 pr-4">Has PK</th>
+                      <th className="text-left py-1">Replica identity</th>
+                    </tr></thead>
+                    <tbody>
+                      {riIssues.map((r, i) => {
+                        const noPk = !r.has_pk
+                        const riNothing = r.replica_identity === 'nothing'
+                        const riFull = r.replica_identity === 'full'
+                        return (
+                          <tr key={i} className={clsx('border-b border-gray-800',
+                            riNothing ? 'bg-red-950/20' : noPk || riFull ? 'bg-yellow-950/20' : ''
+                          )}>
+                            <td className="py-1 pr-4 font-mono">{String(r.qualified)}</td>
+                            <td className="py-1 pr-4">
+                              {r.has_pk
+                                ? <span className="text-green-400">✓ yes</span>
+                                : <span className="text-red-400">✗ no</span>}
+                            </td>
+                            <td className="py-1 font-mono">
+                              {riNothing
+                                ? <span className="text-red-400">nothing ⚠ UPDATE/DELETE won't replicate</span>
+                                : riFull
+                                  ? <span className="text-yellow-300">full — high overhead</span>
+                                  : <span className="text-gray-300">{String(r.replica_identity)}</span>}
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </Section>
