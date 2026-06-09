@@ -167,7 +167,7 @@ The **Replication Progress** panel (Status tab) shows a live view refreshed ever
 - **Per-table detail** (expandable) — table state badge (`copying` / `catching up` / `synced` / `ready` / `error`), destination heap size, source heap size, rows copied, byte-level progress bar, last ANALYZE timestamp with one-click Analyze button
 - Internal PostgreSQL worker slots (`pg_NNN_sync_NNN_…`) are automatically filtered out and not shown
 
-Source table sizes are fetched **once per database** (not on every poll) to avoid blocking the UI. Destination sizes are refreshed with each poll cycle. Both use `pg_class.relpages * block_size` instead of `pg_relation_size()` — the latter acquires `AccessShareLock` and can block indefinitely when a long-running transaction holds a lock on the table. `relpages` is lock-free and updated by `VACUUM`/`ANALYZE`, so values may be slightly stale but are always available immediately.
+Source table sizes are fetched **once per database** (not on every poll) to avoid blocking the UI. They use `pg_class.relpages * block_size` instead of `pg_relation_size()` — the latter acquires `AccessShareLock` and can block indefinitely when a long-running transaction holds a lock on the table. `relpages` is lock-free and updated by `VACUUM`/`ANALYZE`, so values may be slightly stale but are always available immediately. Destination table sizes use `pg_relation_size()` (polled each cycle) so that bytes written during the initial COPY snapshot are tracked accurately in real time.
 
 ### Table states
 
