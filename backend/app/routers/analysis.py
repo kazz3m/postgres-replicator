@@ -7,7 +7,7 @@ from .. import state
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
-SYSTEM_DATABASES = {"postgres", "template0", "template1"}
+SYSTEM_DATABASES = {"postgres", "template0", "template1", "cloudsqladmin"}
 
 
 def _require_connection():

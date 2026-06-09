@@ -535,7 +535,7 @@ async def copy_progress():
         dest_db_names_early = [r["datname"] for r in await _dc2.fetch("""
             SELECT datname FROM pg_database
             WHERE datistemplate = false
-              AND datname NOT IN ('postgres','template0','template1')
+              AND datname NOT IN ('postgres','template0','template1','cloudsqladmin')
         """)]
     for db_name in dest_db_names_early:
         db_dsn = dsn_for_database(state.dest_dsn, db_name)
@@ -559,7 +559,7 @@ async def copy_progress():
     async with dest_pool_default.acquire() as _dc:
         dest_db_names = [r["datname"] for r in await _dc.fetch("""
             SELECT datname FROM pg_database
-            WHERE datistemplate = false AND datname NOT IN ('postgres', 'template0', 'template1')
+            WHERE datistemplate = false AND datname NOT IN ('postgres', 'template0', 'template1', 'cloudsqladmin')
             ORDER BY datname
         """)]
 
