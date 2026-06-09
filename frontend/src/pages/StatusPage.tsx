@@ -104,7 +104,7 @@ export function StatusPage({ initialSnapshot }: Props) {
 
   // Source table sizes — fetched once per database, never re-polled.
   // Key: "database/schema.table" → bytes
-  const sourceSizesRef = useRef<Record<string, number>>({})
+  const sourceSizesRef = useRef<Record<string, { size_bytes: number; row_estimate: number | null }>>({})
   const fetchedDatabasesRef = useRef<Set<string>>(new Set())
   const [sourceSizesVersion, setSourceSizesVersion] = useState(0)
 
@@ -116,18 +116,23 @@ export function StatusPage({ initialSnapshot }: Props) {
       if (fetchedDatabasesRef.current.has(db)) return
       fetchedDatabasesRef.current.add(db)
       replicationApi.sourceTableSizes(db).then(res => {
-        const entries = res.data
-        Object.entries(entries).forEach(([qualified, bytes]) => {
-          sourceSizesRef.current[`${db}/${qualified}`] = bytes
+        Object.entries(res.data).forEach(([qualified, info]) => {
+          sourceSizesRef.current[`${db}/${qualified}`] = info
         })
         setSourceSizesVersion(v => v + 1)
-      }).catch(() => {/* silently ignore — sizes shown as '–' */})
+      }).catch(() => {})
     })
   }, [copyData?.subscriptions?.map(s => s.database).join(',')])
 
-  function getSourceSize(database: string | null, schema: string, table: string): number | null {
+  function getSourceInfo(database: string | null, schema: string, table: string) {
     if (!database) return null
     return sourceSizesRef.current[`${database}/${schema}.${table}`] ?? null
+  }
+  function getSourceSize(database: string | null, schema: string, table: string): number | null {
+    return getSourceInfo(database, schema, table)?.size_bytes ?? null
+  }
+  function getSourceRowEstimate(database: string | null, schema: string, table: string): number | null {
+    return getSourceInfo(database, schema, table)?.row_estimate ?? null
   }
 
   const { data: slots, refetch: refetchSlots } = useQuery({
@@ -417,6 +422,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                       const isCopying = row.sub_state === 'd'
                       const isDone = ['f','s','r'].includes(row.sub_state)
                       const srcSize = getSourceSize(sub.database, row.schema_name, row.table_name)
+                      const srcRowEst = getSourceRowEstimate(sub.database, row.schema_name, row.table_name)
                       return (
                         <tr key={`${row.schema_name}.${row.table_name}`}
                           className={clsx('border-b border-gray-800', {
@@ -440,13 +446,13 @@ export function StatusPage({ initialSnapshot }: Props) {
                               : <span className="text-gray-600 animate-pulse">…</span>}
                           </td>
                           <td className="px-4 py-1.5 text-right text-gray-500 font-mono">
-                            {row.row_estimate != null ? row.row_estimate.toLocaleString() : '–'}
+                            {srcRowEst != null ? srcRowEst.toLocaleString() : <span className="text-gray-700">…</span>}
                           </td>
                           <td className="px-4 py-1.5 text-right text-gray-400">
                             {isCopying
                               ? (() => {
                                   const done = row.tuples_done ?? 0
-                                  const est = row.row_estimate ?? 0
+                                  const est = srcRowEst ?? 0
                                   const pct = est > 0 ? Math.min(100, done / est * 100) : null
                                   return <>
                                     <span className="text-blue-300">{done.toLocaleString()}</span>

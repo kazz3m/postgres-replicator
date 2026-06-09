@@ -950,7 +950,8 @@ async def source_table_sizes(database: str):
         # but is always available without waiting.
         rows = await conn.fetch("""
             SELECT n.nspname || '.' || c.relname AS qualified,
-                   c.relpages::bigint * current_setting('block_size')::bigint AS size_bytes
+                   c.relpages::bigint * current_setting('block_size')::bigint AS size_bytes,
+                   NULLIF(GREATEST(c.reltuples::bigint, 0), 0) AS row_estimate
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE c.relkind IN ('r', 'p')
@@ -959,7 +960,7 @@ async def source_table_sizes(database: str):
         await conn.close()
     except Exception as e:
         raise HTTPException(502, f"Cannot connect to source database '{database}': {e}")
-    return {r["qualified"]: r["size_bytes"] for r in rows}
+    return {r["qualified"]: {"size_bytes": r["size_bytes"], "row_estimate": r["row_estimate"]} for r in rows}
 
 
 # ── Analyze ───────────────────────────────────────────────────────────────────
