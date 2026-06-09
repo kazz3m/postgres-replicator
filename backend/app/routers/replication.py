@@ -647,6 +647,157 @@ async def copy_progress():
     return CopyProgressResponse(subscriptions=subscriptions, copying_active=global_copying)
 
 
+# ── Debug table ──────────────────────────────────────────────────────────────
+
+@router.get("/debug-table")
+async def debug_table(schema: str, table: str, database: str, sub_name: str):
+    """
+    Diagnostic info for a specific table in a subscription.
+    Queries both source and destination without any locking operations.
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+
+    result: dict = {}
+
+    # ── Destination side ─────────────────────────────────────────────────────
+    dest_dsn = dsn_for_database(state.dest_dsn, database)
+    try:
+        dest_conn = await _asyncpg.connect(dest_dsn, timeout=10)
+
+        # pg_subscription_rel — raw sync state
+        sub_rel = await dest_conn.fetchrow("""
+            SELECT sr.srsubstate, sr.srsublsn::text
+            FROM pg_subscription_rel sr
+            JOIN pg_subscription s  ON s.oid = sr.srsubid
+            JOIN pg_class c         ON c.oid = sr.srrelid
+            JOIN pg_namespace n     ON n.oid = c.relnamespace
+            WHERE s.subname = $1 AND n.nspname = $2 AND c.relname = $3
+        """, sub_name, schema, table)
+        result["subscription_rel"] = dict(sub_rel) if sub_rel else None
+
+        # pg_stat_progress_copy — active COPY worker
+        copy_progress = await dest_conn.fetchrow("""
+            SELECT pid, phase, command,
+                   tuples_processed, tuples_excluded,
+                   bytes_processed
+            FROM pg_stat_progress_copy
+            WHERE relid = (
+                SELECT c.oid FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = $1 AND c.relname = $2
+            )
+        """, schema, table)
+        result["copy_progress"] = dict(copy_progress) if copy_progress else None
+
+        # pg_locks — all locks on this table on dest
+        lock_rows = await dest_conn.fetch("""
+            SELECT l.pid, l.mode, l.granted, l.locktype,
+                   a.state, a.wait_event_type, a.wait_event,
+                   LEFT(a.query, 120) AS query,
+                   EXTRACT(EPOCH FROM (now() - a.query_start))::int AS query_age_s
+            FROM pg_locks l
+            JOIN pg_class c ON c.oid = l.relation
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_stat_activity a ON a.pid = l.pid
+            WHERE n.nspname = $1 AND c.relname = $2
+            ORDER BY l.granted DESC, query_age_s DESC NULLS LAST
+        """, schema, table)
+        result["locks"] = [dict(r) for r in lock_rows]
+
+        # table existence + row count estimate + relpages
+        table_info = await dest_conn.fetchrow("""
+            SELECT c.oid, c.relpages, c.reltuples::bigint AS reltuples,
+                   pg_relation_size(c.oid) AS size_bytes,
+                   c.relkind::text
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1 AND c.relname = $2
+        """, schema, table)
+        result["dest_table"] = dict(table_info) if table_info else None
+
+        # subscription worker health
+        worker = await dest_conn.fetchrow("""
+            SELECT pid, relid, received_lsn::text, last_msg_receive_time::text,
+                   latest_end_lsn::text, latest_end_time::text
+            FROM pg_stat_subscription_stats
+            WHERE subid = (SELECT oid FROM pg_subscription WHERE subname = $1)
+        """, sub_name)
+        if worker is None:
+            # fallback — pg_stat_subscription (no per-table detail)
+            worker = await dest_conn.fetchrow("""
+                SELECT pid, received_lsn::text, last_msg_receive_time::text,
+                       latest_end_lsn::text, latest_end_time::text
+                FROM pg_stat_subscription
+                WHERE subname = $1
+            """, sub_name)
+        result["subscription_worker"] = dict(worker) if worker else None
+
+        await dest_conn.close()
+    except Exception as e:
+        result["dest_error"] = str(e)
+
+    # ── Source side ──────────────────────────────────────────────────────────
+    src_dsn = dsn_for_database(state.source_dsn, database)
+    try:
+        src_conn = await _asyncpg.connect(src_dsn, timeout=10)
+
+        # table existence + size on source
+        src_table = await src_conn.fetchrow("""
+            SELECT c.oid, c.relpages,
+                   c.relpages::bigint * current_setting('block_size')::bigint AS size_bytes,
+                   c.reltuples::bigint AS reltuples,
+                   c.relkind::text, c.relispartition,
+                   pg_get_partkeydef(c.oid) AS partkeydef,
+                   pg_get_expr(c.relpartbound, c.oid) AS partbound
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1 AND c.relname = $2
+        """, schema, table)
+        result["source_table"] = dict(src_table) if src_table else None
+
+        # publication membership
+        pub_rows = await src_conn.fetch("""
+            SELECT p.pubname, pt.schemaname, pt.tablename
+            FROM pg_publication p
+            JOIN pg_publication_tables pt ON pt.pubname = p.pubname
+            WHERE pt.schemaname = $1 AND pt.tablename = $2
+        """, schema, table)
+        result["publications"] = [dict(r) for r in pub_rows]
+
+        # replica identity
+        replica_id = await src_conn.fetchrow("""
+            SELECT CASE c.relreplident
+                WHEN 'd' THEN 'default (PK)'
+                WHEN 'f' THEN 'full'
+                WHEN 'i' THEN 'index'
+                WHEN 'n' THEN 'nothing'
+                ELSE c.relreplident::text
+            END AS replica_identity
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1 AND c.relname = $2
+        """, schema, table)
+        result["replica_identity"] = replica_id["replica_identity"] if replica_id else None
+
+        # replication slot lag for this subscription
+        slot_row = await src_conn.fetchrow("""
+            SELECT slot_name, active,
+                   pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) AS lag_bytes,
+                   confirmed_flush_lsn::text
+            FROM pg_replication_slots
+            WHERE slot_name = $1 OR slot_name LIKE $2
+            LIMIT 1
+        """, sub_name, f"%{sub_name}%")
+        result["replication_slot"] = dict(slot_row) if slot_row else None
+
+        await src_conn.close()
+    except Exception as e:
+        result["source_error"] = str(e)
+
+    return result
+
+
 # ── Source table sizes (lazy, fetched once by the frontend) ──────────────────
 
 @router.get("/source-table-sizes")

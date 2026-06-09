@@ -249,6 +249,8 @@ export const replicationApi = {
     api.get<CopyProgressResponse>('/replication/copy-progress'),
   sourceTableSizes: (database: string) =>
     api.get<Record<string, number>>(`/replication/source-table-sizes?database=${encodeURIComponent(database)}`),
+  debugTable: (schema: string, table: string, database: string, subName: string) =>
+    api.get<Record<string, unknown>>(`/replication/debug-table?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}&database=${encodeURIComponent(database)}&sub_name=${encodeURIComponent(subName)}`),
   analyzeTables: (tables: string[]) =>
     api.post<{ results: { table: string; ok: boolean; error?: string }[] }>('/replication/analyze', { tables }),
   publicationConfig: (name: string) =>

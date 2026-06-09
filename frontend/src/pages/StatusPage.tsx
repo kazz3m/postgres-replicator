@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { replicationApi, ReplicationSlotInfo, SubscriptionInfo, TableCopyProgress, CopyProgressResponse } from '../api/client'
 import { Badge } from '../components/Badge'
+import { DebugTableModal } from '../components/DebugTableModal'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { Spinner } from '../components/Spinner'
 import { SequenceSyncPanel } from '../components/SequenceSyncPanel'
@@ -9,7 +10,7 @@ import { SchemaSyncPanel } from '../components/SchemaSyncPanel'
 import { AddTableModal } from '../components/AddTableModal'
 import { IndexSyncPanel } from '../components/IndexSyncPanel'
 import { RolesSyncPanel } from '../components/RolesSyncPanel'
-import { RefreshCw, AlertTriangle, Square, PlusCircle, Layers, Database, ChevronDown, ChevronRight, FlaskConical } from 'lucide-react'
+import { RefreshCw, AlertTriangle, Square, PlusCircle, Layers, Database, ChevronDown, ChevronRight, FlaskConical, Bug } from 'lucide-react'
 import clsx from 'clsx'
 import type { WorkspaceSnapshot } from './WorkspacePicker'
 
@@ -81,6 +82,8 @@ export function StatusPage({ initialSnapshot }: Props) {
   }
   // ANALYZE state
   const [analyzingTables, setAnalyzingTables] = useState(false)
+  // Debug modal
+  const [debugTarget, setDebugTarget] = useState<{ schema: string; table: string; database: string; subName: string } | null>(null)
 
   const { data: progress, refetch: refetchProgress, isLoading: progressLoading } = useQuery({
     queryKey: ['progress'],
@@ -405,6 +408,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                       <th className="px-4 py-1.5 text-right">Rows copied</th>
                       <th className="px-4 py-1.5 text-left w-40">Progress</th>
                       <th className="px-4 py-1.5 text-left">Analyzed</th>
+                      <th className="px-4 py-1.5"></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -472,6 +476,15 @@ export function StatusPage({ initialSnapshot }: Props) {
                                 >Analyze</button>
                               </div>
                             )}
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <button
+                              onClick={() => setDebugTarget({ schema: row.schema_name, table: row.table_name, database: sub.database ?? '', subName: sub.sub_name })}
+                              className="flex items-center gap-1 text-xs text-gray-600 hover:text-gray-300 border border-gray-700 hover:border-gray-500 px-1.5 py-0.5 rounded transition-colors"
+                              title="Debug this table"
+                            >
+                              <Bug size={10} /> debug
+                            </button>
                           </td>
                         </tr>
                       )
@@ -645,6 +658,16 @@ export function StatusPage({ initialSnapshot }: Props) {
           confirmLabel="Drop Slot"
           onConfirm={() => handleDropSlot(confirmDropSlot)}
           onCancel={() => setConfirmDropSlot(null)}
+        />
+      )}
+
+      {debugTarget && (
+        <DebugTableModal
+          schema={debugTarget.schema}
+          table={debugTarget.table}
+          database={debugTarget.database}
+          subName={debugTarget.subName}
+          onClose={() => setDebugTarget(null)}
         />
       )}
     </div>
