@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { replicationApi } from '../api/client'
 import { Spinner } from './Spinner'
-import { X, RefreshCw, AlertTriangle, CheckCircle, Info } from 'lucide-react'
+import { X, RefreshCw, AlertTriangle, CheckCircle, ShieldCheck } from 'lucide-react'
 import clsx from 'clsx'
 
 interface Props {
@@ -48,6 +48,8 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
   const [data, setData] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [riApplying, setRiApplying] = useState(false)
+  const [riResults, setRiResults] = useState<{ table: string; ok: boolean; error?: string }[] | null>(null)
 
   async function load() {
     setLoading(true); setError('')
@@ -64,6 +66,22 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
   if (data === null && !loading && !error) load()
 
   type R = Record<string, unknown>
+  const riIssues = (data?.replica_identity_issues as R[] | undefined) ?? []
+
+  async function applyReplicaIdentityFull() {
+    const tables = riIssues.filter(r => r.replica_identity !== 'full').map(r => String(r.qualified))
+    if (!tables.length) return
+    setRiApplying(true); setRiResults(null)
+    try {
+      const res = await replicationApi.setReplicaIdentityFull(tables, database)
+      setRiResults(res.data.results)
+      if (res.data.failed === 0) load() // refresh diagnostics
+    } catch (e: unknown) {
+      setRiResults([{ table: '—', ok: false, error: e instanceof Error ? e.message : String(e) }])
+    } finally {
+      setRiApplying(false)
+    }
+  }
 
   const sub         = data?.subscription as R | null | undefined
   const statRows    = (data?.stat_subscription as R[] | undefined) ?? []
@@ -75,7 +93,6 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
   const statRepl    = data?.stat_replication as R | null | undefined
   const applyLocks  = (data?.apply_worker_locks as R[] | undefined) ?? []
   const walsenderBlockers = (data?.walsender_blockers as R[] | undefined) ?? []
-  const riIssues    = (data?.replica_identity_issues as R[] | undefined) ?? []
 
   const applyDown   = !applyWorker?.pid
   const lagBytes    = slot?.lag_bytes as number | undefined
@@ -312,6 +329,38 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
               {/* Replica identity issues */}
               {riIssues.length > 0 && (
                 <Section title={`Tables without PK or with REPLICA IDENTITY issues (${riIssues.length})`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs text-gray-500">
+                      Tables without a PRIMARY KEY cannot replicate UPDATE/DELETE unless REPLICA IDENTITY FULL is set.
+                    </p>
+                    {riIssues.some(r => r.replica_identity !== 'full') && (
+                      <button
+                        onClick={applyReplicaIdentityFull}
+                        disabled={riApplying}
+                        className="flex items-center gap-1.5 text-xs bg-blue-900/40 hover:bg-blue-800/60 border border-blue-700/60 text-blue-300 px-3 py-1 rounded disabled:opacity-50 transition-colors shrink-0 ml-4"
+                        title="ALTER TABLE ... REPLICA IDENTITY FULL on all problematic tables on source"
+                      >
+                        {riApplying ? <Spinner size={2} /> : <ShieldCheck size={11} />}
+                        Set REPLICA IDENTITY FULL ({riIssues.filter(r => r.replica_identity !== 'full').length} tables)
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Apply results */}
+                  {riResults && (
+                    <div className="mb-2 space-y-0.5">
+                      {riResults.map((r, i) => (
+                        <div key={i} className={clsx('text-xs flex items-center gap-1.5',
+                          r.ok ? 'text-green-400' : 'text-red-400'
+                        )}>
+                          {r.ok ? <CheckCircle size={10} /> : <AlertTriangle size={10} />}
+                          <span className="font-mono">{r.table}</span>
+                          {r.error && <span className="text-gray-500">— {r.error}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   <table className="w-full text-xs">
                     <thead><tr className="text-gray-500 border-b border-gray-700">
                       <th className="text-left py-1 pr-4">Table</th>
@@ -325,7 +374,7 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                         const riFull = r.replica_identity === 'full'
                         return (
                           <tr key={i} className={clsx('border-b border-gray-800',
-                            riNothing ? 'bg-red-950/20' : noPk || riFull ? 'bg-yellow-950/20' : ''
+                            riNothing ? 'bg-red-950/20' : noPk ? 'bg-yellow-950/20' : riFull ? 'bg-blue-950/10' : ''
                           )}>
                             <td className="py-1 pr-4 font-mono">{String(r.qualified)}</td>
                             <td className="py-1 pr-4">
@@ -337,8 +386,8 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                               {riNothing
                                 ? <span className="text-red-400">nothing ⚠ UPDATE/DELETE won't replicate</span>
                                 : riFull
-                                  ? <span className="text-yellow-300">full — high overhead</span>
-                                  : <span className="text-gray-300">{String(r.replica_identity)}</span>}
+                                  ? <span className="text-blue-300">full ✓ set</span>
+                                  : <span className="text-yellow-300">{String(r.replica_identity)} — no PK, needs FULL</span>}
                             </td>
                           </tr>
                         )

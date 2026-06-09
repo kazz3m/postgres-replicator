@@ -258,6 +258,10 @@ export const replicationApi = {
     api.get<Record<string, unknown>>(`/replication/debug-table?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}&database=${encodeURIComponent(database)}&sub_name=${encodeURIComponent(subName)}`),
   debugSubscription: (subName: string, database: string) =>
     api.get<Record<string, unknown>>(`/replication/debug-subscription?sub_name=${encodeURIComponent(subName)}&database=${encodeURIComponent(database)}`),
+  setReplicaIdentityFull: (tables: string[], database: string) =>
+    api.post<{ results: { table: string; ok: boolean; error?: string }[]; applied: number; failed: number }>(
+      '/replication/set-replica-identity-full', { tables, database }
+    ),
   analyzeTables: (tables: string[]) =>
     api.post<{ results: { table: string; ok: boolean; error?: string }[] }>('/replication/analyze', { tables }),
   publicationConfig: (name: string) =>

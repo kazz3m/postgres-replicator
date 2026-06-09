@@ -891,6 +891,44 @@ async def debug_subscription(sub_name: str, database: str):
     return result
 
 
+# ── Set REPLICA IDENTITY FULL ────────────────────────────────────────────────
+
+@router.post("/set-replica-identity-full")
+async def set_replica_identity_full(body: dict):
+    """
+    ALTER TABLE ... REPLICA IDENTITY FULL on specified tables on source.
+    body: { "tables": ["schema.table", ...], "database": "dbname" }
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+
+    tables: list[str] = body.get("tables", [])
+    database: str = body.get("database", "")
+    if not tables:
+        raise HTTPException(400, "No tables specified.")
+
+    src_dsn = dsn_for_database(state.source_dsn, database)
+    results = []
+    try:
+        conn = await _asyncpg.connect(src_dsn, timeout=15)
+        for qualified in tables:
+            if "." not in qualified:
+                results.append({"table": qualified, "ok": False, "error": "Invalid table name"})
+                continue
+            schema, table = qualified.split(".", 1)
+            try:
+                await conn.execute(f'ALTER TABLE "{schema}"."{table}" REPLICA IDENTITY FULL')
+                results.append({"table": qualified, "ok": True})
+            except Exception as e:
+                results.append({"table": qualified, "ok": False, "error": str(e)})
+        await conn.close()
+    except Exception as e:
+        raise HTTPException(502, f"Cannot connect to source database '{database}': {e}")
+
+    failed = [r for r in results if not r["ok"]]
+    return {"results": results, "applied": len(results) - len(failed), "failed": len(failed)}
+
+
 # ── Debug table ──────────────────────────────────────────────────────────────
 
 @router.get("/debug-table")
