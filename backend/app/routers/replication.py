@@ -854,8 +854,18 @@ async def debug_subscription(sub_name: str, database: str):
         except Exception as e:
             result["walsender_blockers_error"] = str(e)
 
-        # Tables without PK or with problematic REPLICA IDENTITY in this subscription
+        # Tables without PK or with problematic REPLICA IDENTITY in this subscription.
+        # We get publication names from the dest subscription row (already fetched).
+        # Querying pg_subscription directly on source can fail on Cloud SQL.
         try:
+            pub_names: list[str] = []
+            sub_info = result.get("subscription")
+            if isinstance(sub_info, dict) and sub_info.get("subpublications"):
+                pub_names = list(sub_info["subpublications"])
+            if not pub_names:
+                # fallback: slot name == sub name == pub name prefix heuristic
+                pub_names = [sub_name.replace("_sub_", "_pub_")]
+
             ri_rows = await sc.fetch("""
                 SELECT n.nspname || '.' || c.relname AS qualified,
                        CASE c.relreplident
@@ -872,11 +882,9 @@ async def debug_subscription(sub_name: str, database: str):
                 FROM pg_publication_tables pt
                 JOIN pg_class c ON c.relname = pt.tablename
                 JOIN pg_namespace n ON n.nspname = pt.schemaname AND n.oid = c.relnamespace
-                WHERE pt.pubname IN (
-                    SELECT unnest(subpublications) FROM pg_subscription WHERE subname = $1
-                )
+                WHERE pt.pubname = ANY($1::text[])
                 ORDER BY n.nspname, c.relname
-            """, sub_name)
+            """, pub_names)
             all_tables = [dict(r) for r in ri_rows]
             result["replica_identity_issues"] = [
                 r for r in all_tables
@@ -1051,7 +1059,7 @@ async def debug_table(schema: str, table: str, database: str, sub_name: str):
         """, schema, table)
         result["publications"] = [dict(r) for r in pub_rows]
 
-        # replica identity
+        # replica identity + PK columns
         replica_id = await src_conn.fetchrow("""
             SELECT CASE c.relreplident
                 WHEN 'd' THEN 'default (PK)'
@@ -1059,12 +1067,28 @@ async def debug_table(schema: str, table: str, database: str, sub_name: str):
                 WHEN 'i' THEN 'index'
                 WHEN 'n' THEN 'nothing'
                 ELSE c.relreplident::text
-            END AS replica_identity
+            END AS replica_identity,
+            EXISTS (
+                SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary
+            ) AS has_pk
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE n.nspname = $1 AND c.relname = $2
         """, schema, table)
         result["replica_identity"] = replica_id["replica_identity"] if replica_id else None
+        result["has_pk"] = replica_id["has_pk"] if replica_id else None
+
+        # PK column names
+        pk_cols = await src_conn.fetch("""
+            SELECT a.attname AS column_name
+            FROM pg_index i
+            JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+            JOIN pg_class c ON c.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1 AND c.relname = $2 AND i.indisprimary
+            ORDER BY a.attnum
+        """, schema, table)
+        result["pk_columns"] = [r["column_name"] for r in pk_cols]
 
         # replication slot lag for this subscription
         slot_row = await src_conn.fetchrow("""

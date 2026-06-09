@@ -116,6 +116,8 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
   const slot = data?.replication_slot as Record<string, unknown> | null | undefined
   const replicaId = data?.replica_identity as string | undefined
   const schemaDiff = (data?.schema_diff as Record<string, unknown>[] | undefined) ?? []
+  const hasPk = data?.has_pk as boolean | undefined
+  const pkColumns = (data?.pk_columns as string[] | undefined) ?? []
 
   const blockedDestLocks = destLocks.filter(l => !l.granted)
   const blockedSrcLocks = srcLocks.filter(l => !l.granted)
@@ -203,6 +205,12 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
                   Table is not in any publication on source.
                 </div>
               )}
+              {hasPk === false && (
+                <div className="mb-2 flex items-start gap-2 bg-red-950/60 border border-red-800 rounded p-3 text-xs text-red-300">
+                  <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                  <span><strong>No PRIMARY KEY on source</strong> — UPDATE/DELETE will not replicate unless REPLICA IDENTITY FULL is set.</span>
+                </div>
+              )}
               {replicaId === 'nothing' && (
                 <div className="mb-4 flex items-start gap-2 bg-yellow-950/60 border border-yellow-800 rounded p-3 text-xs text-yellow-300">
                   <AlertTriangle size={13} className="shrink-0 mt-0.5" />
@@ -226,6 +234,12 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
                         <KV label="Replica identity" value={replicaId}
                           warn={replicaId === 'nothing' || replicaId === 'full'}
                           ok={replicaId?.startsWith('default')} />
+                        <KV label="Has primary key"
+                          value={hasPk === undefined ? undefined : hasPk ? 'yes' : 'no'}
+                          ok={hasPk === true} warn={hasPk === false} />
+                        {pkColumns.length > 0 && (
+                          <KV label="PK columns" value={pkColumns.join(', ')} ok />
+                        )}
                       </>
                     ) : <span className="text-yellow-400 text-xs">Table not found on source</span>}
                   </Section>
