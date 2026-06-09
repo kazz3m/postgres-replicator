@@ -272,10 +272,11 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
                 </Section>
               )}
 
-              {(data.dest_error || data.source_error) && (
-                <div className="mt-2 text-xs text-red-400">
-                  {data.dest_error != null && <div>Dest error: {String(data.dest_error)}</div>}
-                  {data.source_error != null && <div>Source error: {String(data.source_error)}</div>}
+              {(['dest_error','source_error','copy_progress_error','locks_error','dest_table_error','subscription_rel_error','subscription_worker_error'] as const).some(k => data[k]) && (
+                <div className="mt-2 space-y-0.5 text-xs text-red-400">
+                  {(['dest_error','source_error','copy_progress_error','locks_error','dest_table_error','subscription_rel_error','subscription_worker_error'] as const).map(k =>
+                    data[k] != null ? <div key={k}>{k.replace(/_/g,' ')}: {String(data[k])}</div> : null
+                  )}
                 </div>
               )}
             </>
