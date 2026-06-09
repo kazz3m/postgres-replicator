@@ -130,6 +130,8 @@ export function StatusPage({ initialSnapshot }: Props) {
 
   // Source table sizes — fetched once per database, never re-polled.
   // Key: "database/schema.table" → bytes
+  // v2 = added replica_identity + has_pk; bump version to force refetch on format change
+  const SOURCE_SIZES_CACHE_VERSION = 'v2'
   const sourceSizesRef = useRef<Record<string, { size_bytes: number; row_estimate: number | null; replica_identity: string; has_pk: boolean }>>({})
   const fetchedDatabasesRef = useRef<Set<string>>(new Set())
   const [sourceSizesVersion, setSourceSizesVersion] = useState(0)
@@ -139,7 +141,19 @@ export function StatusPage({ initialSnapshot }: Props) {
       (copyData?.subscriptions ?? []).map(s => s.database).filter(Boolean) as string[]
     )
     databases.forEach(db => {
-      if (fetchedDatabasesRef.current.has(db)) return
+      if (fetchedDatabasesRef.current.has(db)) {
+        // Check if cached data has the current format (replica_identity present)
+        const sample = Object.entries(sourceSizesRef.current).find(([k]) => k.startsWith(`${db}/`))
+        if (sample && (sample[1] as Record<string, unknown>).replica_identity === undefined) {
+          // Stale format — clear and refetch
+          for (const k of Object.keys(sourceSizesRef.current)) {
+            if (k.startsWith(`${db}/`)) delete sourceSizesRef.current[k]
+          }
+          fetchedDatabasesRef.current.delete(db)
+        } else {
+          return
+        }
+      }
       fetchedDatabasesRef.current.add(db)
       replicationApi.sourceTableSizes(db).then(res => {
         Object.entries(res.data).forEach(([qualified, info]) => {
@@ -165,7 +179,7 @@ export function StatusPage({ initialSnapshot }: Props) {
   }
   function getSourceReplicaInfo(database: string | null, schema: string, table: string) {
     const info = getSourceInfo(database, schema, table)
-    if (!info) return null
+    if (!info || info.replica_identity === undefined) return null
     return { replica_identity: info.replica_identity, has_pk: info.has_pk }
   }
 
