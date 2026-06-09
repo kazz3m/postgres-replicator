@@ -444,29 +444,6 @@ export function StatusPage({ initialSnapshot }: Props) {
                   {subExpanded ? 'Hide tables' : 'Show tables'}
                 </button>
 
-                {sub.enabled
-                  ? <button
-                      onClick={() => handlePause(sub.sub_name)}
-                      disabled={actionLoading}
-                      className="text-xs text-yellow-500/70 hover:text-yellow-400 border border-yellow-900/50 hover:border-yellow-700 px-1.5 py-0.5 rounded disabled:opacity-30 transition-colors"
-                      title="Pause — ALTER SUBSCRIPTION DISABLE. Slot is preserved, resume at any time."
-                    >⏸ Pause</button>
-                  : <button
-                      onClick={() => handleResume(sub.sub_name)}
-                      disabled={actionLoading}
-                      className="text-xs text-green-500/70 hover:text-green-400 border border-green-900/50 hover:border-green-700 px-1.5 py-0.5 rounded disabled:opacity-30 transition-colors"
-                      title="Resume — ALTER SUBSCRIPTION ENABLE. Continues from last confirmed LSN."
-                    >▶ Resume</button>
-                }
-
-                <button
-                  onClick={() => setConfirmDropSlot(sub.slot_name)}
-                  disabled={actionLoading || sub.slot_active}
-                  className="text-xs text-red-500/60 hover:text-red-400 border border-red-900/50 hover:border-red-800 px-1.5 py-0.5 rounded disabled:opacity-30 transition-colors"
-                  title={sub.slot_active ? 'Cannot drop active slot' : 'Drop slot'}
-                >
-                  Drop slot
-                </button>
               </div>
 
               {/* Table list — lazy */}
@@ -642,6 +619,20 @@ export function StatusPage({ initialSnapshot }: Props) {
                     <td className="px-4 py-2 text-gray-400">{sub.subslotname || '–'}</td>
                     <td className="px-4 py-2">
                       <div className="flex items-center gap-1.5 flex-wrap">
+                        {sub.subenabled
+                          ? <button
+                              onClick={() => handlePause(sub.subname)}
+                              disabled={actionLoading}
+                              className="text-xs text-yellow-500/80 hover:text-yellow-400 border border-yellow-900/60 hover:border-yellow-700 px-2 py-1 rounded disabled:opacity-40 flex items-center gap-1"
+                              title="Pause — ALTER SUBSCRIPTION DISABLE. Slot preserved, resume at any time."
+                            >⏸ Pause</button>
+                          : <button
+                              onClick={() => handleResume(sub.subname)}
+                              disabled={actionLoading}
+                              className="text-xs text-green-500/80 hover:text-green-400 border border-green-900/60 hover:border-green-700 px-2 py-1 rounded disabled:opacity-40 flex items-center gap-1"
+                              title="Resume — ALTER SUBSCRIPTION ENABLE. Continues from last confirmed LSN."
+                            >▶ Resume</button>
+                        }
                         <button
                           onClick={() => setConfirmStop(sub.subname)}
                           disabled={actionLoading || !sub.subenabled}
@@ -656,6 +647,14 @@ export function StatusPage({ initialSnapshot }: Props) {
                           className="text-xs text-red-400 hover:text-red-300 border border-red-800 px-2 py-1 rounded"
                         >
                           Reset
+                        </button>
+                        <button
+                          onClick={() => setConfirmDropSlot(sub.subslotname || sub.subname)}
+                          disabled={actionLoading}
+                          className="text-xs text-red-500/60 hover:text-red-400 border border-red-900/50 hover:border-red-800 px-2 py-1 rounded disabled:opacity-30"
+                          title="Drop replication slot on source only. Use when slot is orphaned after Stop."
+                        >
+                          Drop slot
                         </button>
                         {/* Create indexes — useful after replication completes */}
                         {sub.subpublications?.length > 0 && (
