@@ -795,9 +795,92 @@ async def debug_table(schema: str, table: str, database: str, sub_name: str):
         """, sub_name, f"%{sub_name}%")
         result["replication_slot"] = dict(slot_row) if slot_row else None
 
+        # locks on source table
+        try:
+            src_lock_rows = await src_conn.fetch("""
+                SELECT l.pid, l.mode, l.granted, l.locktype,
+                       a.state, a.wait_event_type, a.wait_event,
+                       LEFT(a.query, 120) AS query,
+                       EXTRACT(EPOCH FROM (now() - a.query_start))::int AS query_age_s
+                FROM pg_locks l
+                JOIN pg_class c ON c.oid = l.relation
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                LEFT JOIN pg_stat_activity a ON a.pid = l.pid
+                WHERE n.nspname = $1 AND c.relname = $2
+                ORDER BY l.granted DESC, query_age_s DESC NULLS LAST
+            """, schema, table)
+            result["source_locks"] = [dict(r) for r in src_lock_rows]
+        except Exception as e:
+            result["source_locks_error"] = str(e)
+
+        # column-level schema diff between source and dest
+        try:
+            src_cols = await src_conn.fetch("""
+                SELECT a.attname AS column_name,
+                       pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+                       a.attnotnull AS not_null,
+                       a.attnum
+                FROM pg_attribute a
+                JOIN pg_class c ON c.oid = a.attrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = $1 AND c.relname = $2
+                  AND a.attnum > 0 AND NOT a.attisdropped
+                ORDER BY a.attnum
+            """, schema, table)
+            result["source_columns"] = [dict(r) for r in src_cols]
+        except Exception as e:
+            result["source_columns_error"] = str(e)
+
         await src_conn.close()
     except Exception as e:
         result["source_error"] = str(e)
+
+    # ── Schema diff (dest columns vs source) ─────────────────────────────────
+    if result.get("source_columns") and dest_conn is not None:
+        dest_dsn2 = dsn_for_database(state.dest_dsn, database)
+        try:
+            dc = await _asyncpg.connect(dest_dsn2, timeout=10)
+            dest_cols = await dc.fetch("""
+                SELECT a.attname AS column_name,
+                       pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+                       a.attnotnull AS not_null,
+                       a.attnum
+                FROM pg_attribute a
+                JOIN pg_class c ON c.oid = a.attrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = $1 AND c.relname = $2
+                  AND a.attnum > 0 AND NOT a.attisdropped
+                ORDER BY a.attnum
+            """, schema, table)
+            await dc.close()
+            dest_col_map = {r["column_name"]: r for r in dest_cols}
+            diff = []
+            for sc in result["source_columns"]:  # type: ignore[union-attr]
+                col = sc["column_name"]
+                dc_row = dest_col_map.get(col)
+                diff.append({
+                    "column_name": col,
+                    "source_type": sc["data_type"],
+                    "dest_type": dc_row["data_type"] if dc_row else None,
+                    "source_not_null": sc["not_null"],
+                    "dest_not_null": dc_row["not_null"] if dc_row else None,
+                    "match": dc_row is not None and dc_row["data_type"] == sc["data_type"],
+                    "missing_on_dest": dc_row is None,
+                })
+            # also flag columns on dest not on source
+            src_col_names = {sc["column_name"] for sc in result["source_columns"]}  # type: ignore[union-attr]
+            for col, dc_row in dest_col_map.items():
+                if col not in src_col_names:
+                    diff.append({
+                        "column_name": col,
+                        "source_type": None,
+                        "dest_type": dc_row["data_type"],
+                        "match": False,
+                        "extra_on_dest": True,
+                    })
+            result["schema_diff"] = diff
+        except Exception as e:
+            result["schema_diff_error"] = str(e)
 
     return result
 
