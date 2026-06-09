@@ -337,11 +337,13 @@ export function StatusPage({ initialSnapshot }: Props) {
               <div className="px-4 py-2.5 flex flex-wrap items-center gap-3 text-xs">
                 <Database size={12} className="text-gray-500 shrink-0" />
                 <span className="font-mono text-gray-300 font-medium">{sub.sub_name}</span>
-                {/* Slot active + replication state */}
-                <Badge
-                  label={sub.slot_active ? 'active' : 'inactive'}
-                  variant={sub.slot_active ? 'green' : 'gray'}
-                />
+                {/* Slot active + sync workers + replication state */}
+                {sub.slot_active
+                  ? <Badge label="active" variant="green" />
+                  : sub.sync_workers > 0
+                    ? <Badge label={`syncing (${sub.sync_workers})`} variant="yellow" />
+                    : <Badge label="inactive" variant="gray" />
+                }
                 {sub.repl_state && (
                   <span className={clsx(
                     'text-xs border rounded px-1.5 py-0.5 font-mono',
