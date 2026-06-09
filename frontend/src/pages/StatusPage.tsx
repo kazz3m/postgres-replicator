@@ -324,7 +324,8 @@ export function StatusPage({ initialSnapshot }: Props) {
           const totalCopiedBytes = tablesWithSource.reduce((s, t) => {
             const srcSize = getSourceSize(sub.database, t.schema_name, t.table_name) ?? 0
             if (['f','s','r'].includes(t.sub_state)) return s + srcSize
-            if (t.sub_state === 'd' && t.bytes_processed != null) return s + t.bytes_processed
+            // For copying tables use dest heap size (same metric as per-table progress bar)
+            if (t.sub_state === 'd') return s + Math.min(t.table_size_bytes, srcSize)
             return s
           }, 0)
           const copyPct = totalSourceBytes > 0 ? Math.min(100, totalCopiedBytes / totalSourceBytes * 100) : null
