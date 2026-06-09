@@ -51,6 +51,7 @@ function LocksTable({ locks }: { locks: Record<string, unknown>[] }) {
       <thead>
         <tr className="text-gray-500 border-b border-gray-700">
           <th className="text-left py-1 pr-2">PID</th>
+          <th className="text-left py-1 pr-2">User</th>
           <th className="text-left py-1 pr-2">Mode</th>
           <th className="text-left py-1 pr-2">Granted</th>
           <th className="text-left py-1 pr-2">Age(s)</th>
@@ -61,6 +62,7 @@ function LocksTable({ locks }: { locks: Record<string, unknown>[] }) {
         {locks.map((l, i) => (
           <tr key={i} className={clsx('border-b border-gray-800', !l.granted && 'bg-red-950/30')}>
             <td className="py-1 pr-2 font-mono">{String(l.pid)}</td>
+            <td className="py-1 pr-2 text-gray-400">{l.usename ? String(l.usename) : '—'}</td>
             <td className="py-1 pr-2 font-mono text-yellow-300 text-[10px]">{String(l.mode)}</td>
             <td className="py-1 pr-2">
               <span className={l.granted ? 'text-green-400' : 'text-red-400 font-bold'}>
@@ -101,6 +103,7 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
   const copyProgress = data?.copy_progress as Record<string, unknown> | null | undefined
   const destLocks = (data?.locks as Record<string, unknown>[] | undefined) ?? []
   const srcLocks = (data?.source_locks as Record<string, unknown>[] | undefined) ?? []
+  const replBlockers = (data?.replication_blockers as Record<string, unknown>[] | undefined) ?? []
   const destTable = data?.dest_table as Record<string, unknown> | null | undefined
   const srcTable = data?.source_table as Record<string, unknown> | null | undefined
   const pubs = (data?.publications as Record<string, unknown>[] | undefined) ?? []
@@ -163,6 +166,12 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
                 <div className="mb-2 flex items-start gap-2 bg-red-950/60 border border-red-800 rounded p-3 text-xs text-red-300">
                   <AlertTriangle size={13} className="shrink-0 mt-0.5" />
                   <span><strong>{blockedSrcLocks.length} blocked lock(s) on source</strong> — may be blocking replication reads.</span>
+                </div>
+              )}
+              {replBlockers.length > 0 && (
+                <div className="mb-2 flex items-start gap-2 bg-red-950/60 border border-red-800 rounded p-3 text-xs text-red-300">
+                  <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                  <span><strong>{replBlockers.length} process(es) blocking replication worker on source</strong> — CREATE_REPLICATION_SLOT / COPY is waiting.</span>
                 </div>
               )}
               {schemaMismatches.length > 0 && (
@@ -284,6 +293,36 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
                   </Section>
                 </div>
               </div>
+
+              {/* Replication blockers on source */}
+              {replBlockers.length > 0 && (
+                <Section title={`Replication blockers on source (${replBlockers.length})`}>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-gray-500 border-b border-gray-700">
+                        <th className="text-left py-1 pr-3">Wait PID</th>
+                        <th className="text-left py-1 pr-3">Wait user</th>
+                        <th className="text-left py-1 pr-3">Hold PID</th>
+                        <th className="text-left py-1 pr-3">Hold user</th>
+                        <th className="text-left py-1 pr-3">Age (s)</th>
+                        <th className="text-left py-1">Waiting statement</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {replBlockers.map((b, i) => (
+                        <tr key={i} className="border-b border-gray-800 bg-red-950/20">
+                          <td className="py-1 pr-3 font-mono">{String(b.wait_pid)}</td>
+                          <td className="py-1 pr-3 text-yellow-300">{String(b.wait_user)}</td>
+                          <td className="py-1 pr-3 font-mono">{String(b.hold_pid)}</td>
+                          <td className="py-1 pr-3 text-red-300">{String(b.hold_user)}</td>
+                          <td className="py-1 pr-3 font-mono">{b.wait_age_s != null ? String(b.wait_age_s) : '—'}</td>
+                          <td className="py-1 text-gray-300 truncate max-w-xs font-mono text-[10px]" title={String(b.wait_statement ?? '')}>{String(b.wait_statement ?? '—')}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </Section>
+              )}
 
               {/* Locks tables — source + dest side by side */}
               {(srcLocks.length > 0 || destLocks.length > 0) && (

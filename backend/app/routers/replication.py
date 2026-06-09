@@ -795,12 +795,12 @@ async def debug_table(schema: str, table: str, database: str, sub_name: str):
         """, sub_name, f"%{sub_name}%")
         result["replication_slot"] = dict(slot_row) if slot_row else None
 
-        # locks on source table
+        # locks on source table (relation-level)
         try:
             src_lock_rows = await src_conn.fetch("""
                 SELECT l.pid, l.mode, l.granted, l.locktype,
-                       a.state, a.wait_event_type, a.wait_event,
-                       LEFT(a.query, 120) AS query,
+                       a.usename, a.state, a.wait_event_type, a.wait_event,
+                       LEFT(a.query, 200) AS query,
                        EXTRACT(EPOCH FROM (now() - a.query_start))::int AS query_age_s
                 FROM pg_locks l
                 JOIN pg_class c ON c.oid = l.relation
@@ -812,6 +812,49 @@ async def debug_table(schema: str, table: str, database: str, sub_name: str):
             result["source_locks"] = [dict(r) for r in src_lock_rows]
         except Exception as e:
             result["source_locks_error"] = str(e)
+
+        # blocked replication workers on source — processes waiting that are
+        # blocking CREATE_REPLICATION_SLOT / walsender / replication users.
+        # pg_locks WHERE granted=false covers global waits (relation IS NULL)
+        # that don't appear in the per-table lock query above.
+        try:
+            repl_blockers = await src_conn.fetch("""
+                WITH blockers AS (
+                    SELECT DISTINCT ON (blocked.pid)
+                           blocked.pid          AS wait_pid,
+                           blocked.usename      AS wait_user,
+                           blocker.pid          AS hold_pid,
+                           blocker.usename      AS hold_user,
+                           EXTRACT(EPOCH FROM (now() - blocked.query_start))::int AS wait_age_s,
+                           LEFT(blocked.query, 200)  AS wait_statement,
+                           LEFT(blocker.query, 200)  AS hold_statement,
+                           blocker.state        AS hold_state
+                    FROM pg_stat_activity blocked
+                    JOIN pg_locks         wl ON wl.pid = blocked.pid AND NOT wl.granted
+                    JOIN pg_locks         hl ON hl.locktype = wl.locktype
+                                             AND hl.granted
+                                             AND (hl.relation  IS NOT DISTINCT FROM wl.relation)
+                                             AND (hl.classid   IS NOT DISTINCT FROM wl.classid)
+                                             AND (hl.objid     IS NOT DISTINCT FROM wl.objid)
+                                             AND hl.pid <> wl.pid
+                    JOIN pg_stat_activity blocker ON blocker.pid = hl.pid
+                    WHERE blocked.usename = (
+                        SELECT usename FROM pg_stat_activity
+                        WHERE pid IN (
+                            SELECT active_pid FROM pg_replication_slots
+                            WHERE slot_name = $1
+                        )
+                        LIMIT 1
+                    )
+                    OR blocked.query ILIKE '%replication_slot%'
+                    OR blocked.query ILIKE '%COPY%'
+                    ORDER BY blocked.pid, wait_age_s DESC
+                )
+                SELECT * FROM blockers ORDER BY wait_age_s DESC NULLS LAST
+            """, sub_name)
+            result["replication_blockers"] = [dict(r) for r in repl_blockers]
+        except Exception as e:
+            result["replication_blockers_error"] = str(e)
 
         # column-level schema diff between source and dest
         try:
