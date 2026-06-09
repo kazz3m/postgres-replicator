@@ -435,7 +435,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                     <tr className="text-gray-500 border-b border-gray-700 bg-gray-950/40">
                       {(['table', 'status'] as const).map(col => (
                         <th key={col}
-                          className={clsx('px-4 py-1.5 text-left cursor-pointer select-none hover:text-gray-300 whitespace-nowrap', col === 'status' && 'w-28')}
+                          className={clsx('px-4 py-1.5 text-left cursor-pointer select-none hover:text-gray-300 whitespace-nowrap', col === 'status' && 'w-32')}
                           onClick={() => handleSort(col)}
                         >
                           {col === 'table' ? 'Schema.Table' : 'Status'}
