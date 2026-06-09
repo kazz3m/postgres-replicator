@@ -722,25 +722,13 @@ async def debug_subscription(sub_name: str, database: str):
         # pg_subscription — enabled state, publications, slot name
         try:
             sub_row = await dc.fetchrow("""
-                SELECT subname, subenabled, subslotname,
-                       subpublications, subconninfo
+                SELECT subname, subenabled, subslotname, subpublications
                 FROM pg_subscription
                 WHERE subname = $1
             """, sub_name)
-            if sub_row:
-                r = dict(sub_row)
-                r.pop("subconninfo", None)  # may not be readable on Cloud SQL
-                result["subscription"] = r
+            result["subscription"] = dict(sub_row) if sub_row else None
         except Exception as e:
-            # Cloud SQL: retry without subconninfo
-            try:
-                sub_row = await dc.fetchrow("""
-                    SELECT subname, subenabled, subslotname, subpublications
-                    FROM pg_subscription WHERE subname = $1
-                """, sub_name)
-                result["subscription"] = dict(sub_row) if sub_row else None
-            except Exception as e2:
-                result["subscription_error"] = str(e2)
+            result["subscription_error"] = str(e)
 
         # pg_replication_origin_status — last applied LSN
         try:
