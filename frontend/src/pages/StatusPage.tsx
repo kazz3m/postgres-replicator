@@ -120,7 +120,10 @@ export function StatusPage({ initialSnapshot }: Props) {
           sourceSizesRef.current[`${db}/${qualified}`] = info
         })
         setSourceSizesVersion(v => v + 1)
-      }).catch(() => {})
+      }).catch((e) => {
+        console.warn('source-table-sizes failed for', db, e)
+        fetchedDatabasesRef.current.delete(db)  // allow retry on next poll
+      })
     })
   }, [copyData?.subscriptions?.map(s => s.database).join(',')])
 

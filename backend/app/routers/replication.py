@@ -951,7 +951,7 @@ async def source_table_sizes(database: str):
         rows = await conn.fetch("""
             SELECT n.nspname || '.' || c.relname AS qualified,
                    c.relpages::bigint * current_setting('block_size')::bigint AS size_bytes,
-                   NULLIF(GREATEST(c.reltuples::bigint, 0), 0) AS row_estimate
+                   CASE WHEN c.reltuples > 0 THEN c.reltuples::bigint ELSE NULL END AS row_estimate
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE c.relkind IN ('r', 'p')
