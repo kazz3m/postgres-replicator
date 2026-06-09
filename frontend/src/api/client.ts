@@ -60,7 +60,7 @@ export interface WorkerStat {
   subname: string
   pid: number | null
   received_lsn: string | null
-  last_msg_receive_time: string | null
+  last_msg_receipt_time: string | null
   latest_end_lsn: string | null
   latest_end_time: string | null
 }

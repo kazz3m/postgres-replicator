@@ -231,7 +231,7 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
                       <>
                         <KV label="PID" value={String(worker.pid)} ok={!!worker.pid} warn={!worker.pid} />
                         <KV label="Received LSN" value={String(worker.received_lsn ?? '—')} />
-                        <KV label="Last message" value={String(worker.last_msg_receive_time ?? '—')} />
+                        <KV label="Last message" value={String(worker.last_msg_receipt_time ?? '—')} />
                       </>
                     ) : <span className="text-yellow-400 text-xs">Worker not running</span>}
                   </Section>

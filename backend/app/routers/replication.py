@@ -730,7 +730,7 @@ async def debug_table(schema: str, table: str, database: str, sub_name: str):
 
         try:
             worker = await dest_conn.fetchrow("""
-                SELECT pid, received_lsn::text, last_msg_receive_time::text,
+                SELECT pid, received_lsn::text, last_msg_receipt_time::text,
                        latest_end_lsn::text, latest_end_time::text
                 FROM pg_stat_subscription
                 WHERE subname = $1
@@ -960,7 +960,7 @@ async def worker_stats():
             SELECT subid, subname, pid, relid,
                    received_lsn::text,
                    last_msg_send_time::text,
-                   last_msg_receive_time::text,
+                   last_msg_receipt_time::text,
                    latest_end_lsn::text,
                    latest_end_time::text
             FROM pg_stat_subscription
