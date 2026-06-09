@@ -496,11 +496,15 @@ export function StatusPage({ initialSnapshot }: Props) {
                           </td>
                           <td className="px-4 py-1.5">
                             {(() => {
-                              // Use bytes_processed/source_size as progress when tuples unknown
-                              const bytePct = (isCopying && srcSize && srcSize > 0 && row.bytes_processed != null && row.bytes_processed > 0)
-                                ? Math.min(100, row.bytes_processed / srcSize * 100)
+                              // Progress = dest heap size / source heap size.
+                              // pg_relation_size on dest grows as COPY writes pages —
+                              // this is the most reliable indicator regardless of whether
+                              // a COPY worker is currently active for this table.
+                              // bytes_processed only covers the active worker window.
+                              const destPct = (isCopying && srcSize && srcSize > 0 && row.table_size_bytes > 0)
+                                ? Math.min(100, row.table_size_bytes / srcSize * 100)
                                 : null
-                              const pct = row.copy_pct ?? bytePct
+                              const pct = destPct
                               return isCopying ? (
                               <div className="space-y-0.5">
                                 <ProgressBar pct={pct} color="blue" />
