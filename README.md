@@ -34,10 +34,10 @@ Common use cases: live migrations, reporting replicas, data warehousing, zero-do
 | **Publications panel** | Per-database collapsible panel listing all found publications with their tables; "Manage" button opens any publication in Setup tab |
 | **Publication setup** | Create/update/drop publications for individual tables or entire schemas (PG 15+ schema-level publications); pub/sub names follow `{8chars}_{pub|sub}_{label}` pattern with 63-byte PG limit enforced |
 | **Multi-publication workspace** | Independently manage multiple publications per workspace; saved configs keyed by pub name with quick-switch buttons |
-| **Subscription setup** | Create/update/drop subscriptions with `copy_data` toggle; verifies target tables exist on destination before applying; live step-by-step progress modal |
-| **Schema synchronization** | Inline schema diff and auto-create missing tables on destination before applying replication; no manual `pg_dump` required |
+| **Subscription setup** | Create/update/drop subscriptions with `copy_data` toggle; verifies target tables exist on destination before applying; live step-by-step progress modal; auto-cleans orphaned replication slot on retry |
+| **Schema synchronization** | Inline schema diff and auto-create missing tables on destination before applying replication; no manual `pg_dump` required; full support for **partitioned tables** (detects `relkind='p'` parents and child partitions, correct DDL order, indexes propagated from parent) |
 | **Roles & grants migration** | `pg_dumpall --globals-only` compatible: generates and applies `CREATE ROLE`, `ALTER ROLE`, membership grants, schema grants, table grants and default privileges; Cloud SQL aware (strips `SUPERUSER`/`NOSUPERUSER`) |
-| **Live monitoring** | Per-table sync progress (`pg_subscription_rel` states), replication slot lag, `pg_stat_subscription` worker health, `pg_stat_replication` write/flush/replay lag |
+| **Live monitoring** | Per-subscription progress grouped by database; per-table states with human labels (`copying` / `catching up` / `synced` / `ready`); `pg_stat_replication.state` badge (streaming / catchup); aggregate copy progress bar (GB copied / total GB with %) per subscription; replication slot WAL lag; worker health via `pg_stat_subscription`; internal `pg_NNN_sync_NNN` worker slots automatically hidden |
 | **Conflict handling** | Detect disabled subscriptions, show replication origin LSN, skip conflicting transaction via `ALTER SUBSCRIPTION … SKIP` |
 | **Sequence sync** | Detect and synchronise sequence values between source and destination after replication completes |
 | **Index sync** | Create missing indexes on destination that exist on source |
@@ -132,6 +132,23 @@ The script creates a `.venv`, installs pip and npm dependencies on first run, st
 
 The UI performs an inline schema diff before applying replication and can create missing tables on the destination automatically — no manual `pg_dump` required.
 
+### Partitioned tables
+
+Partitioned tables are fully supported:
+
+- Parent tables (`relkind = 'p'`) are created first with the correct `PARTITION BY` clause
+- Child partitions are detected (`relispartition = true`) and created with `CREATE TABLE … PARTITION OF … FOR VALUES …` — no column list needed
+- Indexes are created on the **parent** before data sync (they propagate automatically to all child partitions)
+- Tables are processed in the correct order: parents → plain tables → child partitions
+
+### Mixed-case identifiers
+
+Column names and table names with upper-case letters or special characters are quoted automatically in all generated DDL.
+
+### Incompatible tables
+
+When a table exists on destination with a different schema (e.g. wrong column type), a **Drop & recreate** button lets you drop the conflicting table and recreate it from source in one click — with a confirmation prompt.
+
 For complex scenarios (views, triggers, custom types) use:
 
 ```bash
@@ -141,6 +158,25 @@ pg_dump --schema-only -n public source_db | psql destination_db
 > **Sequences** (serial / identity columns) are not replicated. After migration use the *Sequence Sync* panel (Status tab) to align sequence values.
 
 ---
+
+## Monitoring
+
+The **Replication Progress** panel (Status tab) shows a live view refreshed every N seconds (configurable):
+
+- **Per-subscription row** — subscription name, `active`/`inactive` slot state, `pg_stat_replication` state badge (green `streaming`, yellow `catchup`), destination database badge, tables synced counter, aggregate copy progress (`X GB / Y GB · Z%` with progress bar), WAL lag
+- **Per-table detail** (expandable) — table state badge (`copying` / `catching up` / `synced` / `ready` / `error`), destination heap size, source heap size, rows copied, byte-level progress bar, last ANALYZE timestamp with one-click Analyze button
+- Internal PostgreSQL worker slots (`pg_NNN_sync_NNN_…`) are automatically filtered out and not shown
+
+### Table states
+
+| State | Label | Meaning |
+|---|---|---|
+| `i` | initializing | Slot created, copy not started |
+| `d` | copying | Active COPY in progress |
+| `f` | catching up | COPY done, replaying WAL delta from copy window |
+| `s` | synced | WAL caught up, pending confirmation round-trip |
+| `r` | ready | Fully live — all changes replicated in real time |
+| `e` | error | Sync error — check subscriber logs |
 
 ## Roles & Grants Migration
 
@@ -270,6 +306,15 @@ ALTER SUBSCRIPTION my_sub SKIP (LSN '0/1234ABCD');
 
 ### Cloud SQL — roles migration fails with permission error
 Cloud SQL does not expose `pg_authid.rolpassword`. Password statements are automatically commented out in the Roles & Grants panel. Apply the remaining statements and set passwords manually on destination.
+
+### Status page shows `unknown` table status (Windows)
+asyncpg on Windows returns single-character columns (like `srsubstate`) as `bytes` instead of `str`. The backend normalises these automatically — no action needed. If you see `unknown` after upgrading, restart the backend.
+
+### Table sync progress shows `unknown` database
+This can happen when no `pg_subscription` rows are visible (e.g. connecting to the wrong database). The backend queries each destination database independently to discover subscriptions — ensure the destination DSN points to the cluster default database (`postgres`), not a specific application database.
+
+### Replication slot lag keeps growing after initial copy
+Once initial copy is done, check that the subscription is enabled (`subenabled = true`) and the worker is running (`pg_stat_subscription`). If the slot shows `inactive` for more than a few minutes, use *Reset replication* to drop and recreate the subscription from scratch.
 
 ---
 
