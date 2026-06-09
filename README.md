@@ -37,7 +37,7 @@ Common use cases: live migrations, reporting replicas, data warehousing, zero-do
 | **Subscription setup** | Create/update/drop subscriptions with `copy_data` toggle; verifies target tables exist on destination before applying; live step-by-step progress modal; auto-cleans orphaned replication slot on retry |
 | **Schema synchronization** | Inline schema diff and auto-create missing tables on destination before applying replication; no manual `pg_dump` required; full support for **partitioned tables** (detects `relkind='p'` parents and child partitions, correct DDL order, indexes propagated from parent) |
 | **Roles & grants migration** | `pg_dumpall --globals-only` compatible: generates and applies `CREATE ROLE`, `ALTER ROLE`, membership grants, schema grants, table grants and default privileges; Cloud SQL aware (strips `SUPERUSER`/`NOSUPERUSER`) |
-| **Live monitoring** | Per-subscription progress grouped by database; per-table states with human labels (`copying` / `catching up` / `synced` / `ready`); `pg_stat_replication.state` badge (streaming / catchup); aggregate copy progress bar (GB copied / total GB with %) per subscription; replication slot WAL lag; worker health via `pg_stat_subscription`; internal `pg_NNN_sync_NNN` worker slots automatically hidden |
+| **Live monitoring** | Per-subscription progress grouped by database; per-table states with human labels (`copying` / `catching up` / `synced` / `ready`); `pg_stat_replication.state` badge (streaming / catchup); aggregate copy progress bar (GB copied / total GB with %) per subscription; replication slot WAL lag; worker health via `pg_stat_subscription`; internal `pg_NNN_sync_NNN` worker slots automatically hidden; table sizes read from `pg_class.relpages` (no lock) — never blocks on long-running transactions |
 | **Conflict handling** | Detect disabled subscriptions, show replication origin LSN, skip conflicting transaction via `ALTER SUBSCRIPTION … SKIP` |
 | **Sequence sync** | Detect and synchronise sequence values between source and destination after replication completes |
 | **Index sync** | Create missing indexes on destination that exist on source |
@@ -166,6 +166,8 @@ The **Replication Progress** panel (Status tab) shows a live view refreshed ever
 - **Per-subscription row** — subscription name, `active`/`inactive` slot state, `pg_stat_replication` state badge (green `streaming`, yellow `catchup`), destination database badge, tables synced counter, aggregate copy progress (`X GB / Y GB · Z%` with progress bar), WAL lag
 - **Per-table detail** (expandable) — table state badge (`copying` / `catching up` / `synced` / `ready` / `error`), destination heap size, source heap size, rows copied, byte-level progress bar, last ANALYZE timestamp with one-click Analyze button
 - Internal PostgreSQL worker slots (`pg_NNN_sync_NNN_…`) are automatically filtered out and not shown
+
+Source table sizes are fetched **once per database** (not on every poll) to avoid blocking the UI. Destination sizes are refreshed with each poll cycle. Both use `pg_class.relpages * block_size` instead of `pg_relation_size()` — the latter acquires `AccessShareLock` and can block indefinitely when a long-running transaction holds a lock on the table. `relpages` is lock-free and updated by `VACUUM`/`ANALYZE`, so values may be slightly stale but are always available immediately.
 
 ### Table states
 
