@@ -558,7 +558,7 @@ async def copy_progress():
             COALESCE(cp.tuples_processed, 0)             AS tuples_done,
             COALESCE(NULLIF(c.reltuples::bigint, -1), 0) AS tuples_total,
             COALESCE(cp.bytes_processed, 0)              AS bytes_processed,
-            COALESCE(c.relpages::bigint * current_setting('block_size')::bigint, 0) AS table_size_bytes,
+            COALESCE(pg_relation_size(c.oid), 0)         AS table_size_bytes,
             GREATEST(psu.last_analyze, psu.last_autoanalyze) AS last_analyze
         FROM pg_subscription_rel sr
         JOIN pg_subscription s   ON s.oid  = sr.srsubid
