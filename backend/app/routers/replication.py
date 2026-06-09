@@ -606,7 +606,7 @@ async def copy_progress():
             sub_state = _decode_state(r["sub_state"])
             tuples_done, tuples_total = r["tuples_done"], r["tuples_total"]
             copy_pct: Optional[float] = None
-            if sub_state == 'd' and tuples_total > 0:
+            if sub_state == 'd' and tuples_done > 0 and tuples_total > 0:
                 copy_pct = min(100.0, tuples_done / tuples_total * 100)
             elif sub_state in ('f', 's', 'r'):
                 copy_pct = 100.0

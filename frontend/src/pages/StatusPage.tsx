@@ -443,8 +443,17 @@ export function StatusPage({ initialSnapshot }: Props) {
                             {row.row_estimate != null ? row.row_estimate.toLocaleString() : '–'}
                           </td>
                           <td className="px-4 py-1.5 text-right text-gray-400">
-                            {isCopying && row.tuples_total != null && row.tuples_total > 0
-                              ? <><span className="text-blue-300">{(row.tuples_done ?? 0).toLocaleString()}</span>{' / '}{row.tuples_total.toLocaleString()}</>
+                            {isCopying
+                              ? (() => {
+                                  const done = row.tuples_done ?? 0
+                                  const est = row.row_estimate ?? 0
+                                  const pct = est > 0 ? Math.min(100, done / est * 100) : null
+                                  return <>
+                                    <span className="text-blue-300">{done.toLocaleString()}</span>
+                                    {est > 0 && <span className="text-gray-600"> / {est.toLocaleString()}</span>}
+                                    {pct != null && <span className="text-gray-500"> ({pct.toFixed(1)}%)</span>}
+                                  </>
+                                })()
                               : isDone ? <span className="text-green-500">done</span> : '–'}
                           </td>
                           <td className="px-4 py-1.5">
