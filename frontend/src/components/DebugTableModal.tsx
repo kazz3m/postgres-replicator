@@ -294,35 +294,61 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
                 </div>
               </div>
 
-              {/* Replication blockers on source */}
-              {replBlockers.length > 0 && (
-                <Section title={`Replication blockers on source (${replBlockers.length})`}>
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="text-gray-500 border-b border-gray-700">
-                        <th className="text-left py-1 pr-3">Wait PID</th>
-                        <th className="text-left py-1 pr-3">Wait user</th>
-                        <th className="text-left py-1 pr-3">Hold PID</th>
-                        <th className="text-left py-1 pr-3">Hold user</th>
-                        <th className="text-left py-1 pr-3">Age (s)</th>
-                        <th className="text-left py-1">Waiting statement</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {replBlockers.map((b, i) => (
-                        <tr key={i} className="border-b border-gray-800 bg-red-950/20">
-                          <td className="py-1 pr-3 font-mono">{String(b.wait_pid)}</td>
-                          <td className="py-1 pr-3 text-yellow-300">{String(b.wait_user)}</td>
-                          <td className="py-1 pr-3 font-mono">{String(b.hold_pid)}</td>
-                          <td className="py-1 pr-3 text-red-300">{String(b.hold_user)}</td>
-                          <td className="py-1 pr-3 font-mono">{b.wait_age_s != null ? String(b.wait_age_s) : '—'}</td>
-                          <td className="py-1 text-gray-300 truncate max-w-xs font-mono text-[10px]" title={String(b.wait_statement ?? '')}>{String(b.wait_statement ?? '—')}</td>
+              {/* Replication blockers on source — global, not per-table */}
+              {replBlockers.length > 0 && (() => {
+                // Parse OID from slot name: pg_<pid>_sync_<table_oid>_<extra>
+                // Match against dest table OID to highlight rows for this table
+                const destOid = destTable?.oid != null ? String(destTable.oid) : null
+                const slotOidRe = /\bpg_\d+_sync_(\d+)_/
+                return (
+                  <Section title={`Replication blockers on source — global (${replBlockers.length})`}>
+                    <p className="text-xs text-gray-500 mb-2">
+                      Shows all processes blocking replication workers on source, not just this table.
+                      Rows matching this table's dest OID ({destOid ?? '?'}) are highlighted.
+                    </p>
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-gray-500 border-b border-gray-700">
+                          <th className="text-left py-1 pr-3">Wait PID</th>
+                          <th className="text-left py-1 pr-3">Wait user</th>
+                          <th className="text-left py-1 pr-3">Hold PID</th>
+                          <th className="text-left py-1 pr-3">Hold user</th>
+                          <th className="text-left py-1 pr-3">Age (s)</th>
+                          <th className="text-left py-1">Waiting statement</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </Section>
-              )}
+                      </thead>
+                      <tbody>
+                        {replBlockers.map((b, i) => {
+                          const stmt = String(b.wait_statement ?? '')
+                          const m = stmt.match(slotOidRe)
+                          const slotOid = m ? m[1] : null
+                          const isThisTable = destOid != null && slotOid === destOid
+                          return (
+                            <tr key={i} className={clsx('border-b border-gray-800',
+                              isThisTable ? 'bg-orange-950/50 border-orange-800' : 'bg-red-950/10'
+                            )}>
+                              <td className="py-1 pr-3 font-mono">{String(b.wait_pid)}</td>
+                              <td className="py-1 pr-3 text-yellow-300">{String(b.wait_user)}</td>
+                              <td className="py-1 pr-3 font-mono">{String(b.hold_pid)}</td>
+                              <td className="py-1 pr-3 text-red-300">{String(b.hold_user)}</td>
+                              <td className="py-1 pr-3 font-mono">{b.wait_age_s != null ? String(b.wait_age_s) : '—'}</td>
+                              <td className="py-1 font-mono text-[10px] max-w-xs" title={stmt}>
+                                {isThisTable && (
+                                  <span className="mr-1.5 text-orange-400 font-bold" title={`slot OID ${slotOid} matches dest OID ${destOid}`}>▶ this table</span>
+                                )}
+                                {slotOid && !isThisTable && (
+                                  <span className="mr-1.5 text-gray-500" title={`slot for dest OID ${slotOid}`}>oid:{slotOid}</span>
+                                )}
+                                <span className="text-gray-300 truncate">{stmt.length > 80 ? stmt.slice(0, 80) + '…' : stmt}</span>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </Section>
+                )
+              })()}
 
               {/* Locks tables — source + dest side by side */}
               {(srcLocks.length > 0 || destLocks.length > 0) && (
