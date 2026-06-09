@@ -282,7 +282,13 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
                     {copyProgress ? (
                       <>
                         <KV label="PID" value={String(copyProgress.pid)} />
-                        <KV label="Phase" value={String(copyProgress.phase)} />
+                        <KV label="Command" value={copyProgress.command != null ? String(copyProgress.command) : undefined} />
+                        <KV label="Type" value={copyProgress.type != null ? String(copyProgress.type) : undefined} />
+                        <KV label="Phase" value={
+                          copyProgress.phase != null
+                            ? String(copyProgress.phase)
+                            : <span className="text-gray-500">N/A <span className="text-gray-600">(available in PG 14+)</span></span>
+                        } />
                         <KV label="Tuples processed" value={(copyProgress.tuples_processed as number)?.toLocaleString()} />
                         <KV label="Bytes processed" value={fmtBytes(copyProgress.bytes_processed as number)} />
                       </>
