@@ -527,32 +527,42 @@ async def copy_progress():
     }
 
     # Detect active sync workers per subscription.
-    # pg_<launcher_pid>_sync_<reloid>_<extra> — launcher_pid is the apply worker
-    # of the parent subscription. Cross-reference with pg_stat_replication to find
-    # which subscription slot the launcher pid belongs to.
-    # active_pid in pg_replication_slots links main slot → launcher pid.
-    sync_worker_counts: dict[str, int] = {}  # slot_name -> active sync worker count
-    # Build pid→slot_name map from the main slots that have active_pid exposed
-    # We need to re-query with active_pid column
-    async with src_pool.acquire() as src_conn2:
-        main_slot_pids = await src_conn2.fetch("""
-            SELECT slot_name, active_pid
-            FROM pg_replication_slots
-            WHERE slot_type = 'logical'
-              AND slot_name = ANY($1::text[])
-        """, list(slot_map.keys()))
-    pid_to_slot = {str(r["active_pid"]): r["slot_name"] for r in main_slot_pids if r["active_pid"]}
+    # Sync slot name: pg_<apply_worker_pid>_sync_<reloid>_<extra>
+    # The apply_worker_pid matches pg_stat_subscription.pid on the destination.
+    # We query pg_stat_subscription per dest database to build pid→sub_name map,
+    # then count active sync slots whose pid matches a known apply worker.
+    sync_worker_counts: dict[str, int] = {}  # sub_name -> active sync worker count
 
+    # Collect active sync worker pids from source slot names
+    active_sync_pids: set[str] = set()
     for r in slot_rows:
         if not _sync_worker_slot.match(r["slot_name"]) or not r["active"]:
             continue
         parts = r["slot_name"].split("_")  # pg_<pid>_sync_<reloid>_<extra>
-        if len(parts) < 4:
-            continue
-        launcher_pid = parts[1]
-        main_slot_name = pid_to_slot.get(launcher_pid)
-        if main_slot_name:
-            sync_worker_counts[main_slot_name] = sync_worker_counts.get(main_slot_name, 0) + 1
+        if len(parts) >= 4:
+            active_sync_pids.add(parts[1])
+
+    if active_sync_pids:
+        # Query pg_stat_subscription on dest to map pid → subname
+        dest_pool_default2 = await get_dest_pool(state.dest_dsn)
+        async with dest_pool_default2.acquire() as _dc2:
+            dest_db_names_early = [r["datname"] for r in await _dc2.fetch("""
+                SELECT datname FROM pg_database
+                WHERE datistemplate = false
+                  AND datname NOT IN ('postgres','template0','template1')
+            """)]
+        for db_name in dest_db_names_early:
+            db_dsn = dsn_for_database(state.dest_dsn, db_name)
+            try:
+                dc = await _asyncpg.connect(db_dsn, timeout=5)
+                sub_rows = await dc.fetch("SELECT subname, pid FROM pg_stat_subscription WHERE pid IS NOT NULL")
+                await dc.close()
+                for sr in sub_rows:
+                    if str(sr["pid"]) in active_sync_pids:
+                        slot_name = sr["subname"]  # sub_name == slot_name by convention
+                        sync_worker_counts[slot_name] = sync_worker_counts.get(slot_name, 0) + 1
+            except Exception:
+                pass
 
     # Get all destination databases
     dest_pool_default = await get_dest_pool(state.dest_dsn)
