@@ -682,6 +682,183 @@ async def copy_progress():
     return CopyProgressResponse(subscriptions=subscriptions, copying_active=global_copying)
 
 
+# ── Debug subscription ────────────────────────────────────────────────────────
+
+@router.get("/debug-subscription")
+async def debug_subscription(sub_name: str, database: str):
+    """
+    Diagnostic info for a subscription (apply worker health, WAL lag, conflicts).
+    Queries both source and destination.
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+
+    result: dict = {}
+
+    # ── Destination side ──────────────────────────────────────────────────────
+    dest_dsn = dsn_for_database(state.dest_dsn, database)
+    try:
+        dc = await _asyncpg.connect(dest_dsn, timeout=10)
+    except Exception as e:
+        result["dest_error"] = str(e)
+        dc = None
+
+    if dc:
+        # pg_stat_subscription — apply worker + sync workers
+        try:
+            sub_stat_rows = await dc.fetch("""
+                SELECT pid, relid::regclass::text AS rel_name,
+                       received_lsn::text, last_msg_send_time::text,
+                       last_msg_receipt_time::text,
+                       latest_end_lsn::text, latest_end_time::text
+                FROM pg_stat_subscription
+                WHERE subname = $1
+                ORDER BY relid NULLS FIRST
+            """, sub_name)
+            result["stat_subscription"] = [dict(r) for r in sub_stat_rows]
+        except Exception as e:
+            result["stat_subscription_error"] = str(e)
+
+        # pg_subscription — enabled state, publications, slot name
+        try:
+            sub_row = await dc.fetchrow("""
+                SELECT subname, subenabled, subslotname,
+                       subpublications, subconninfo
+                FROM pg_subscription
+                WHERE subname = $1
+            """, sub_name)
+            if sub_row:
+                r = dict(sub_row)
+                r.pop("subconninfo", None)  # may not be readable on Cloud SQL
+                result["subscription"] = r
+        except Exception as e:
+            # Cloud SQL: retry without subconninfo
+            try:
+                sub_row = await dc.fetchrow("""
+                    SELECT subname, subenabled, subslotname, subpublications
+                    FROM pg_subscription WHERE subname = $1
+                """, sub_name)
+                result["subscription"] = dict(sub_row) if sub_row else None
+            except Exception as e2:
+                result["subscription_error"] = str(e2)
+
+        # pg_replication_origin_status — last applied LSN
+        try:
+            origin_rows = await dc.fetch("""
+                SELECT external_id, remote_lsn::text, local_lsn::text
+                FROM pg_replication_origin_status
+            """)
+            result["replication_origin"] = [dict(r) for r in origin_rows]
+        except Exception as e:
+            result["replication_origin_error"] = str(e)
+
+        # pg_stat_subscription_stats — error counts (PG 15+)
+        try:
+            stats_row = await dc.fetchrow("""
+                SELECT apply_error_count, sync_error_count
+                FROM pg_stat_subscription_stats
+                WHERE subname = $1
+            """, sub_name)
+            result["error_counts"] = dict(stats_row) if stats_row else None
+        except Exception:
+            result["error_counts"] = None  # not available on older PG
+
+        # locks held by apply worker (blocking WAL apply)
+        try:
+            apply_pids = [r["pid"] for r in result.get("stat_subscription", []) if r.get("pid") and not r.get("rel_name")]
+            if apply_pids:
+                lock_rows = await dc.fetch("""
+                    SELECT l.pid, l.mode, l.granted, l.locktype,
+                           l.relation::regclass::text AS rel_name,
+                           a.state, a.wait_event_type, a.wait_event,
+                           LEFT(a.query, 120) AS query,
+                           EXTRACT(EPOCH FROM (now() - a.query_start))::int AS query_age_s
+                    FROM pg_locks l
+                    LEFT JOIN pg_stat_activity a ON a.pid = l.pid
+                    WHERE l.pid = ANY($1::int[])
+                    ORDER BY l.granted, query_age_s DESC NULLS LAST
+                """, apply_pids)
+                result["apply_worker_locks"] = [dict(r) for r in lock_rows]
+            else:
+                result["apply_worker_locks"] = []
+        except Exception as e:
+            result["apply_worker_locks_error"] = str(e)
+
+        await dc.close()
+
+    # ── Source side ───────────────────────────────────────────────────────────
+    src_dsn = dsn_for_database(state.source_dsn, database)
+    try:
+        sc = await _asyncpg.connect(src_dsn, timeout=10)
+    except Exception as e:
+        result["source_error"] = str(e)
+        sc = None
+
+    if sc:
+        # Replication slot state
+        try:
+            slot_row = await sc.fetchrow("""
+                SELECT slot_name, active, active_pid,
+                       pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) AS lag_bytes,
+                       confirmed_flush_lsn::text,
+                       pg_current_wal_lsn()::text AS current_wal_lsn,
+                       restart_lsn::text
+                FROM pg_replication_slots
+                WHERE slot_name = $1
+            """, sub_name)
+            result["replication_slot"] = dict(slot_row) if slot_row else None
+        except Exception as e:
+            result["replication_slot_error"] = str(e)
+
+        # pg_stat_replication — apply worker connection state
+        try:
+            repl_row = await sc.fetchrow("""
+                SELECT pid, application_name, client_addr::text,
+                       state, sent_lsn::text, write_lsn::text,
+                       flush_lsn::text, replay_lsn::text,
+                       write_lag::text, flush_lag::text, replay_lag::text,
+                       sync_state,
+                       pg_wal_lsn_diff(sent_lsn, replay_lsn) AS send_replay_diff
+                FROM pg_stat_replication
+                WHERE application_name = $1
+            """, sub_name)
+            result["stat_replication"] = dict(repl_row) if repl_row else None
+        except Exception as e:
+            result["stat_replication_error"] = str(e)
+
+        # WAL sender blocking locks on source
+        try:
+            walsender_pid = result.get("replication_slot", {}) or {}
+            active_pid = walsender_pid.get("active_pid") if isinstance(walsender_pid, dict) else None
+            if active_pid:
+                blocker_rows = await sc.fetch("""
+                    WITH blockers AS (
+                        SELECT DISTINCT ON (blocked.pid)
+                               blocked.pid AS wait_pid, blocked.usename AS wait_user,
+                               blocker.pid AS hold_pid, blocker.usename AS hold_user,
+                               EXTRACT(EPOCH FROM (now() - blocked.query_start))::int AS wait_age_s,
+                               LEFT(blocked.query, 120) AS wait_stmt,
+                               LEFT(blocker.query, 120) AS hold_stmt
+                        FROM pg_stat_activity blocked
+                        JOIN pg_locks wl ON wl.pid = blocked.pid AND NOT wl.granted
+                        JOIN pg_locks hl ON hl.locktype = wl.locktype AND hl.granted
+                                         AND (hl.relation IS NOT DISTINCT FROM wl.relation)
+                                         AND hl.pid <> wl.pid
+                        JOIN pg_stat_activity blocker ON blocker.pid = hl.pid
+                        WHERE blocked.pid = $1
+                    ) SELECT * FROM blockers
+                """, active_pid)
+                result["walsender_blockers"] = [dict(r) for r in blocker_rows]
+            else:
+                result["walsender_blockers"] = []
+        except Exception as e:
+            result["walsender_blockers_error"] = str(e)
+
+        await sc.close()
+
+    return result
+
+
 # ── Debug table ──────────────────────────────────────────────────────────────
 
 @router.get("/debug-table")

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { replicationApi, ReplicationSlotInfo, SubscriptionInfo, TableCopyProgress, CopyProgressResponse } from '../api/client'
 import { Badge } from '../components/Badge'
 import { DebugTableModal } from '../components/DebugTableModal'
+import { DebugSubscriptionModal } from '../components/DebugSubscriptionModal'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { Spinner } from '../components/Spinner'
 import { SequenceSyncPanel } from '../components/SequenceSyncPanel'
@@ -105,8 +106,10 @@ export function StatusPage({ initialSnapshot }: Props) {
       return sortDir === 'asc' ? cmp : -cmp
     })
   }
-  // Debug modal
+  // Debug modal (table)
   const [debugTarget, setDebugTarget] = useState<{ schema: string; table: string; database: string; subName: string } | null>(null)
+  // Debug modal (subscription)
+  const [debugSub, setDebugSub] = useState<{ subName: string; database: string } | null>(null)
 
   const { data: progress, refetch: refetchProgress, isLoading: progressLoading } = useQuery({
     queryKey: ['progress'],
@@ -435,6 +438,15 @@ export function StatusPage({ initialSnapshot }: Props) {
                   </button>
                 )}
 
+                {/* Debug subscription */}
+                <button
+                  onClick={() => setDebugSub({ subName: sub.sub_name, database: sub.database ?? '' })}
+                  className="flex items-center gap-1 text-xs text-gray-600 hover:text-gray-300 border border-gray-700 hover:border-gray-500 px-1.5 py-0.5 rounded transition-colors"
+                  title="Debug subscription — apply worker, WAL lag, conflicts"
+                >
+                  <Bug size={10} /> debug sub
+                </button>
+
                 {/* Show/hide tables */}
                 <button
                   onClick={() => toggleSubExpanded(sub.sub_name)}
@@ -754,6 +766,14 @@ export function StatusPage({ initialSnapshot }: Props) {
           confirmLabel="Drop Slot"
           onConfirm={() => handleDropSlot(confirmDropSlot)}
           onCancel={() => setConfirmDropSlot(null)}
+        />
+      )}
+
+      {debugSub && (
+        <DebugSubscriptionModal
+          subName={debugSub.subName}
+          database={debugSub.database}
+          onClose={() => setDebugSub(null)}
         />
       )}
 

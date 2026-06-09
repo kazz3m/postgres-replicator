@@ -256,6 +256,8 @@ export const replicationApi = {
     api.get<Record<string, { size_bytes: number; row_estimate: number | null }>>(`/replication/source-table-sizes?database=${encodeURIComponent(database)}`),
   debugTable: (schema: string, table: string, database: string, subName: string) =>
     api.get<Record<string, unknown>>(`/replication/debug-table?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}&database=${encodeURIComponent(database)}&sub_name=${encodeURIComponent(subName)}`),
+  debugSubscription: (subName: string, database: string) =>
+    api.get<Record<string, unknown>>(`/replication/debug-subscription?sub_name=${encodeURIComponent(subName)}&database=${encodeURIComponent(database)}`),
   analyzeTables: (tables: string[]) =>
     api.post<{ results: { table: string; ok: boolean; error?: string }[] }>('/replication/analyze', { tables }),
   publicationConfig: (name: string) =>
