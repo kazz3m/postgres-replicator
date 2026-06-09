@@ -558,7 +558,7 @@ async def copy_progress():
             COALESCE(cp.tuples_processed, 0)             AS tuples_done,
             COALESCE(NULLIF(c.reltuples::bigint, -1), 0) AS tuples_total,
             COALESCE(cp.bytes_processed, 0)              AS bytes_processed,
-            COALESCE(pg_relation_size(c.oid), 0)         AS table_size_bytes,
+            COALESCE(c.relpages::bigint * current_setting('block_size')::bigint, 0) AS table_size_bytes,
             GREATEST(psu.last_analyze, psu.last_autoanalyze) AS last_analyze
         FROM pg_subscription_rel sr
         JOIN pg_subscription s   ON s.oid  = sr.srsubid
@@ -661,9 +661,14 @@ async def source_table_sizes(database: str):
     src_dsn = dsn_for_database(state.source_dsn, database)
     try:
         conn = await _asyncpg.connect(src_dsn, timeout=15)
+        # Use relpages * block_size from pg_class — no lock required.
+        # pg_relation_size() acquires AccessShareLock and can block when
+        # a long-running lock is held on the table.
+        # relpages is updated by VACUUM/ANALYZE so may be slightly stale,
+        # but is always available without waiting.
         rows = await conn.fetch("""
             SELECT n.nspname || '.' || c.relname AS qualified,
-                   pg_table_size(c.oid) AS size_bytes
+                   c.relpages::bigint * current_setting('block_size')::bigint AS size_bytes
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE c.relkind IN ('r', 'p')
