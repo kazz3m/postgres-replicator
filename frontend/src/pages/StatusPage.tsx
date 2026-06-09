@@ -405,6 +405,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                       <th className="px-4 py-1.5 text-left">Status</th>
                       <th className="px-4 py-1.5 text-right">Dest size</th>
                       <th className="px-4 py-1.5 text-right">Source size</th>
+                      <th className="px-4 py-1.5 text-right">Row est.</th>
                       <th className="px-4 py-1.5 text-right">Rows copied</th>
                       <th className="px-4 py-1.5 text-left w-40">Progress</th>
                       <th className="px-4 py-1.5 text-left">Analyzed</th>
@@ -437,6 +438,9 @@ export function StatusPage({ initialSnapshot }: Props) {
                             {srcSize != null
                               ? <span className={clsx({ 'text-blue-300': isCopying })}>{fmtBytes(srcSize)}</span>
                               : <span className="text-gray-600 animate-pulse">…</span>}
+                          </td>
+                          <td className="px-4 py-1.5 text-right text-gray-500 font-mono">
+                            {row.row_estimate != null ? row.row_estimate.toLocaleString() : '–'}
                           </td>
                           <td className="px-4 py-1.5 text-right text-gray-400">
                             {isCopying && row.tuples_total != null && row.tuples_total > 0

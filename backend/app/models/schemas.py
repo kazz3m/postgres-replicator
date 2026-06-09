@@ -88,6 +88,8 @@ class TableCopyProgress(BaseModel):
     table_oid: Optional[int] = None   # pg_class.oid — useful for debugging
     sub_state: str          # i/d/f/s/r/e raw char
     status: str             # initializing/copying/synced/ready/error
+    # row estimate from pg_class.reltuples (always present, may be 0 if never analyzed)
+    row_estimate: Optional[int]
     # COPY phase (only populated while sub_state == 'd')
     tuples_done: Optional[int]
     tuples_total: Optional[int]

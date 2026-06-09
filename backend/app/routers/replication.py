@@ -617,6 +617,7 @@ async def copy_progress():
             subs_by_name[sub_name].tables.append(TableCopyProgress(
                 schema_name=r["schema_name"], table_name=r["table_name"],
                 table_oid=r["table_oid"],
+                row_estimate=tuples_total if tuples_total and tuples_total > 0 else None,
                 sub_state=sub_state, status=state_label.get(sub_state, 'unknown'),
                 tuples_done=tuples_done if sub_state == 'd' else None,
                 tuples_total=tuples_total if sub_state == 'd' else None,

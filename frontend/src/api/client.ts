@@ -153,6 +153,7 @@ export interface TableCopyProgress {
   schema_name: string
   table_name: string
   table_oid: number | null
+  row_estimate: number | null   // pg_class.reltuples, null if never analyzed
   sub_state: string       // i/d/f/s/r/e
   status: string          // initializing/copying/synced/ready/error
   tuples_done: number | null
