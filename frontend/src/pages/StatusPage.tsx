@@ -82,6 +82,29 @@ export function StatusPage({ initialSnapshot }: Props) {
   }
   // ANALYZE state
   const [analyzingTables, setAnalyzingTables] = useState(false)
+  // Table sort — shared across all subscriptions (same column/dir preference)
+  type SortCol = 'table' | 'status'
+  const [sortCol, setSortCol] = useState<SortCol>('table')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+  function handleSort(col: SortCol) {
+    if (col === sortCol) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortCol(col); setSortDir('asc') }
+  }
+  const STATE_ORDER: Record<string, number> = {
+    copying: 0, initializing: 1, 'catching up': 2, synced: 3, ready: 4, error: 5, unknown: 6,
+  }
+  function sortTables(tables: TableCopyProgress[]) {
+    return [...tables].sort((a, b) => {
+      let cmp = 0
+      if (sortCol === 'table') {
+        cmp = `${a.schema_name}.${a.table_name}`.localeCompare(`${b.schema_name}.${b.table_name}`)
+      } else {
+        cmp = (STATE_ORDER[a.status] ?? 9) - (STATE_ORDER[b.status] ?? 9)
+        if (cmp === 0) cmp = `${a.schema_name}.${a.table_name}`.localeCompare(`${b.schema_name}.${b.table_name}`)
+      }
+      return sortDir === 'asc' ? cmp : -cmp
+    })
+  }
   // Debug modal
   const [debugTarget, setDebugTarget] = useState<{ schema: string; table: string; database: string; subName: string } | null>(null)
 
@@ -409,8 +432,15 @@ export function StatusPage({ initialSnapshot }: Props) {
                 <table className="w-full text-xs border-t border-gray-800">
                   <thead>
                     <tr className="text-gray-500 border-b border-gray-700 bg-gray-950/40">
-                      <th className="px-4 py-1.5 text-left">Schema.Table</th>
-                      <th className="px-4 py-1.5 text-left">Status</th>
+                      {(['table', 'status'] as const).map(col => (
+                        <th key={col}
+                          className={clsx('px-4 py-1.5 text-left cursor-pointer select-none hover:text-gray-300 whitespace-nowrap', col === 'status' && 'w-28')}
+                          onClick={() => handleSort(col)}
+                        >
+                          {col === 'table' ? 'Schema.Table' : 'Status'}
+                          {sortCol === col ? (sortDir === 'asc' ? ' ↑' : ' ↓') : <span className="text-gray-700"> ↕</span>}
+                        </th>
+                      ))}
                       <th className="px-4 py-1.5 text-right">Dest size</th>
                       <th className="px-4 py-1.5 text-right">Source size</th>
                       <th className="px-4 py-1.5 text-right">Row est.</th>
@@ -421,7 +451,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                     </tr>
                   </thead>
                   <tbody>
-                    {sub.tables.map((row: TableCopyProgress) => {
+                    {sortTables(sub.tables).map((row: TableCopyProgress) => {
                       const isCopying = row.sub_state === 'd'
                       const isDone = ['f','s','r'].includes(row.sub_state)
                       const srcSize = getSourceSize(sub.database, row.schema_name, row.table_name)
