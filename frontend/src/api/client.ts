@@ -171,6 +171,7 @@ export interface SubscriptionProgress {
   database: string | null
   lag_bytes: number
   slot_active: boolean       // pg_replication_slots.active
+  enabled: boolean           // pg_subscription.subenabled
   sync_workers: number       // active pg_NNN_sync_NNN worker count
   repl_state: string | null  // pg_stat_replication.state (streaming/catchup/…)
   tables: TableCopyProgress[]
@@ -232,6 +233,8 @@ export const replicationApi = {
   workerStats: () => api.get<WorkerStat[]>('/replication/worker-stats'),
   listSubscriptionsTyped: () => api.get<SubscriptionInfo[]>('/replication/subscriptions'),
   stopSubscription: (name: string) => api.post(`/replication/subscription/${name}/stop`),
+  pauseSubscription: (name: string) => api.post(`/replication/subscription/${name}/pause`),
+  resumeSubscription: (name: string) => api.post(`/replication/subscription/${name}/resume`),
   addTableToPublication: (pubName: string, table: string) =>
     api.post(`/replication/publication/${pubName}/add-table`, { table }),
   listSequences: () => api.get<SequenceInfo[]>('/replication/sequences'),

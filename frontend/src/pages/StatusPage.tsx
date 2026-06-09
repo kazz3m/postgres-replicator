@@ -213,6 +213,30 @@ export function StatusPage({ initialSnapshot }: Props) {
     }
   }
 
+  async function handlePause(subName: string) {
+    setActionLoading(true); setActionError('')
+    try {
+      await replicationApi.pauseSubscription(subName)
+      refetchProgress(); refetchSubs()
+    } catch (e: any) {
+      setActionError(e.response?.data?.detail || e.message)
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  async function handleResume(subName: string) {
+    setActionLoading(true); setActionError('')
+    try {
+      await replicationApi.resumeSubscription(subName)
+      refetchProgress(); refetchSubs()
+    } catch (e: any) {
+      setActionError(e.response?.data?.detail || e.message)
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
   function handleAddTableDone(tables: string[], refreshed: string[]) {
     setAddTableResult(
       `Added ${tables.length} table${tables.length !== 1 ? 's' : ''}, refreshed: ${refreshed.join(', ') || 'none'}`
@@ -419,6 +443,21 @@ export function StatusPage({ initialSnapshot }: Props) {
                   {subExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                   {subExpanded ? 'Hide tables' : 'Show tables'}
                 </button>
+
+                {sub.enabled
+                  ? <button
+                      onClick={() => handlePause(sub.sub_name)}
+                      disabled={actionLoading}
+                      className="text-xs text-yellow-500/70 hover:text-yellow-400 border border-yellow-900/50 hover:border-yellow-700 px-1.5 py-0.5 rounded disabled:opacity-30 transition-colors"
+                      title="Pause — ALTER SUBSCRIPTION DISABLE. Slot is preserved, resume at any time."
+                    >⏸ Pause</button>
+                  : <button
+                      onClick={() => handleResume(sub.sub_name)}
+                      disabled={actionLoading}
+                      className="text-xs text-green-500/70 hover:text-green-400 border border-green-900/50 hover:border-green-700 px-1.5 py-0.5 rounded disabled:opacity-30 transition-colors"
+                      title="Resume — ALTER SUBSCRIPTION ENABLE. Continues from last confirmed LSN."
+                    >▶ Resume</button>
+                }
 
                 <button
                   onClick={() => setConfirmDropSlot(sub.slot_name)}

@@ -578,6 +578,7 @@ async def copy_progress():
     MAIN_QUERY = """
         SELECT
             s.subname,
+            s.subenabled,
             COALESCE(s.subslotname, s.subname) AS slot_name,
             current_database() AS database,
             n.nspname  AS schema_name,
@@ -627,6 +628,7 @@ async def copy_progress():
                     database=r["database"],
                     lag_bytes=slot_info["lag_bytes"] if slot_info else 0,
                     slot_active=slot_info["active"] if slot_info else False,
+                    enabled=bool(r["subenabled"]),
                     sync_workers=sync_worker_counts.get(slot_name, 0),
                     repl_state=repl_state_map.get(slot_name),
                     tables=[],
@@ -668,6 +670,7 @@ async def copy_progress():
                 database=None,
                 lag_bytes=slot_info["lag_bytes"],
                 slot_active=slot_info["active"],
+                enabled=slot_info["active"],  # best guess when no subscription row
                 sync_workers=sync_worker_counts.get(slot_name, 0),
                 repl_state=repl_state_map.get(slot_name),
                 tables=[],
@@ -1088,6 +1091,42 @@ async def reset_replication(subscription_name: str):
                 pass
 
     return {"status": "reset", "subscription_name": subscription_name}
+
+
+# ── Pause / Resume ────────────────────────────────────────────────────────────
+
+@router.post("/subscription/{name}/pause")
+async def pause_subscription(name: str):
+    """ALTER SUBSCRIPTION ... DISABLE — stops apply worker, keeps slot intact."""
+    _require_connection()
+    pool = await get_dest_pool(state.dest_dsn)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT subenabled FROM pg_subscription WHERE subname = $1", name
+        )
+        if row is None:
+            raise HTTPException(404, f"Subscription '{name}' not found.")
+        if not row["subenabled"]:
+            return {"status": "already_paused", "subscription_name": name}
+        await conn.execute(f'ALTER SUBSCRIPTION "{name}" DISABLE')
+    return {"status": "paused", "subscription_name": name}
+
+
+@router.post("/subscription/{name}/resume")
+async def resume_subscription(name: str):
+    """ALTER SUBSCRIPTION ... ENABLE — restarts apply worker from where it left off."""
+    _require_connection()
+    pool = await get_dest_pool(state.dest_dsn)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT subenabled FROM pg_subscription WHERE subname = $1", name
+        )
+        if row is None:
+            raise HTTPException(404, f"Subscription '{name}' not found.")
+        if row["subenabled"]:
+            return {"status": "already_running", "subscription_name": name}
+        await conn.execute(f'ALTER SUBSCRIPTION "{name}" ENABLE')
+    return {"status": "resumed", "subscription_name": name}
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
