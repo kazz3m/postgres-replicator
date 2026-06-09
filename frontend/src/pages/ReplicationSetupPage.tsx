@@ -202,6 +202,8 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
   const [checking, setChecking] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [dropping, setDropping] = useState(false)
+  const [fixingNotNull, setFixingNotNull] = useState(false)
+  const [notNullResults, setNotNullResults] = useState<{ table: string; ok: boolean; changes: { column: string; action: string; ok: boolean; error?: string }[]; error?: string }[] | null>(null)
   const [syncResults, setSyncResults] = useState<SchemaSyncResult[] | null>(null)
   const [createIndexes, setCreateIndexes] = useState<'before' | 'after'>('before')
   const [error, setError] = useState('')
@@ -253,6 +255,23 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
     }
   }
 
+  async function runFixNotNull() {
+    const tablesWithNotNullMismatch = (diffs ?? [])
+      .filter(d => d.exists_on_dest && d.columns.some(c => !c.not_null_match))
+      .map(d => d.table)
+    if (!tablesWithNotNullMismatch.length) return
+    setFixingNotNull(true); setError(''); setNotNullResults(null)
+    try {
+      const { data } = await replicationApi.schemaFixNotNull(tablesWithNotNullMismatch, database)
+      setNotNullResults(data)
+      await runCheck()
+    } catch (e: any) {
+      setError(extractError(e))
+    } finally {
+      setFixingNotNull(false)
+    }
+  }
+
   // Auto-check whenever table list changes
   useEffect(() => {
     if (tables.length > 0) runCheck()
@@ -268,6 +287,7 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
   const missing = diffs?.filter(d => !d.exists_on_dest) ?? []
   const incompatible = diffs?.filter(d => d.exists_on_dest && !d.compatible) ?? []
   const ok = diffs?.filter(d => d.exists_on_dest && d.compatible) ?? []
+  const notNullMismatch = diffs?.filter(d => d.exists_on_dest && d.columns.some(c => !c.not_null_match)) ?? []
   const allOk = diffs != null && missing.length === 0 && incompatible.length === 0
 
   return (
@@ -286,7 +306,7 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
           </span>
           {diffs && !checking && (
             <span className="text-xs text-gray-500">
-              {ok.length} ok · {missing.length} missing · {incompatible.length} incompatible
+              {ok.length} ok · {missing.length} missing · {incompatible.length} incompatible{notNullMismatch.length > 0 ? ` · ${notNullMismatch.length} NOT NULL mismatch` : ''}
             </span>
           )}
         </div>
@@ -324,6 +344,17 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
                   Drop & recreate {incompatible.length} incompatible
                 </button>
               )}
+              {notNullMismatch.length > 0 && (
+                <button
+                  onClick={runFixNotNull}
+                  disabled={fixingNotNull}
+                  className="flex items-center gap-1.5 text-xs bg-blue-800 hover:bg-blue-700 disabled:opacity-50 px-3 py-1.5 rounded font-semibold"
+                  title="ALTER COLUMN SET/DROP NOT NULL on destination to match source"
+                >
+                  {fixingNotNull && <Spinner size={3} />}
+                  Fix NOT NULL ({notNullMismatch.length} table{notNullMismatch.length !== 1 ? 's' : ''})
+                </button>
+              )}
             </>
           )}
           <button onClick={runCheck} disabled={checking} className="p-1.5 rounded hover:bg-gray-700" title="Re-check">
@@ -352,6 +383,21 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
                 <span className="ml-2 text-red-300 font-normal font-mono">{r.detail}</span>
               )}
             </span>
+          ))}
+        </div>
+      )}
+
+      {notNullResults && (
+        <div className="px-4 py-2 border-b border-blue-900 bg-blue-950/20 text-xs space-y-0.5">
+          {notNullResults.map(r => (
+            <div key={r.table}>
+              <span className={r.ok ? 'text-green-400' : 'text-red-400'}>{r.ok ? '✓' : '✗'} {r.table}</span>
+              {r.changes.map((c, i) => (
+                <span key={i} className={clsx('ml-3', c.ok ? 'text-blue-300' : 'text-red-300')}>
+                  {c.column} {c.action}{c.error ? ` — ${c.error}` : ''}
+                </span>
+              ))}
+            </div>
           ))}
         </div>
       )}
@@ -389,16 +435,24 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
                         <tr className="text-gray-600">
                           <th className="text-left py-0.5 pr-4">Column</th>
                           <th className="text-left py-0.5 pr-4">Source type</th>
-                          <th className="text-left py-0.5">Dest type</th>
+                          <th className="text-left py-0.5 pr-4">Dest type</th>
+                          <th className="text-left py-0.5 pr-2">Src NN</th>
+                          <th className="text-left py-0.5">Dst NN</th>
                         </tr>
                       </thead>
                       <tbody>
                         {diff.columns.map(col => (
-                          <tr key={col.column_name} className={col.match ? 'text-gray-500' : 'text-yellow-400'}>
+                          <tr key={col.column_name} className={col.match ? 'text-gray-500' : col.not_null_match === false ? 'text-blue-400' : 'text-yellow-400'}>
                             <td className="font-mono pr-4 py-0.5">{col.column_name}</td>
                             <td className="font-mono pr-4 py-0.5">{col.source_type}</td>
-                            <td className="font-mono py-0.5">
+                            <td className="font-mono pr-4 py-0.5">
                               {col.dest_type ?? <span className="text-red-400">missing</span>}
+                            </td>
+                            <td className="pr-2 py-0.5 text-center">{col.source_not_null ? <span className="text-gray-300">NN</span> : <span className="text-gray-700">–</span>}</td>
+                            <td className="py-0.5 text-center">
+                              {col.dest_type == null ? '–' : col.dest_not_null
+                                ? <span className={col.source_not_null ? 'text-gray-300' : 'text-blue-400'}>NN</span>
+                                : <span className={col.source_not_null ? 'text-blue-400' : 'text-gray-700'}>–</span>}
                             </td>
                           </tr>
                         ))}

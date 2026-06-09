@@ -1758,18 +1758,20 @@ async def _diff_table_list(table_pairs: list[tuple[str, str]], database: str | N
             fqn = f"{schema_name}.{table_name}"
 
             src_cols = await src_conn.fetch("""
-                SELECT column_name, udt_name AS data_type
+                SELECT column_name, udt_name AS data_type,
+                       is_nullable = 'NO' AS not_null
                 FROM information_schema.columns
                 WHERE table_schema = $1 AND table_name = $2
                 ORDER BY ordinal_position
             """, schema_name, table_name)
 
             dest_cols = await dest_conn.fetch("""
-                    SELECT column_name, udt_name AS data_type
-                    FROM information_schema.columns
-                    WHERE table_schema = $1 AND table_name = $2
-                    ORDER BY ordinal_position
-                """, schema_name, table_name)
+                SELECT column_name, udt_name AS data_type,
+                       is_nullable = 'NO' AS not_null
+                FROM information_schema.columns
+                WHERE table_schema = $1 AND table_name = $2
+                ORDER BY ordinal_position
+            """, schema_name, table_name)
             table_exists = await dest_conn.fetchval(
                     "SELECT 1 FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2",
                     schema_name, table_name,
@@ -1782,8 +1784,12 @@ async def _diff_table_list(table_pairs: list[tuple[str, str]], database: str | N
             for src_col in src_cols:
                 cname = src_col["column_name"]
                 src_type = src_col["data_type"]
+                src_not_null = bool(src_col["not_null"])
                 dest_col = dest_col_map.get(cname)
-                match = bool(dest_col and dest_col["data_type"] == src_type)
+                type_match = bool(dest_col and dest_col["data_type"] == src_type)
+                dest_not_null = bool(dest_col["not_null"]) if dest_col else None
+                not_null_match = (dest_not_null == src_not_null) if dest_col else True
+                match = type_match and not_null_match
                 if not match:
                     compatible = False
                 col_diffs.append(ColumnDiff(
@@ -1791,6 +1797,9 @@ async def _diff_table_list(table_pairs: list[tuple[str, str]], database: str | N
                     source_type=src_type,
                     dest_type=dest_col["data_type"] if dest_col else None,
                     match=match,
+                    source_not_null=src_not_null,
+                    dest_not_null=dest_not_null,
+                    not_null_match=not_null_match,
                 ))
 
             results.append(TableSchemaDiff(
@@ -2310,3 +2319,80 @@ async def schema_drop_recreate(body: dict):
         await dest_conn_dr.close()
 
     return results
+
+
+# ── Fix NOT NULL constraints ──────────────────────────────────────────────────
+
+@router.post("/schema-fix-not-null")
+async def schema_fix_not_null(body: dict):
+    """
+    Alter columns on destination to match NOT NULL constraints from source.
+    body: { "tables": ["schema.table", ...], "database": "dbname" }
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+
+    tables: list[str] = body.get("tables", [])
+    database: str | None = body.get("database")
+    if not tables:
+        raise HTTPException(400, "No tables specified.")
+
+    src_dsn  = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    dest_dsn = dsn_for_database(state.dest_dsn,   database) if database else state.dest_dsn
+    src_conn  = await _asyncpg.connect(src_dsn,  timeout=15)
+    dest_conn = await _asyncpg.connect(dest_dsn, timeout=15)
+
+    fix_results = []
+    try:
+        for qualified in tables:
+            if "." not in qualified:
+                fix_results.append({"table": qualified, "ok": False, "error": "Invalid table name", "changes": []})
+                continue
+            schema, table = qualified.split(".", 1)
+
+            src_cols = await src_conn.fetch("""
+                SELECT column_name, is_nullable = 'NO' AS not_null
+                FROM information_schema.columns
+                WHERE table_schema = $1 AND table_name = $2
+                ORDER BY ordinal_position
+            """, schema, table)
+
+            dest_cols = await dest_conn.fetch("""
+                SELECT column_name, is_nullable = 'NO' AS not_null
+                FROM information_schema.columns
+                WHERE table_schema = $1 AND table_name = $2
+                ORDER BY ordinal_position
+            """, schema, table)
+
+            dest_map = {r["column_name"]: bool(r["not_null"]) for r in dest_cols}
+            changes = []
+            errors = []
+
+            for sc in src_cols:
+                col = sc["column_name"]
+                src_nn = bool(sc["not_null"])
+                dest_nn = dest_map.get(col)
+                if dest_nn is None or src_nn == dest_nn:
+                    continue
+
+                action = "SET NOT NULL" if src_nn else "DROP NOT NULL"
+                try:
+                    await dest_conn.execute(
+                        f'ALTER TABLE "{schema}"."{table}" ALTER COLUMN "{col}" {action}'
+                    )
+                    changes.append({"column": col, "action": action, "ok": True})
+                except Exception as e:
+                    changes.append({"column": col, "action": action, "ok": False, "error": str(e)})
+                    errors.append(str(e))
+
+            fix_results.append({
+                "table": qualified,
+                "ok": len(errors) == 0,
+                "changes": changes,
+                "error": "; ".join(errors) if errors else None,
+            })
+    finally:
+        await src_conn.close()
+        await dest_conn.close()
+
+    return fix_results

@@ -79,6 +79,9 @@ export interface ColumnDiff {
   source_type: string
   dest_type: string | null
   match: boolean
+  source_not_null: boolean
+  dest_not_null: boolean | null
+  not_null_match: boolean
 }
 
 export interface TableSchemaDiff {
@@ -250,6 +253,10 @@ export const replicationApi = {
     api.post<SchemaSyncResult[]>('/replication/schema-sync', { tables, create_indexes: createIndexes, database }),
   schemaDropRecreate: (tables: string[], database?: string) =>
     api.post<SchemaSyncResult[]>('/replication/schema-drop-recreate', { tables, database }),
+  schemaFixNotNull: (tables: string[], database?: string) =>
+    api.post<{ table: string; ok: boolean; changes: { column: string; action: string; ok: boolean; error?: string }[]; error?: string }[]>(
+      '/replication/schema-fix-not-null', { tables, database }
+    ),
   copyProgress: () =>
     api.get<CopyProgressResponse>('/replication/copy-progress'),
   sourceTableSizes: (database: string) =>

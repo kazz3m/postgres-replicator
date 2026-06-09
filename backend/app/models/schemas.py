@@ -137,6 +137,9 @@ class ColumnDiff(BaseModel):
     source_type: str
     dest_type: Optional[str]    # None if column missing on dest
     match: bool
+    source_not_null: bool = False
+    dest_not_null: Optional[bool] = None   # None if column missing on dest
+    not_null_match: bool = True            # False when NOT NULL differs
 
 
 class TableSchemaDiff(BaseModel):
