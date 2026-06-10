@@ -49,22 +49,108 @@ def _post_process_pg_dump(sql: str) -> list[str]:
 
     raw = "\n".join(lines)
 
-    # Split on statement boundaries (semicolons followed by blank line or EOF)
-    # This is simplified — handles the common pg_dump output format
+    # Split on statement boundaries respecting $$ dollar-quoting blocks.
+    # pg_dump uses $$ (or $BODY$ etc.) for function/procedure bodies.
+    # A statement ends at ";" that is NOT inside a dollar-quote block,
+    # string literal, or block comment.
     statements = []
-    current: list[str] = []
-    for line in raw.splitlines():
-        current.append(line)
-        stripped = line.strip()
-        if stripped.endswith(";") or stripped == "$$;":
-            stmt = "\n".join(current).strip()
-            if stmt:
+    current_chars: list[str] = []
+    i = 0
+    text = raw
+    n = len(text)
+    in_dollar_quote: Optional[str] = None   # the tag e.g. "$$" or "$BODY$"
+    in_single_quote = False
+    in_line_comment = False
+    in_block_comment = False
+
+    while i < n:
+        ch = text[i]
+
+        # Line comment --
+        if not in_dollar_quote and not in_single_quote and not in_block_comment:
+            if ch == '-' and i + 1 < n and text[i+1] == '-':
+                in_line_comment = True
+
+        if in_line_comment:
+            current_chars.append(ch)
+            if ch == '\n':
+                in_line_comment = False
+            i += 1
+            continue
+
+        # Block comment /* */
+        if not in_dollar_quote and not in_single_quote:
+            if not in_block_comment and ch == '/' and i + 1 < n and text[i+1] == '*':
+                in_block_comment = True
+                current_chars.append(ch)
+                i += 1
+                continue
+            if in_block_comment:
+                current_chars.append(ch)
+                if ch == '*' and i + 1 < n and text[i+1] == '/':
+                    current_chars.append(text[i+1])
+                    i += 2
+                    in_block_comment = False
+                else:
+                    i += 1
+                continue
+
+        # Dollar quoting $$...$$ or $tag$...$tag$
+        if not in_single_quote and not in_block_comment:
+            if ch == '$':
+                # find closing $
+                j = i + 1
+                while j < n and (text[j].isalnum() or text[j] == '_'):
+                    j += 1
+                if j < n and text[j] == '$':
+                    tag = text[i:j+1]  # e.g. "$$" or "$BODY$"
+                    if in_dollar_quote is None:
+                        in_dollar_quote = tag
+                        current_chars.append(text[i:j+1])
+                        i = j + 1
+                        continue
+                    elif in_dollar_quote == tag:
+                        in_dollar_quote = None
+                        current_chars.append(text[i:j+1])
+                        i = j + 1
+                        continue
+
+        # Single quote
+        if not in_dollar_quote and not in_block_comment:
+            if ch == "'" and not in_single_quote:
+                in_single_quote = True
+                current_chars.append(ch)
+                i += 1
+                continue
+            if in_single_quote:
+                current_chars.append(ch)
+                if ch == "'" and i + 1 < n and text[i+1] == "'":
+                    # escaped quote ''
+                    current_chars.append(text[i+1])
+                    i += 2
+                else:
+                    in_single_quote = False
+                    i += 1
+                continue
+
+        # Statement terminator
+        if ch == ';' and not in_dollar_quote and not in_single_quote \
+                and not in_block_comment and not in_line_comment:
+            current_chars.append(ch)
+            stmt = "".join(current_chars).strip()
+            if stmt and stmt != ';':
                 statements.append(stmt)
-            current = []
-    if current:
-        stmt = "\n".join(current).strip()
-        if stmt:
-            statements.append(stmt)
+            current_chars = []
+            i += 1
+            continue
+
+        current_chars.append(ch)
+        i += 1
+
+    # trailing content without semicolon
+    remainder = "".join(current_chars).strip()
+    if remainder and remainder != ';':
+        statements.append(remainder)
 
     result = []
     for stmt in statements:
