@@ -213,6 +213,36 @@ export interface RolesApplyResponse {
   failed: number
 }
 
+export interface SchemaDumpConfig {
+  pg_dump_path: string
+  pg_dump_available: boolean
+  strategy: 'pg_dump' | 'generator'
+}
+
+export interface SchemaDumpResponse {
+  strategy: string
+  database: string
+  schemas: string[]
+  statement_count: number
+  statements: string[]
+}
+
+export interface SchemaApplyResponse {
+  applied: number
+  failed: number
+  results: { sql: string; ok: boolean; error?: string }[]
+}
+
+export const schemaDumpApi = {
+  getConfig: () => api.get<SchemaDumpConfig>('/schema-dump/config'),
+  setConfig: (pg_dump_path: string) =>
+    api.post<{ pg_dump_path: string; strategy: string }>('/schema-dump/config', { pg_dump_path }),
+  dump: (database: string, schemas: string[]) =>
+    api.post<SchemaDumpResponse>('/schema-dump/dump', { database, schemas }),
+  apply: (database: string, statements: string[], stopOnError = false) =>
+    api.post<SchemaApplyResponse>('/schema-dump/apply', { database, statements, stop_on_error: stopOnError }),
+}
+
 export const rolesApi = {
   diff: (includeDatabases = true) =>
     api.get<RolesDiffResponse>(`/roles/diff?include_databases=${includeDatabases}`),

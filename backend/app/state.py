@@ -6,6 +6,7 @@ source_dsn: str = _cfg["source_dsn"]
 source_repl_dsn: str = _cfg.get("source_repl_dsn", "")
 dest_dsn: str = _cfg["dest_dsn"]
 stats_refresh_interval: int = _cfg["stats_refresh_interval"]
+pg_dump_path: str = _cfg.get("pg_dump_path", "")  # empty = use built-in generator
 
 
 def persist():
@@ -15,4 +16,5 @@ def persist():
         "source_repl_dsn": mod.source_repl_dsn,
         "dest_dsn": mod.dest_dsn,
         "stats_refresh_interval": mod.stats_refresh_interval,
+        "pg_dump_path": mod.pg_dump_path,
     })

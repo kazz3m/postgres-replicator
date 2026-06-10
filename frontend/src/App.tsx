@@ -4,6 +4,7 @@ import { ConnectionPage } from './pages/ConnectionPage'
 import { AnalysisPage } from './pages/AnalysisPage'
 import { ReplicationSetupPage } from './pages/ReplicationSetupPage'
 import { StatusPage } from './pages/StatusPage'
+import { SchemaDumpPage } from './pages/SchemaDumpPage'
 import { connectionsApi, analysisApi, SchemaInfo } from './api/client'
 import { ConnectionProfile, ReplicationConfig, touchProfile, updateProfile } from './utils/profiles'
 import { PublicationServerConfig } from './api/client'
@@ -12,7 +13,7 @@ import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 
 type AppStage = 'loading' | 'picker' | 'connecting' | 'connected'
-type Tab = 'analysis' | 'setup' | 'status'
+type Tab = 'analysis' | 'setup' | 'status' | 'schema-dump'
 
 const SESSION_TABLES_KEY = 'pg_sync_selected_tables'
 const SESSION_SCHEMAS_KEY = 'pg_sync_selected_schemas'
@@ -311,6 +312,7 @@ export default function App() {
     { id: 'analysis', label: 'Analysis' },
     { id: 'setup', label: 'Setup' },
     { id: 'status', label: 'Status' },
+    { id: 'schema-dump', label: 'Schema Dump' },
   ]
 
   return (
@@ -383,6 +385,9 @@ export default function App() {
         )}
         {tab === 'status' && (
           <StatusPage initialSnapshot={initialSnapshot ?? undefined} />
+        )}
+        {tab === 'schema-dump' && (
+          <SchemaDumpPage />
         )}
       </main>
     </div>
