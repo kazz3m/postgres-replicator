@@ -482,6 +482,21 @@ export function StatusPage({ initialSnapshot }: Props) {
       <div className="bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
           <span className="font-semibold text-gray-300 flex-1">Replication Progress</span>
+          {(() => {
+            const totalMbps = Object.values(speedRef.current).reduce((s, v) => s + v.mbps, 0)
+            const anyActive = copyData?.subscriptions?.some(s => s.tables.some(t => t.sub_state === 'd'))
+            if (!anyActive || totalMbps < 0.01) return null
+            const label = totalMbps >= 1000
+              ? `${(totalMbps / 1024).toFixed(1)} GB/s`
+              : totalMbps >= 1
+              ? `${totalMbps.toFixed(1)} MB/s`
+              : `${(totalMbps * 1024).toFixed(0)} KB/s`
+            return (
+              <span className="text-xs font-mono text-cyan-400 border border-cyan-800 bg-cyan-950/30 rounded px-2 py-0.5" title="Total copy speed across all active subscriptions">
+                ⚡ {label} total
+              </span>
+            )
+          })()}
           {copyData?.copying_active && (
             <span className="flex items-center gap-1.5 text-xs text-blue-400 animate-pulse">
               <span className="w-2 h-2 rounded-full bg-blue-400 inline-block" />
