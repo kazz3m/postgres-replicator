@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { replicationApi, ReplicationSlotInfo, SubscriptionInfo, TableCopyProgress, CopyProgressResponse, ReplicationCapacity } from '../api/client'
 import { Badge } from '../components/Badge'
@@ -516,6 +516,18 @@ export function StatusPage({ initialSnapshot }: Props) {
         )}
 
         {/* Per-subscription rows */}
+        <table className="w-full text-xs table-fixed" style={{ tableLayout: 'fixed' }}>
+          <colgroup>
+            <col style={{ width: 28 }} />        {/* icon */}
+            <col style={{ width: '18%' }} />      {/* name */}
+            <col style={{ width: '22%' }} />      {/* badges */}
+            <col />                               {/* progress — takes remaining */}
+            <col style={{ width: '16%' }} />      {/* WAL lag + speed */}
+            <col style={{ width: 110 }} />        {/* analyze */}
+            <col style={{ width: 80 }} />         {/* debug */}
+            <col style={{ width: 100 }} />        {/* expand */}
+          </colgroup>
+          <tbody>
         {copyData?.subscriptions?.map(sub => {
           const total = sub.tables.length
           const synced = sub.tables.filter(t => ['s','r'].includes(t.sub_state)).length
@@ -543,80 +555,82 @@ export function StatusPage({ initialSnapshot }: Props) {
           const showSpeed = mbps > 0.01 && sub.tables.some(t => t.sub_state === 'd')
 
           return (
-            <div key={sub.sub_name} className="border-b border-gray-800 last:border-0">
-              {/* Subscription summary row — grid columns: name | badges | tables | progress | wal | actions | expand */}
-              <div className="grid items-center gap-x-4 px-4 py-2.5 text-xs"
-                style={{ gridTemplateColumns: '18px minmax(180px,1fr) auto minmax(0,2fr) minmax(120px,auto) auto auto auto' }}>
+            <React.Fragment key={sub.sub_name}>
+              <tr className="border-b border-gray-800 hover:bg-gray-800/20">
 
                 {/* col 1: icon */}
-                <Database size={12} className="text-gray-500 shrink-0" />
+                <td className="pl-4 py-2.5 w-7"><Database size={12} className="text-gray-500" /></td>
 
                 {/* col 2: name */}
-                <span className="font-mono text-gray-300 font-medium truncate">{sub.sub_name}</span>
+                <td className="px-2 py-2.5"><span className="font-mono text-gray-300 font-medium truncate block">{sub.sub_name}</span></td>
 
-                {/* col 3: status badges */}
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {sub.slot_active
-                    ? <Badge label="active" variant="green" />
-                    : sub.sync_workers > 0
-                      ? <Badge label={`syncing (${sub.sync_workers})`} variant="yellow" />
-                      : <Badge label="inactive" variant="gray" />
-                  }
-                  {sub.repl_state && (
-                    <span className={clsx(
-                      'border rounded px-1.5 py-0.5 font-mono',
-                      sub.repl_state === 'streaming' ? 'bg-green-950 border-green-800 text-green-300' :
-                      sub.repl_state === 'catchup'   ? 'bg-yellow-950 border-yellow-800 text-yellow-300' :
-                      'bg-gray-800 border-gray-700 text-gray-300'
-                    )}>{sub.repl_state}</span>
-                  )}
-                  {sub.database && (
-                    <span className="bg-blue-950 border border-blue-800 text-blue-300 rounded px-1.5 py-0.5 font-mono">
-                      {sub.database}
-                    </span>
-                  )}
-                </div>
+                {/* col 3: badges */}
+                <td className="px-2 py-2.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {sub.slot_active
+                      ? <Badge label="active" variant="green" />
+                      : sub.sync_workers > 0
+                        ? <Badge label={`syncing (${sub.sync_workers})`} variant="yellow" />
+                        : <Badge label="inactive" variant="gray" />
+                    }
+                    {sub.repl_state && (
+                      <span className={clsx(
+                        'text-xs border rounded px-1.5 py-0.5 font-mono',
+                        sub.repl_state === 'streaming' ? 'bg-green-950 border-green-800 text-green-300' :
+                        sub.repl_state === 'catchup'   ? 'bg-yellow-950 border-yellow-800 text-yellow-300' :
+                        'bg-gray-800 border-gray-700 text-gray-300'
+                      )}>{sub.repl_state}</span>
+                    )}
+                    {sub.database && (
+                      <span className="text-xs bg-blue-950 border border-blue-800 text-blue-300 rounded px-1.5 py-0.5 font-mono">{sub.database}</span>
+                    )}
+                  </div>
+                </td>
 
                 {/* col 4: copy progress */}
-                <div className="flex items-center gap-1.5 min-w-0">
-                  {total > 0 && (
-                    <span className={clsx('font-mono shrink-0', synced === total ? 'text-green-400' : 'text-blue-400')}>
-                      {synced}/{total} synced
-                    </span>
-                  )}
-                  {showCopyProgress && (
-                    <>
-                      <span className="text-gray-600 shrink-0">·</span>
-                      <span className="font-mono text-blue-300 shrink-0">{fmtBytes(totalCopiedBytes)}</span>
-                      <span className="text-gray-600 shrink-0">/</span>
-                      <span className="font-mono text-gray-400 shrink-0">{fmtBytes(totalSourceBytes)}</span>
-                      {copyPct != null && (
-                        <>
-                          <span className="text-gray-500 shrink-0">({copyPct.toFixed(1)}%)</span>
-                          <div className="w-24 shrink-0"><ProgressBar pct={copyPct} color="blue" /></div>
-                        </>
-                      )}
-                      {showSpeed && (
-                        <span className="font-mono text-cyan-400 shrink-0" title="Copy speed">
-                          {mbps >= 1000 ? `${(mbps/1024).toFixed(1)} GB/s` : mbps >= 1 ? `${mbps.toFixed(1)} MB/s` : `${(mbps*1024).toFixed(0)} KB/s`}
-                        </span>
-                      )}
-                    </>
-                  )}
-                </div>
+                <td className="px-2 py-2.5">
+                  <div className="flex items-center gap-1.5 text-xs flex-wrap">
+                    {total > 0 && (
+                      <span className={clsx('font-mono whitespace-nowrap', synced === total ? 'text-green-400' : 'text-blue-400')}>
+                        {synced}/{total} synced
+                      </span>
+                    )}
+                    {showCopyProgress && (
+                      <>
+                        <span className="text-gray-600">·</span>
+                        <span className="font-mono text-blue-300 whitespace-nowrap">{fmtBytes(totalCopiedBytes)}</span>
+                        <span className="text-gray-600">/</span>
+                        <span className="font-mono text-gray-400 whitespace-nowrap">{fmtBytes(totalSourceBytes)}</span>
+                        {copyPct != null && (
+                          <>
+                            <span className="text-gray-500 whitespace-nowrap">({copyPct.toFixed(1)}%)</span>
+                            <div className="w-20"><ProgressBar pct={copyPct} color="blue" /></div>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </td>
 
-                {/* col 5: WAL lag */}
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <span className="text-gray-500">WAL lag:</span>
-                  <span className={clsx('font-mono font-semibold', lagColor(lag))}>{fmtBytes(lag)}</span>
-                  {lag > 0 && (
-                    <div className="w-16"><ProgressBar pct={Math.min(100, (lag / (1024 ** 3)) * 100)}
-                      color={lag > 1024 ** 3 ? 'yellow' : lag > 100 * 1024 * 1024 ? 'yellow' : 'green'} /></div>
-                  )}
-                </div>
+                {/* col 5: WAL lag + speed */}
+                <td className="px-2 py-2.5">
+                  <div className="flex items-center gap-1.5 text-xs flex-wrap">
+                    <span className="text-gray-500 whitespace-nowrap">WAL lag:</span>
+                    <span className={clsx('font-mono font-semibold whitespace-nowrap', lagColor(lag))}>{fmtBytes(lag)}</span>
+                    {lag > 0 && (
+                      <div className="w-14"><ProgressBar pct={Math.min(100, (lag / (1024 ** 3)) * 100)}
+                        color={lag > 1024 ** 3 ? 'yellow' : lag > 100 * 1024 * 1024 ? 'yellow' : 'green'} /></div>
+                    )}
+                    {showSpeed && (
+                      <span className="font-mono text-cyan-400 whitespace-nowrap" title="Copy speed">
+                        {mbps >= 1000 ? `${(mbps/1024).toFixed(1)} GB/s` : mbps >= 1 ? `${mbps.toFixed(1)} MB/s` : `${(mbps*1024).toFixed(0)} KB/s`}
+                      </span>
+                    )}
+                  </div>
+                </td>
 
-                {/* col 6: analyze button */}
-                <div className="shrink-0">
+                {/* col 6: analyze */}
+                <td className="px-2 py-2.5 text-xs">
                   {unanalyzed.length > 0 && (
                     <button
                       onClick={() => handleAnalyze(unanalyzed)}
@@ -627,30 +641,34 @@ export function StatusPage({ initialSnapshot }: Props) {
                       {unanalyzed.length} to analyze
                     </button>
                   )}
-                </div>
+                </td>
 
-                {/* col 7: debug sub */}
-                <button
-                  onClick={() => setDebugSub({ subName: sub.sub_name, database: sub.database ?? '' })}
-                  className="flex items-center gap-1 text-gray-600 hover:text-gray-300 border border-gray-700 hover:border-gray-500 px-1.5 py-0.5 rounded transition-colors shrink-0"
-                  title="Debug subscription"
-                >
-                  <Bug size={10} /> debug sub
-                </button>
+                {/* col 7: debug */}
+                <td className="px-2 py-2.5 text-xs">
+                  <button
+                    onClick={() => setDebugSub({ subName: sub.sub_name, database: sub.database ?? '' })}
+                    className="flex items-center gap-1 text-gray-600 hover:text-gray-300 border border-gray-700 hover:border-gray-500 px-1.5 py-0.5 rounded transition-colors whitespace-nowrap"
+                    title="Debug subscription"
+                  >
+                    <Bug size={10} /> debug sub
+                  </button>
+                </td>
 
                 {/* col 8: expand */}
-                <button
-                  onClick={() => toggleSubExpanded(sub.sub_name)}
-                  className="flex items-center gap-1 text-gray-400 hover:text-gray-200 shrink-0 whitespace-nowrap"
-                >
-                  {subExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                  {subExpanded ? 'Hide tables' : 'Show tables'}
-                </button>
-
-              </div>
+                <td className="pr-4 py-2.5 text-xs text-right">
+                  <button
+                    onClick={() => toggleSubExpanded(sub.sub_name)}
+                    className="flex items-center gap-1 text-gray-400 hover:text-gray-200 whitespace-nowrap ml-auto"
+                  >
+                    {subExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                    {subExpanded ? 'Hide tables' : 'Show tables'}
+                  </button>
+                </td>
+              </tr>
 
               {/* Table list — lazy */}
               {subExpanded && sub.tables.length > 0 && (
+                <tr><td colSpan={8} className="p-0">
                 <table className="w-full text-xs border-t border-gray-800">
                   <thead>
                     <tr className="text-gray-500 border-b border-gray-700 bg-gray-950/40">
@@ -788,13 +806,16 @@ export function StatusPage({ initialSnapshot }: Props) {
                     })}
                   </tbody>
                 </table>
+              </td></tr>
               )}
               {subExpanded && sub.tables.length === 0 && (
-                <div className="px-4 py-2 text-xs text-gray-500">No tables tracked for this subscription.</div>
+                <tr><td colSpan={8} className="px-4 py-2 text-xs text-gray-500">No tables tracked for this subscription.</td></tr>
               )}
-            </div>
+            </React.Fragment>
           )
         })}
+          </tbody>
+        </table>
       </div>
 
       {/* Subscriptions */}
