@@ -38,6 +38,13 @@ function fmtBytes(b: number): string {
   return `${(b / 1024 ** 4).toFixed(2)} TB`
 }
 
+function fmtEta(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`
+  if (seconds < 86400) return `${(seconds / 3600).toFixed(1)}h`
+  return `${(seconds / 86400).toFixed(1)}d`
+}
+
 function lagColor(bytes: number): string {
   if (bytes > 1024 ** 3) return 'text-red-400'       // > 1 GB
   if (bytes > 100 * 1024 * 1024) return 'text-yellow-400'  // > 100 MB
@@ -160,8 +167,9 @@ export function StatusPage({ initialSnapshot }: Props) {
     retry: 1,
   })
 
-  // Replication speed — delta bytes / delta time per subscription
-  const speedRef = useRef<Record<string, { bytes: number; ts: number; mbps: number }>>({})
+  // Replication speed — rolling 10-sample average per subscription
+  const SPEED_SAMPLES = 10
+  const speedRef = useRef<Record<string, { bytes: number; ts: number; samples: number[]; avgMbps: number }>>({})
   const [speedVersion, setSpeedVersion] = useState(0)
 
   useEffect(() => {
@@ -169,25 +177,23 @@ export function StatusPage({ initialSnapshot }: Props) {
     const now = Date.now()
     let changed = false
     for (const sub of copyData.subscriptions) {
-      // Sum dest heap bytes for copying tables + full src size for done tables
-      // (same formula as totalCopiedBytes below — but we compute it here independently
-      //  so the effect runs on copyData change, not on sourceSizesVersion)
       const destCopied = sub.tables.reduce((s, t) => {
-        if (['f','s','r'].includes(t.sub_state)) return s + t.table_size_bytes
-        if (t.sub_state === 'd') return s + t.table_size_bytes
+        if (['f','s','r','d'].includes(t.sub_state)) return s + t.table_size_bytes
         return s
       }, 0)
       const prev = speedRef.current[sub.sub_name]
       if (prev) {
-        const dt = (now - prev.ts) / 1000  // seconds
+        const dt = (now - prev.ts) / 1000
         if (dt >= 1) {
           const delta = destCopied - prev.bytes
           const mbps = delta > 0 ? delta / dt / (1024 * 1024) : 0
-          speedRef.current[sub.sub_name] = { bytes: destCopied, ts: now, mbps }
+          const samples = [...prev.samples, mbps].slice(-SPEED_SAMPLES)
+          const avgMbps = samples.reduce((a, b) => a + b, 0) / samples.length
+          speedRef.current[sub.sub_name] = { bytes: destCopied, ts: now, samples, avgMbps }
           changed = true
         }
       } else {
-        speedRef.current[sub.sub_name] = { bytes: destCopied, ts: now, mbps: 0 }
+        speedRef.current[sub.sub_name] = { bytes: destCopied, ts: now, samples: [], avgMbps: 0 }
       }
     }
     if (changed) setSpeedVersion(v => v + 1)
@@ -483,7 +489,7 @@ export function StatusPage({ initialSnapshot }: Props) {
         <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
           <span className="font-semibold text-gray-300 flex-1">Replication Progress</span>
           {(() => {
-            const totalMbps = Object.values(speedRef.current).reduce((s, v) => s + v.mbps, 0)
+            const totalMbps = Object.values(speedRef.current).reduce((s, v) => s + v.avgMbps, 0)
             const anyActive = copyData?.subscriptions?.some(s => s.tables.some(t => t.sub_state === 'd'))
             if (!anyActive || totalMbps < 0.01) return null
             const label = totalMbps >= 1000
@@ -551,8 +557,11 @@ export function StatusPage({ initialSnapshot }: Props) {
           const copyPct = totalSourceBytes > 0 ? Math.min(100, totalCopiedBytes / totalSourceBytes * 100) : null
           const showCopyProgress = tablesWithSource.length > 0
           void speedVersion
-          const mbps = speedRef.current[sub.sub_name]?.mbps ?? 0
-          const showSpeed = mbps > 0.01 && sub.tables.some(t => t.sub_state === 'd')
+          const mbps = speedRef.current[sub.sub_name]?.avgMbps ?? 0
+          const hasActiveCopy = sub.tables.some(t => t.sub_state === 'd')
+          const showSpeed = mbps > 0.01 && hasActiveCopy
+          const remainingBytes = totalSourceBytes - totalCopiedBytes
+          const etaSecs = showSpeed && remainingBytes > 0 ? remainingBytes / (mbps * 1024 * 1024) : null
 
           return (
             <React.Fragment key={sub.sub_name}>
@@ -622,9 +631,16 @@ export function StatusPage({ initialSnapshot }: Props) {
                         color={lag > 1024 ** 3 ? 'yellow' : lag > 100 * 1024 * 1024 ? 'yellow' : 'green'} /></div>
                     )}
                     {showSpeed && (
-                      <span className="font-mono text-cyan-400 whitespace-nowrap" title="Copy speed">
-                        {mbps >= 1000 ? `${(mbps/1024).toFixed(1)} GB/s` : mbps >= 1 ? `${mbps.toFixed(1)} MB/s` : `${(mbps*1024).toFixed(0)} KB/s`}
-                      </span>
+                      <>
+                        <span className="font-mono text-cyan-400 whitespace-nowrap" title={`Avg of last ${speedRef.current[sub.sub_name]?.samples.length ?? 0} samples`}>
+                          {mbps >= 1000 ? `${(mbps/1024).toFixed(1)} GB/s` : mbps >= 1 ? `${mbps.toFixed(1)} MB/s` : `${(mbps*1024).toFixed(0)} KB/s`}
+                        </span>
+                        {etaSecs != null && (
+                          <span className="text-gray-400 whitespace-nowrap" title="Estimated time remaining based on average speed">
+                            ETA {fmtEta(etaSecs)}
+                          </span>
+                        )}
+                      </>
                     )}
                   </div>
                 </td>
