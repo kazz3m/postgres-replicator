@@ -2331,15 +2331,29 @@ async def schema_drop_recreate(body: dict):
 async def schema_fix_not_null(body: dict):
     """
     Alter columns on destination to match NOT NULL constraints from source.
-    body: { "tables": ["schema.table", ...], "database": "dbname" }
+    body: {
+      "tables": ["schema.table", ...],
+      "database": "dbname",
+      "strategy": "not_valid" | "direct"   (default: "not_valid")
+    }
+
+    Strategies:
+      not_valid — ADD CHECK (col IS NOT NULL) NOT VALID
+                  No table scan, no long lock. Enforces constraint for new data only.
+                  Safe for large tables (400 GB+). Can be validated later.
+      direct    — ALTER COLUMN SET NOT NULL
+                  Scans entire table, holds AccessExclusiveLock. Only for small tables.
     """
     _require_connection()
     import asyncpg as _asyncpg
 
     tables: list[str] = body.get("tables", [])
     database: str | None = body.get("database")
+    strategy: str = body.get("strategy", "not_valid")
     if not tables:
         raise HTTPException(400, "No tables specified.")
+    if strategy not in ("not_valid", "direct"):
+        raise HTTPException(400, "strategy must be 'not_valid' or 'direct'")
 
     src_dsn  = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
     dest_dsn = dsn_for_database(state.dest_dsn,   database) if database else state.dest_dsn
@@ -2368,6 +2382,15 @@ async def schema_fix_not_null(body: dict):
                 ORDER BY ordinal_position
             """, schema, table)
 
+            # Also fetch existing CHECK constraints to avoid duplicates
+            existing_checks = await dest_conn.fetch("""
+                SELECT conname FROM pg_constraint
+                JOIN pg_class c ON c.oid = conrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = $1 AND c.relname = $2 AND contype = 'c'
+            """, schema, table)
+            existing_check_names = {r["conname"] for r in existing_checks}
+
             dest_map = {r["column_name"]: bool(r["not_null"]) for r in dest_cols}
             changes = []
             errors = []
@@ -2379,14 +2402,30 @@ async def schema_fix_not_null(body: dict):
                 if dest_nn is None or src_nn == dest_nn:
                     continue
 
-                action = "SET NOT NULL" if src_nn else "DROP NOT NULL"
+                if src_nn:
+                    # Need to add NOT NULL
+                    if strategy == "not_valid":
+                        # CHECK (col IS NOT NULL) NOT VALID — no scan, no long lock
+                        cname = f"{table}_{col}_not_null"[:63]
+                        if cname in existing_check_names:
+                            changes.append({"column": col, "action": "CHECK NOT VALID (already exists)", "ok": True})
+                            continue
+                        sql = (f'ALTER TABLE "{schema}"."{table}" '
+                               f'ADD CONSTRAINT "{cname}" CHECK ("{col}" IS NOT NULL) NOT VALID')
+                        action_label = f"ADD CHECK ({col} IS NOT NULL) NOT VALID"
+                    else:
+                        sql = f'ALTER TABLE "{schema}"."{table}" ALTER COLUMN "{col}" SET NOT NULL'
+                        action_label = "SET NOT NULL"
+                else:
+                    # Need to drop NOT NULL — always direct (fast, no scan needed)
+                    sql = f'ALTER TABLE "{schema}"."{table}" ALTER COLUMN "{col}" DROP NOT NULL'
+                    action_label = "DROP NOT NULL"
+
                 try:
-                    await dest_conn.execute(
-                        f'ALTER TABLE "{schema}"."{table}" ALTER COLUMN "{col}" {action}'
-                    )
-                    changes.append({"column": col, "action": action, "ok": True})
+                    await dest_conn.execute(sql)
+                    changes.append({"column": col, "action": action_label, "ok": True})
                 except Exception as e:
-                    changes.append({"column": col, "action": action, "ok": False, "error": str(e)})
+                    changes.append({"column": col, "action": action_label, "ok": False, "error": str(e)})
                     errors.append(str(e))
 
             fix_results.append({

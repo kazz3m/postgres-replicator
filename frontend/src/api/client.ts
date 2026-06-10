@@ -253,9 +253,9 @@ export const replicationApi = {
     api.post<SchemaSyncResult[]>('/replication/schema-sync', { tables, create_indexes: createIndexes, database }),
   schemaDropRecreate: (tables: string[], database?: string) =>
     api.post<SchemaSyncResult[]>('/replication/schema-drop-recreate', { tables, database }),
-  schemaFixNotNull: (tables: string[], database?: string) =>
+  schemaFixNotNull: (tables: string[], database?: string, strategy: 'not_valid' | 'direct' = 'not_valid') =>
     api.post<{ table: string; ok: boolean; changes: { column: string; action: string; ok: boolean; error?: string }[]; error?: string }[]>(
-      '/replication/schema-fix-not-null', { tables, database }
+      '/replication/schema-fix-not-null', { tables, database, strategy }
     ),
   copyProgress: () =>
     api.get<CopyProgressResponse>('/replication/copy-progress'),

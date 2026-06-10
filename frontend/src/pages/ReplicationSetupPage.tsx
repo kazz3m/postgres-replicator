@@ -203,6 +203,7 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
   const [syncing, setSyncing] = useState(false)
   const [dropping, setDropping] = useState(false)
   const [fixingNotNull, setFixingNotNull] = useState(false)
+  const [notNullStrategy, setNotNullStrategy] = useState<'not_valid' | 'direct'>('not_valid')
   const [notNullResults, setNotNullResults] = useState<{ table: string; ok: boolean; changes: { column: string; action: string; ok: boolean; error?: string }[]; error?: string }[] | null>(null)
   const [syncResults, setSyncResults] = useState<SchemaSyncResult[] | null>(null)
   const [createIndexes, setCreateIndexes] = useState<'before' | 'after'>('before')
@@ -262,7 +263,7 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
     if (!tablesWithNotNullMismatch.length) return
     setFixingNotNull(true); setError(''); setNotNullResults(null)
     try {
-      const { data } = await replicationApi.schemaFixNotNull(tablesWithNotNullMismatch, database)
+      const { data } = await replicationApi.schemaFixNotNull(tablesWithNotNullMismatch, database, notNullStrategy)
       setNotNullResults(data)
       await runCheck()
     } catch (e: any) {
@@ -345,15 +346,28 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
                 </button>
               )}
               {notNullMismatch.length > 0 && (
-                <button
-                  onClick={runFixNotNull}
-                  disabled={fixingNotNull}
-                  className="flex items-center gap-1.5 text-xs bg-blue-800 hover:bg-blue-700 disabled:opacity-50 px-3 py-1.5 rounded font-semibold"
-                  title="ALTER COLUMN SET/DROP NOT NULL on destination to match source"
-                >
-                  {fixingNotNull && <Spinner size={3} />}
-                  Fix NOT NULL ({notNullMismatch.length} table{notNullMismatch.length !== 1 ? 's' : ''})
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <select
+                    value={notNullStrategy}
+                    onChange={e => setNotNullStrategy(e.target.value as 'not_valid' | 'direct')}
+                    className="text-xs bg-gray-800 border border-gray-600 rounded px-2 py-1 focus:outline-none"
+                    title="not_valid: CHECK constraint, no table scan, safe for large tables&#10;direct: SET NOT NULL, scans entire table, locks"
+                  >
+                    <option value="not_valid">NOT VALID (no scan, safe for large tables)</option>
+                    <option value="direct">Direct SET NOT NULL (scans table, locks)</option>
+                  </select>
+                  <button
+                    onClick={runFixNotNull}
+                    disabled={fixingNotNull}
+                    className="flex items-center gap-1.5 text-xs bg-blue-800 hover:bg-blue-700 disabled:opacity-50 px-3 py-1.5 rounded font-semibold whitespace-nowrap"
+                    title={notNullStrategy === 'not_valid'
+                      ? 'ADD CHECK (col IS NOT NULL) NOT VALID — no scan, no long lock, enforces for new data'
+                      : 'ALTER COLUMN SET NOT NULL — scans entire table, holds lock for duration'}
+                  >
+                    {fixingNotNull && <Spinner size={3} />}
+                    Fix NOT NULL ({notNullMismatch.length})
+                  </button>
+                </div>
               )}
             </>
           )}
