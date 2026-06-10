@@ -13,10 +13,10 @@ selectively applied on destination.
 """
 
 import asyncio
+import concurrent.futures
+import os
 import re
-import shlex
 import subprocess
-import tempfile
 from typing import Optional
 
 import asyncpg
@@ -145,45 +145,51 @@ def _post_process_pg_dump(sql: str) -> list[str]:
 
 async def _dump_via_pg_dump(database: str, schemas: list[str]) -> list[str]:
     """Run pg_dump --schema-only and post-process output."""
+    import urllib.parse
+    import os
+    import concurrent.futures
+
     pg_dump = state.pg_dump_path.strip()
     if not pg_dump:
         raise RuntimeError("pg_dump path not configured")
 
-    # Build DSN components from source_dsn
-    import urllib.parse
-    parsed = urllib.parse.urlparse(
-        dsn_for_database(state.source_dsn, database)
-    )
+    parsed = urllib.parse.urlparse(dsn_for_database(state.source_dsn, database))
 
-    cmd = [pg_dump, "--schema-only", "--no-owner", "--no-acl",
-           "--no-comments",  # we handle comments separately
-           "-h", parsed.hostname,
-           "-p", str(parsed.port or 5432),
-           "-U", parsed.username,
-           parsed.path.lstrip("/")]
-
+    cmd = [
+        pg_dump,
+        "--schema-only", "--no-owner", "--no-acl", "--no-comments",
+        "-h", parsed.hostname or "localhost",
+        "-p", str(parsed.port or 5432),
+        "-U", parsed.username or "postgres",
+        parsed.path.lstrip("/"),
+    ]
     for schema in schemas:
         cmd += ["-n", schema]
 
-    env = {}
+    env = {**os.environ}
     if parsed.password:
         env["PGPASSWORD"] = parsed.password
 
-    import os
-    full_env = {**os.environ, **env}
+    def _run() -> tuple[int, str, str]:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=120,
+        )
+        return result.returncode, result.stdout, result.stderr
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=full_env,
-    )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        returncode, stdout, stderr = await loop.run_in_executor(pool, _run)
 
-    if proc.returncode != 0:
-        raise RuntimeError(f"pg_dump failed: {stderr.decode()[:500]}")
+    if returncode != 0:
+        raise RuntimeError(f"pg_dump failed (exit {returncode}): {stderr[:600]}")
 
-    return _post_process_pg_dump(stdout.decode())
+    return _post_process_pg_dump(stdout)
 
 
 async def _dump_via_catalog(database: str, schemas: list[str]) -> list[str]:
@@ -390,9 +396,8 @@ async def _dump_via_catalog(database: str, schemas: list[str]) -> list[str]:
 @router.get("/config")
 async def get_dump_config():
     """Return current pg_dump path config and whether binary exists."""
-    import os
     path = state.pg_dump_path.strip()
-    exists = bool(path) and os.path.isfile(path) and os.access(path, os.X_OK)
+    exists = bool(path) and os.path.isfile(path)
     return {
         "pg_dump_path": path,
         "pg_dump_available": exists,
@@ -403,10 +408,9 @@ async def get_dump_config():
 @router.post("/config")
 async def set_dump_config(body: dict):
     """Set pg_dump binary path."""
-    import os
     path: str = body.get("pg_dump_path", "").strip()
-    if path and not (os.path.isfile(path) and os.access(path, os.X_OK)):
-        raise HTTPException(400, f"pg_dump not found or not executable at: {path}")
+    if path and not os.path.isfile(path):
+        raise HTTPException(400, f"pg_dump not found at: {path}")
     state.pg_dump_path = path
     state.persist()
     return {"pg_dump_path": path, "strategy": "pg_dump" if path else "generator"}
