@@ -489,6 +489,7 @@ export function StatusPage({ initialSnapshot }: Props) {
         <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
           <span className="font-semibold text-gray-300 flex-1">Replication Progress</span>
           {(() => {
+            void speedVersion
             const totalMbps = Object.values(speedRef.current).reduce((s, v) => s + v.avgMbps, 0)
             const anyActive = copyData?.subscriptions?.some(s => s.tables.some(t => t.sub_state === 'd'))
             if (!anyActive || totalMbps < 0.01) return null
@@ -497,9 +498,25 @@ export function StatusPage({ initialSnapshot }: Props) {
               : totalMbps >= 1
               ? `${totalMbps.toFixed(1)} MB/s`
               : `${(totalMbps * 1024).toFixed(0)} KB/s`
+            // Total remaining across all active subscriptions
+            const totalRemaining = (copyData?.subscriptions ?? []).reduce((sum, sub) => {
+              const withSrc = sub.tables.filter(t => getSourceSize(sub.database, t.schema_name, t.table_name) != null)
+              const srcTotal = withSrc.reduce((s, t) => s + (getSourceSize(sub.database, t.schema_name, t.table_name) ?? 0), 0)
+              const copied = withSrc.reduce((s, t) => {
+                const src = getSourceSize(sub.database, t.schema_name, t.table_name) ?? 0
+                if (['f','s','r'].includes(t.sub_state)) return s + src
+                if (t.sub_state === 'd') return s + Math.min(t.table_size_bytes, src)
+                return s
+              }, 0)
+              return sum + Math.max(0, srcTotal - copied)
+            }, 0)
+            const etaSecs = totalRemaining > 0 ? totalRemaining / (totalMbps * 1024 * 1024) : null
             return (
-              <span className="text-xs font-mono text-cyan-400 border border-cyan-800 bg-cyan-950/30 rounded px-2 py-0.5" title="Total copy speed across all active subscriptions">
+              <span className="text-xs font-mono text-cyan-400 border border-cyan-800 bg-cyan-950/30 rounded px-2 py-0.5 flex items-center gap-1.5" title="Total copy speed (10-sample avg) across all active subscriptions">
                 ⚡ {label} total
+                {etaSecs != null && (
+                  <span className="text-cyan-300/70">· ETA {fmtEta(etaSecs)}</span>
+                )}
               </span>
             )
           })()}
