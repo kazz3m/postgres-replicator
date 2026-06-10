@@ -88,6 +88,8 @@ export function StatusPage({ initialSnapshot }: Props) {
   const [confirmReset, setConfirmReset] = useState<string | null>(null)
   const [confirmStop, setConfirmStop] = useState<string | null>(null)
   const [confirmDropSlot, setConfirmDropSlot] = useState<string | null>(null)
+  const [confirmDropSub, setConfirmDropSub] = useState<string | null>(null)
+  const [confirmDropPub, setConfirmDropPub] = useState<{ subName: string; pubName: string } | null>(null)
   const [vacuumTarget, setVacuumTarget] = useState<{ subName: string; destHost: string; tables: string[] } | null>(null)
   const [vacuumLoading, setVacuumLoading] = useState(false)
   const [vacuumResult, setVacuumResult] = useState<{ applied: number; failed: number; results: { table: string; ok: boolean; error?: string }[] } | null>(null)
@@ -323,6 +325,30 @@ export function StatusPage({ initialSnapshot }: Props) {
       setActionError(e.response?.data?.detail || e.message)
     } finally {
       setActionLoading(false); setConfirmDropSlot(null)
+    }
+  }
+
+  async function handleDropSubscription(subName: string) {
+    setActionLoading(true); setActionError('')
+    try {
+      await replicationApi.dropSubscription(subName)
+      refetchProgress(); refetchSlots(); refetchSubs(); refetchCopy()
+    } catch (e: any) {
+      setActionError(e.response?.data?.detail || e.message)
+    } finally {
+      setActionLoading(false); setConfirmDropSub(null)
+    }
+  }
+
+  async function handleDropPublication(pubName: string) {
+    setActionLoading(true); setActionError('')
+    try {
+      await replicationApi.dropPublication(pubName)
+      refetchProgress(); refetchSlots(); refetchSubs(); refetchCopy()
+    } catch (e: any) {
+      setActionError(e.response?.data?.detail || e.message)
+    } finally {
+      setActionLoading(false); setConfirmDropPub(null)
     }
   }
 
@@ -812,13 +838,23 @@ export function StatusPage({ initialSnapshot }: Props) {
                           <Database size={10} /> Vacuum
                         </button>
                         <button
-                          onClick={() => setConfirmDropSlot(sub.subslotname || sub.subname)}
+                          onClick={() => setConfirmDropSub(sub.subname)}
                           disabled={actionLoading}
-                          className="text-xs text-red-500/60 hover:text-red-400 border border-red-900/50 hover:border-red-800 px-2 py-1 rounded disabled:opacity-30"
-                          title="Drop replication slot on source only. Use when slot is orphaned after Stop."
+                          className="text-xs text-red-500/70 hover:text-red-400 border border-red-900/60 hover:border-red-800 px-2 py-1 rounded disabled:opacity-30"
+                          title="DROP SUBSCRIPTION on destination"
                         >
-                          Drop slot
+                          Drop sub
                         </button>
+                        {sub.subpublications?.length > 0 && (
+                          <button
+                            onClick={() => setConfirmDropPub({ subName: sub.subname, pubName: sub.subpublications[0] })}
+                            disabled={actionLoading}
+                            className="text-xs text-red-500/70 hover:text-red-400 border border-red-900/60 hover:border-red-800 px-2 py-1 rounded disabled:opacity-30"
+                            title="DROP PUBLICATION on source"
+                          >
+                            Drop pub
+                          </button>
+                        )}
                         {/* Create indexes — useful after replication completes */}
                         {sub.subpublications?.length > 0 && (
                           <button
@@ -926,6 +962,24 @@ export function StatusPage({ initialSnapshot }: Props) {
           confirmLabel="Drop Slot"
           onConfirm={() => handleDropSlot(confirmDropSlot)}
           onCancel={() => setConfirmDropSlot(null)}
+        />
+      )}
+      {confirmDropSub && (
+        <ConfirmModal
+          title="Drop Subscription"
+          message={`Drop subscription "${confirmDropSub}" from destination? The slot will also be removed. Replication will stop.`}
+          confirmLabel="Drop Subscription"
+          onConfirm={() => handleDropSubscription(confirmDropSub)}
+          onCancel={() => setConfirmDropSub(null)}
+        />
+      )}
+      {confirmDropPub && (
+        <ConfirmModal
+          title="Drop Publication"
+          message={`Drop publication "${confirmDropPub.pubName}" from source? This will stop replication for all subscribers of this publication.`}
+          confirmLabel="Drop Publication"
+          onConfirm={() => handleDropPublication(confirmDropPub.pubName)}
+          onCancel={() => setConfirmDropPub(null)}
         />
       )}
 
