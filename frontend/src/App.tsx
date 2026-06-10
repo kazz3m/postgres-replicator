@@ -309,10 +309,10 @@ export default function App() {
 
   // stage === 'connected'
   const tabs: { id: Tab; label: string }[] = [
+    { id: 'schema-dump', label: 'Schema Dump' },
     { id: 'analysis', label: 'Analysis' },
     { id: 'setup', label: 'Setup' },
     { id: 'status', label: 'Status' },
-    { id: 'schema-dump', label: 'Schema Dump' },
   ]
 
   return (
