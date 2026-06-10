@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { schemaDumpApi, analysisApi, SchemaDumpConfig } from '../api/client'
+import { schemaDumpApi, analysisApi, SchemaDumpConfig, ReplicationSlotSnapshot } from '../api/client'
 import { Spinner } from '../components/Spinner'
 import { AlertTriangle, CheckCircle, Database, Download, Play, Settings, ChevronDown, ChevronRight } from 'lucide-react'
 import clsx from 'clsx'
@@ -12,6 +12,7 @@ export function SchemaDumpPage() {
 
   const [selectedDb, setSelectedDb] = useState('')
   const [selectedSchemas, setSelectedSchemas] = useState<Set<string>>(new Set())
+  const [selectedSnapshot, setSelectedSnapshot] = useState<string>('')
   const [dumping, setDumping] = useState(false)
   const [applying, setApplying] = useState(false)
   const [stopOnError, setStopOnError] = useState(false)
@@ -25,6 +26,12 @@ export function SchemaDumpPage() {
   const { data: cfg, refetch: refetchCfg } = useQuery({
     queryKey: ['schema-dump-config'],
     queryFn: () => schemaDumpApi.getConfig().then(r => r.data),
+  })
+
+  const { data: snapshots } = useQuery({
+    queryKey: ['schema-dump-snapshots'],
+    queryFn: () => schemaDumpApi.snapshots().then(r => r.data),
+    enabled: cfg?.strategy === 'pg_dump',
   })
 
   const { data: databases } = useQuery({
@@ -64,7 +71,7 @@ export function SchemaDumpPage() {
     if (!selectedDb) return
     setDumping(true); setError(''); setStatements(null); setApplyResults(null); setSelectedStmts(new Set())
     try {
-      const { data } = await schemaDumpApi.dump(selectedDb, [...selectedSchemas])
+      const { data } = await schemaDumpApi.dump(selectedDb, [...selectedSchemas], selectedSnapshot || undefined)
       setStatements(data.statements)
       setDumpStrategy(data.strategy)
       setSelectedStmts(new Set(data.statements.map((_, i) => i)))
@@ -196,6 +203,35 @@ export function SchemaDumpPage() {
             </div>
           )}
         </div>
+
+        {/* Snapshot selector — only when pg_dump is active */}
+        {cfg?.strategy === 'pg_dump' && (
+          <div className="mt-3">
+            <label className="block text-xs text-gray-500 mb-1">
+              Snapshot <span className="text-gray-600">(optional — use replication slot snapshot to avoid lock waits)</span>
+            </label>
+            <select
+              value={selectedSnapshot}
+              onChange={e => setSelectedSnapshot(e.target.value)}
+              className="bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white outline-none focus:border-blue-500 min-w-64"
+            >
+              <option value="">— none (may wait for locks) —</option>
+              {snapshots?.map(s => (
+                <option key={s.slot_name} value={s.slot_name}>
+                  {s.slot_name} ({s.database}) @ {s.confirmed_flush_lsn}
+                </option>
+              ))}
+              {snapshots?.length === 0 && (
+                <option disabled>No active replication slots found</option>
+              )}
+            </select>
+            {selectedSnapshot && (
+              <p className="text-xs text-green-400 mt-1">
+                ✓ pg_dump --snapshot={selectedSnapshot} — no lock waits
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="mt-3">
           <button

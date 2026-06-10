@@ -22,7 +22,7 @@ from typing import Optional
 import asyncpg
 from fastapi import APIRouter, HTTPException
 
-from ..db import dsn_for_database
+from ..db import dsn_for_database, get_source_pool
 from .. import state
 
 router = APIRouter(prefix="/api/schema-dump", tags=["schema-dump"])
@@ -229,7 +229,7 @@ def _post_process_pg_dump(sql: str) -> list[str]:
     return result
 
 
-async def _dump_via_pg_dump(database: str, schemas: list[str]) -> list[str]:
+async def _dump_via_pg_dump(database: str, schemas: list[str], snapshot: str | None = None) -> list[str]:
     """Run pg_dump --schema-only and post-process output."""
     import urllib.parse
     import os
@@ -251,6 +251,10 @@ async def _dump_via_pg_dump(database: str, schemas: list[str]) -> list[str]:
     ]
     for schema in schemas:
         cmd += ["-n", schema]
+
+    # Use existing replication snapshot to avoid waiting for locks
+    if snapshot:
+        cmd += ["--snapshot", snapshot]
 
     env = {**os.environ}
     if parsed.password:
@@ -502,11 +506,43 @@ async def set_dump_config(body: dict):
     return {"pg_dump_path": path, "strategy": "pg_dump" if path else "generator"}
 
 
+@router.get("/snapshots")
+async def list_snapshots():
+    """
+    List exported snapshots from active replication slots on source.
+    These can be passed to pg_dump --snapshot to avoid waiting for locks.
+    """
+    from .. import state as _state
+    if not _state.source_dsn:
+        raise HTTPException(400, "Not connected.")
+
+    src_pool = await get_source_pool(state.source_dsn)
+    async with src_pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT slot_name, database, slot_type, active,
+                   confirmed_flush_lsn::text AS confirmed_flush_lsn
+            FROM pg_replication_slots
+            WHERE slot_type = 'logical' AND active = true
+            ORDER BY slot_name
+        """)
+    return [
+        {
+            "slot_name": r["slot_name"],
+            "database": r["database"],
+            "active": r["active"],
+            "confirmed_flush_lsn": r["confirmed_flush_lsn"],
+        }
+        for r in rows
+    ]
+
+
 @router.post("/dump")
 async def dump_schema(body: dict):
     """
     Generate schema DDL for specified database and schemas.
-    body: { "database": "dbname", "schemas": ["schema1", ...] }
+    body: { "database": "dbname", "schemas": ["schema1", ...], "snapshot": "..." }
+    snapshot: optional exported snapshot name from pg_export_snapshot() or
+              replication slot — passed to pg_dump --snapshot to skip lock waits.
     Returns list of SQL statements ready for review and apply.
     """
     from .. import state as _state
@@ -515,17 +551,18 @@ async def dump_schema(body: dict):
 
     database: str = body.get("database", "")
     schemas: list[str] = body.get("schemas", [])
+    snapshot: str | None = body.get("snapshot") or None
     if not database:
         raise HTTPException(400, "database is required.")
 
     import os
     pg_dump = state.pg_dump_path.strip()
-    use_pg_dump = bool(pg_dump) and os.path.isfile(pg_dump) and os.access(pg_dump, os.X_OK)
+    use_pg_dump = bool(pg_dump) and os.path.isfile(pg_dump)
 
     try:
         if use_pg_dump:
-            stmts = await _dump_via_pg_dump(database, schemas)
-            strategy = "pg_dump"
+            stmts = await _dump_via_pg_dump(database, schemas, snapshot)
+            strategy = "pg_dump" + (f" --snapshot={snapshot}" if snapshot else "")
         else:
             stmts = await _dump_via_catalog(database, schemas)
             strategy = "generator"

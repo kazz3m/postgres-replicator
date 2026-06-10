@@ -233,12 +233,20 @@ export interface SchemaApplyResponse {
   results: { sql: string; ok: boolean; error?: string }[]
 }
 
+export interface ReplicationSlotSnapshot {
+  slot_name: string
+  database: string
+  active: boolean
+  confirmed_flush_lsn: string
+}
+
 export const schemaDumpApi = {
   getConfig: () => api.get<SchemaDumpConfig>('/schema-dump/config'),
   setConfig: (pg_dump_path: string) =>
     api.post<{ pg_dump_path: string; strategy: string }>('/schema-dump/config', { pg_dump_path }),
-  dump: (database: string, schemas: string[]) =>
-    api.post<SchemaDumpResponse>('/schema-dump/dump', { database, schemas }),
+  snapshots: () => api.get<ReplicationSlotSnapshot[]>('/schema-dump/snapshots'),
+  dump: (database: string, schemas: string[], snapshot?: string) =>
+    api.post<SchemaDumpResponse>('/schema-dump/dump', { database, schemas, snapshot: snapshot || null }),
   apply: (database: string, statements: string[], stopOnError = false) =>
     api.post<SchemaApplyResponse>('/schema-dump/apply', { database, statements, stop_on_error: stopOnError }),
 }
