@@ -20,7 +20,9 @@ import subprocess
 from typing import Optional
 
 import asyncpg
-from fastapi import APIRouter, HTTPException
+import json
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from ..db import dsn_for_database, get_source_pool
 from .. import state
@@ -723,3 +725,57 @@ async def apply_schema(body: dict):
         "failed": failed,
         "results": results,
     }
+
+
+@router.post("/apply-stream")
+async def apply_schema_stream(request: Request):
+    """
+    Same as /apply but streams progress as newline-delimited JSON (NDJSON).
+    Each line is a JSON object: { "i": N, "total": N, "sql": "...", "ok": bool, "error": "..." }
+    Final line: { "done": true, "applied": N, "failed": N }
+    """
+    from .. import state as _state
+    if not _state.dest_dsn:
+        raise HTTPException(400, "Not connected.")
+
+    body = await request.json()
+    database: str = body.get("database", "")
+    statements: list[str] = body.get("statements", [])
+    stop_on_error: bool = body.get("stop_on_error", False)
+    batch: bool = body.get("batch", False)
+
+    if not database or not statements:
+        raise HTTPException(400, "database and statements are required.")
+
+    dest_dsn = dsn_for_database(state.dest_dsn, database)
+
+    async def generate():
+        conn = await asyncpg.connect(dest_dsn, timeout=120)
+        applied = failed = 0
+        total = len(statements)
+        try:
+            if batch:
+                full_sql = "\n\n".join(statements)
+                try:
+                    await conn.execute(full_sql)
+                    applied = total
+                    yield json.dumps({"i": 1, "total": 1, "sql": "(batch)", "ok": True}) + "\n"
+                except Exception as e:
+                    failed = total
+                    yield json.dumps({"i": 1, "total": 1, "sql": "(batch)", "ok": False, "error": str(e)}) + "\n"
+            else:
+                for i, stmt in enumerate(statements):
+                    try:
+                        await conn.execute(stmt)
+                        applied += 1
+                        yield json.dumps({"i": i + 1, "total": total, "sql": stmt[:100], "ok": True}) + "\n"
+                    except Exception as e:
+                        failed += 1
+                        yield json.dumps({"i": i + 1, "total": total, "sql": stmt[:100], "ok": False, "error": str(e)}) + "\n"
+                        if stop_on_error:
+                            break
+        finally:
+            await conn.close()
+        yield json.dumps({"done": True, "applied": applied, "failed": failed}) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")

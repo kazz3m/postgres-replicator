@@ -20,6 +20,8 @@ export function SchemaDumpPage() {
   const [statements, setStatements] = useState<string[] | null>(null)
   const [dumpStrategy, setDumpStrategy] = useState('')
   const [applyResults, setApplyResults] = useState<{ applied: number; failed: number; results: { sql: string; ok: boolean; error?: string }[] } | null>(null)
+  const [streamLog, setStreamLog] = useState<{ i: number; sql: string; ok: boolean; error?: string }[]>([])
+  const [streamDone, setStreamDone] = useState<{ applied: number; failed: number } | null>(null)
   const [error, setError] = useState('')
   const [expandedStmt, setExpandedStmt] = useState<Set<number>>(new Set())
   const [selectedStmts, setSelectedStmts] = useState<Set<number>>(new Set())
@@ -87,12 +89,41 @@ export function SchemaDumpPage() {
     if (!statements || !selectedDb) return
     const toApply = statements.filter((_, i) => selectedStmts.has(i))
     if (!toApply.length) return
-    setApplying(true); setError(''); setApplyResults(null)
+    setApplying(true); setError(''); setApplyResults(null); setStreamLog([]); setStreamDone(null)
+
     try {
-      const { data } = await schemaDumpApi.apply(selectedDb, toApply, stopOnError, batchMode)
-      setApplyResults(data)
+      const resp = await fetch('/api/schema-dump/apply-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ database: selectedDb, statements: toApply, stop_on_error: stopOnError, batch: batchMode }),
+      })
+      if (!resp.ok) {
+        const txt = await resp.text()
+        setError(txt); return
+      }
+      const reader = resp.body!.getReader()
+      const dec = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.trim()) continue
+          try {
+            const msg = JSON.parse(line)
+            if (msg.done) {
+              setStreamDone({ applied: msg.applied, failed: msg.failed })
+            } else {
+              setStreamLog(prev => [...prev, { i: msg.i, sql: msg.sql, ok: msg.ok, error: msg.error }])
+            }
+          } catch { /* ignore malformed line */ }
+        }
+      }
     } catch (e: any) {
-      setError(e.response?.data?.detail || e.message)
+      setError(e.message)
     } finally {
       setApplying(false)
     }
@@ -339,31 +370,43 @@ export function SchemaDumpPage() {
         </div>
       )}
 
-      {/* Apply results summary */}
-      {applyResults && (
-        <div className={clsx('border rounded-lg p-4 text-sm',
-          applyResults.failed === 0
-            ? 'bg-green-950/20 border-green-800'
-            : 'bg-yellow-950/20 border-yellow-800'
-        )}>
-          <div className="flex items-center gap-2 mb-2">
-            {applyResults.failed === 0
-              ? <CheckCircle size={14} className="text-green-400" />
-              : <AlertTriangle size={14} className="text-yellow-400" />}
-            <span className="font-semibold text-gray-300">
-              Applied {applyResults.applied} · Failed {applyResults.failed}
+      {/* Live apply log */}
+      {(applying || streamLog.length > 0 || streamDone) && (
+        <div className="bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-gray-700 flex items-center gap-3">
+            {applying && !streamDone && <Spinner size={3} />}
+            {streamDone
+              ? streamDone.failed === 0
+                ? <CheckCircle size={13} className="text-green-400" />
+                : <AlertTriangle size={13} className="text-yellow-400" />
+              : null}
+            <span className="text-sm font-semibold text-gray-300">
+              {streamDone
+                ? `Done — Applied ${streamDone.applied} · Failed ${streamDone.failed}`
+                : `Applying… ${streamLog.length} / ${selectedStmts.size}`}
             </span>
+            {applying && !streamDone && (
+              <div className="ml-auto w-48 bg-gray-800 rounded-full h-1.5">
+                <div className="bg-blue-500 h-1.5 rounded-full transition-all"
+                  style={{ width: `${Math.min(100, streamLog.length / Math.max(1, selectedStmts.size) * 100)}%` }} />
+              </div>
+            )}
           </div>
-          {applyResults.failed > 0 && (
-            <div className="space-y-1 max-h-48 overflow-y-auto">
-              {applyResults.results.filter(r => !r.ok).map((r, i) => (
-                <div key={i} className="text-xs text-red-300">
-                  <span className="font-mono text-gray-500">{r.sql}…</span>
-                  <span className="ml-2 text-red-400">{r.error}</span>
-                </div>
-              ))}
-            </div>
-          )}
+          <div className="max-h-72 overflow-y-auto font-mono text-xs p-2 space-y-0.5"
+            ref={el => { if (el) el.scrollTop = el.scrollHeight }}>
+            {streamLog.map((entry, i) => (
+              <div key={i} className={clsx('flex items-start gap-1.5 py-0.5 px-1 rounded',
+                entry.ok ? 'text-gray-400' : 'bg-red-950/30 text-red-300'
+              )}>
+                <span className={clsx('shrink-0 mt-0.5', entry.ok ? 'text-green-500' : 'text-red-400')}>
+                  {entry.ok ? '✓' : '✗'}
+                </span>
+                <span className="text-gray-500 shrink-0 w-12">{entry.i}/{selectedStmts.size}</span>
+                <span className="truncate flex-1" title={entry.sql}>{entry.sql}</span>
+                {entry.error && <span className="text-red-400 shrink-0 ml-2 truncate max-w-xs" title={entry.error}>{entry.error}</span>}
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
