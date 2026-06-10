@@ -371,7 +371,8 @@ async def _dump_via_catalog(database: str, schemas: list[str]) -> list[str]:
         part_rows = await conn.fetch(f"""
             SELECT n.nspname, c.relname, c.oid,
                    pg_get_expr(c.relpartbound, c.oid) AS partbound,
-                   n2.nspname || '."' || p.relname || '"' AS parent_fq
+                   n2.nspname AS parent_schema,
+                   p.relname  AS parent_name
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             JOIN pg_inherits i ON i.inhrelid = c.oid
@@ -381,7 +382,7 @@ async def _dump_via_catalog(database: str, schemas: list[str]) -> list[str]:
             ORDER BY n.nspname, c.relname
         """, *args)
 
-        async def col_ddl(oid: int) -> list[str]:
+        async def col_ddl(oid: int, skip_pk: bool = False) -> list[str]:
             cols = await conn.fetch("""
                 SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod) AS typ,
                        a.attnotnull, pg_get_expr(d.adbin, d.adrelid) AS dflt,
@@ -409,15 +410,16 @@ async def _dump_via_catalog(database: str, schemas: list[str]) -> list[str]:
                 if c["attnotnull"] and not c["attidentity"]:
                     d += " NOT NULL"
                 defs.append(d)
-            if pk_cols:
+            if pk_cols and not skip_pk:
                 pk_list = ", ".join(f'"{c}"' for c in pk_cols)
                 defs.append(f'  PRIMARY KEY ({pk_list})')
             return defs
 
         for r in table_rows:
-            col_defs = await col_ddl(r["oid"])
+            is_partitioned = bool(r["partkeydef"])
+            col_defs = await col_ddl(r["oid"], skip_pk=is_partitioned)
             body = ",\n".join(col_defs)
-            if r["partkeydef"]:
+            if is_partitioned:
                 stmt = (f'CREATE TABLE IF NOT EXISTS "{r["nspname"]}"."{r["relname"]}" (\n'
                         f'{body}\n) PARTITION BY {r["partkeydef"]};')
             else:
@@ -426,9 +428,11 @@ async def _dump_via_catalog(database: str, schemas: list[str]) -> list[str]:
             statements.append(stmt)
 
         for r in part_rows:
+            # PARTITION OF does not accept column list — inherits from parent
             statements.append(
                 f'CREATE TABLE IF NOT EXISTS "{r["nspname"]}"."{r["relname"]}" '
-                f'PARTITION OF {r["parent_fq"]} {r["partbound"]};'
+                f'PARTITION OF "{r["parent_schema"]}"."{r["parent_name"]}" '
+                f'{r["partbound"]};'
             )
 
         # ── Indexes ──────────────────────────────────────────────────────────
