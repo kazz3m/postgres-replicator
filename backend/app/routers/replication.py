@@ -898,6 +898,75 @@ async def debug_subscription(sub_name: str, database: str):
     return result
 
 
+# ── Re-add table to publication (drop + add + refresh) ───────────────────────
+
+@router.post("/publication-readd-table")
+async def publication_readd_table(body: dict):
+    """
+    Remove a table from a publication and add it back, then refresh subscription.
+    This forces a fresh initial copy, bypassing any stuck WAL transactions.
+    body: { "pub_name": "...", "sub_name": "...", "table": "schema.table", "database": "dbname" }
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+
+    pub_name: str = body.get("pub_name", "")
+    sub_name: str = body.get("sub_name", "")
+    table: str    = body.get("table", "")
+    database: str | None = body.get("database")
+
+    if not pub_name or not table:
+        raise HTTPException(400, "pub_name and table are required.")
+    if "." not in table:
+        raise HTTPException(400, "table must be schema.table")
+
+    schema, tname = table.split(".", 1)
+    src_dsn  = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    dest_dsn = dsn_for_database(state.dest_dsn,   database) if database else state.dest_dsn
+
+    steps = []
+    try:
+        src_conn = await _asyncpg.connect(src_dsn, timeout=15)
+        try:
+            await src_conn.execute(
+                f'ALTER PUBLICATION "{pub_name}" DROP TABLE "{schema}"."{tname}"'
+            )
+            steps.append({"step": f'DROP TABLE {table} from publication', "ok": True})
+        except Exception as e:
+            steps.append({"step": f'DROP TABLE {table} from publication', "ok": False, "error": str(e)})
+            await src_conn.close()
+            return {"ok": False, "steps": steps}
+
+        try:
+            await src_conn.execute(
+                f'ALTER PUBLICATION "{pub_name}" ADD TABLE "{schema}"."{tname}"'
+            )
+            steps.append({"step": f'ADD TABLE {table} to publication', "ok": True})
+        except Exception as e:
+            steps.append({"step": f'ADD TABLE {table} to publication', "ok": False, "error": str(e)})
+            await src_conn.close()
+            return {"ok": False, "steps": steps}
+
+        await src_conn.close()
+    except Exception as e:
+        return {"ok": False, "steps": steps, "error": str(e)}
+
+    # Refresh subscription on dest so it picks up the table again
+    if sub_name:
+        try:
+            dest_conn = await _asyncpg.connect(dest_dsn, timeout=15)
+            await dest_conn.execute(
+                f'ALTER SUBSCRIPTION "{sub_name}" REFRESH PUBLICATION'
+            )
+            await dest_conn.close()
+            steps.append({"step": f'REFRESH PUBLICATION on subscription {sub_name}', "ok": True})
+        except Exception as e:
+            steps.append({"step": f'REFRESH PUBLICATION on subscription {sub_name}', "ok": False, "error": str(e)})
+            return {"ok": False, "steps": steps}
+
+    return {"ok": True, "steps": steps}
+
+
 # ── Set REPLICA IDENTITY FULL ────────────────────────────────────────────────
 
 @router.post("/set-replica-identity-full")

@@ -54,6 +54,9 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
   const [skipLsnValue, setSkipLsnValue] = useState('')
   const [skipLsnApplying, setSkipLsnApplying] = useState(false)
   const [skipLsnResult, setSkipLsnResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [readdingTable, setReaddingTable] = useState<string | null>(null)
+  const [readdResults, setReaddResults] = useState<Record<string, { ok: boolean; steps: { step: string; ok: boolean; error?: string }[] }>>({})
+  const [readdConfirm, setReaddConfirm] = useState<string | null>(null)
 
   async function load() {
     setLoading(true); setError('')
@@ -71,6 +74,23 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
 
   type R = Record<string, unknown>
   const riIssues = (data?.replica_identity_issues as R[] | undefined) ?? []
+  const allPubTables = (data?.replica_identity_all as R[] | undefined) ?? []
+  const pubName = (data?.subscription as R | undefined)?.subpublications
+    ? String(((data?.subscription as R).subpublications as string[])[0] ?? '')
+    : ''
+
+  async function doReaddTable(table: string) {
+    setReaddingTable(table); setReaddConfirm(null)
+    try {
+      const res = await replicationApi.publicationReaddTable(pubName, subName, table, database)
+      setReaddResults(prev => ({ ...prev, [table]: res.data }))
+      if (res.data.ok) setTimeout(load, 1500)
+    } catch (e: unknown) {
+      setReaddResults(prev => ({ ...prev, [table]: { ok: false, steps: [{ step: 'request', ok: false, error: e instanceof Error ? e.message : String(e) }] } }))
+    } finally {
+      setReaddingTable(null)
+    }
+  }
 
   async function applyReplicaIdentityFull() {
     const tables = riIssues.filter(r => r.replica_identity !== 'full').map(r => String(r.qualified))
@@ -342,6 +362,84 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                   )}
                 </div>
               </div>
+
+              {/* Publication tables — re-add */}
+              {allPubTables.length > 0 && (
+                <Section title={`Publication tables — remove & re-add (${allPubTables.length} tables in ${pubName || 'publication'})`}>
+                  <p className="text-xs text-gray-500 mb-2">
+                    Re-adding a table forces a fresh initial copy, bypassing stuck WAL transactions
+                    (e.g. <code className="text-gray-300">could not map filenode to relation OID</code>).
+                    Use when the source table was dropped and recreated or TRUNCATED after the WAL was written.
+                  </p>
+                  <table className="w-full text-xs">
+                    <thead><tr className="text-gray-500 border-b border-gray-700">
+                      <th className="text-left py-1 pr-4">Table</th>
+                      <th className="text-left py-1 pr-4">Replica identity</th>
+                      <th className="text-left py-1 pr-4">Has PK</th>
+                      <th className="text-left py-1">Action</th>
+                    </tr></thead>
+                    <tbody>
+                      {allPubTables.map((t, i) => {
+                        const tbl = String(t.qualified)
+                        const res = readdResults[tbl]
+                        const isRedding = readdingTable === tbl
+                        const confirming = readdConfirm === tbl
+                        return (
+                          <tr key={i} className={clsx('border-b border-gray-800',
+                            res?.ok ? 'bg-green-950/10' : res && !res.ok ? 'bg-red-950/10' : ''
+                          )}>
+                            <td className="py-1.5 pr-4 font-mono">{tbl}</td>
+                            <td className="py-1.5 pr-4 font-mono text-xs">
+                              <span className={clsx(
+                                t.replica_identity === 'nothing' ? 'text-red-400' :
+                                t.replica_identity === 'full' ? 'text-blue-300' : 'text-gray-400'
+                              )}>{String(t.replica_identity)}</span>
+                            </td>
+                            <td className="py-1.5 pr-4">
+                              {t.has_pk ? <span className="text-green-400">✓</span> : <span className="text-red-400">✗</span>}
+                            </td>
+                            <td className="py-1.5">
+                              {res ? (
+                                <div className="space-y-0.5">
+                                  {res.steps.map((s, j) => (
+                                    <div key={j} className={clsx('flex items-center gap-1 text-[10px]',
+                                      s.ok ? 'text-green-400' : 'text-red-400'
+                                    )}>
+                                      {s.ok ? <CheckCircle size={9} /> : <AlertTriangle size={9} />}
+                                      {s.step}{s.error ? ` — ${s.error}` : ''}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : confirming ? (
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-xs text-yellow-300">Remove & re-add?</span>
+                                  <button onClick={() => doReaddTable(tbl)}
+                                    className="text-xs bg-orange-700 hover:bg-orange-600 text-white px-2 py-0.5 rounded">
+                                    Confirm
+                                  </button>
+                                  <button onClick={() => setReaddConfirm(null)}
+                                    className="text-xs text-gray-400 hover:text-gray-200 px-2 py-0.5 rounded border border-gray-700">
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => setReaddConfirm(tbl)}
+                                  disabled={isRedding || !!readdingTable}
+                                  className="flex items-center gap-1 text-xs text-orange-400 hover:text-orange-300 border border-orange-900/50 hover:border-orange-700 px-2 py-0.5 rounded disabled:opacity-40 transition-colors"
+                                >
+                                  {isRedding ? <Spinner size={2} /> : <RefreshCw size={9} />}
+                                  Re-add
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </Section>
+              )}
 
               {/* Apply worker locks */}
               {applyLocks.length > 0 && (
