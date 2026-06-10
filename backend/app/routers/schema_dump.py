@@ -308,7 +308,8 @@ async def _dump_via_catalog(database: str, schemas: list[str]) -> list[str]:
                     d += " NOT NULL"
                 defs.append(d)
             if pk_cols:
-                defs.append(f'  PRIMARY KEY ({", ".join(f\'"{c}"\' for c in pk_cols)})')
+                pk_list = ", ".join(f'"{c}"' for c in pk_cols)
+                defs.append(f'  PRIMARY KEY ({pk_list})')
             return defs
 
         for r in table_rows:
