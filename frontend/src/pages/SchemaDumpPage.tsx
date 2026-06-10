@@ -72,7 +72,7 @@ export function SchemaDumpPage() {
     if (!selectedDb) return
     setDumping(true); setError(''); setStatements(null); setApplyResults(null); setSelectedStmts(new Set())
     try {
-      const { data } = await schemaDumpApi.dump(selectedDb, [...selectedSchemas], selectedSnapshot || undefined)
+      const { data } = await schemaDumpApi.dump(selectedDb, [...selectedSchemas], selectedSnapshot || undefined, batchMode)
       setStatements(data.statements)
       setDumpStrategy(data.strategy)
       setSelectedStmts(new Set(data.statements.map((_, i) => i)))
@@ -229,7 +229,7 @@ export function SchemaDumpPage() {
           </div>
         )}
 
-        <div className="mt-3">
+        <div className="mt-3 flex items-center gap-4">
           <button
             onClick={runDump}
             disabled={!selectedDb || selectedSchemas.size === 0 || dumping}
@@ -238,6 +238,15 @@ export function SchemaDumpPage() {
             {dumping ? <Spinner size={3} /> : <Download size={13} />}
             Generate schema DDL
           </button>
+          {cfg?.strategy === 'pg_dump' && (
+            <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none"
+              title="Skip statement parsing — return raw pg_dump output as single block. Apply executes it as one call.">
+              <input type="checkbox" checked={batchMode}
+                onChange={e => setBatchMode(e.target.checked)}
+                className="accent-purple-500" />
+              <span>Batch mode <span className="text-gray-600">(no parsing, raw pg_dump → single execute)</span></span>
+            </label>
+          )}
         </div>
       </div>
 
@@ -261,13 +270,6 @@ export function SchemaDumpPage() {
             <button onClick={() => setSelectedStmts(new Set())}
               className="text-xs text-gray-500 hover:text-gray-300">deselect all</button>
             <div className="ml-auto flex items-center gap-3">
-              <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer"
-                title="Execute all statements as a single string — handles multi-statement functions. No per-statement result tracking.">
-                <input type="checkbox" checked={batchMode}
-                  onChange={e => setBatchMode(e.target.checked)}
-                  className="accent-purple-500" />
-                Batch (single call)
-              </label>
               {!batchMode && (
                 <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
                   <input type="checkbox" checked={stopOnError}
@@ -275,6 +277,9 @@ export function SchemaDumpPage() {
                     className="accent-blue-500" />
                   Stop on error
                 </label>
+              )}
+              {batchMode && (
+                <span className="text-xs text-purple-400">batch mode — apply as single call</span>
               )}
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-500">

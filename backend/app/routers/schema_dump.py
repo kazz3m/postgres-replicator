@@ -290,6 +290,51 @@ async def _dump_via_pg_dump(database: str, schemas: list[str], snapshot: str | N
     return _post_process_pg_dump(stdout)
 
 
+async def _dump_via_pg_dump_raw(database: str, schemas: list[str], snapshot: str | None = None) -> str:
+    """Run pg_dump and return raw output as-is — no parsing, no filtering."""
+    import urllib.parse
+    import os
+    import concurrent.futures
+
+    pg_dump = state.pg_dump_path.strip()
+    parsed = urllib.parse.urlparse(dsn_for_database(state.source_dsn, database))
+
+    cmd = [
+        pg_dump,
+        "--schema-only", "--no-owner", "--no-acl",
+        "-h", parsed.hostname or "localhost",
+        "-p", str(parsed.port or 5432),
+        "-U", parsed.username or "postgres",
+        parsed.path.lstrip("/"),
+    ]
+    for schema in schemas:
+        cmd += ["-n", schema]
+    if snapshot:
+        import re as _re
+        if _re.match(r'^[0-9A-Fa-f]+-[0-9A-Fa-f]+-\d+$', snapshot):
+            cmd += ["--snapshot", snapshot]
+
+    env = {**os.environ}
+    if parsed.password:
+        env["PGPASSWORD"] = parsed.password
+
+    def _run() -> tuple[int, str, str]:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", env=env, timeout=120,
+        )
+        return result.returncode, result.stdout, result.stderr
+
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        returncode, stdout, stderr = await loop.run_in_executor(pool, _run)
+
+    if returncode != 0:
+        raise RuntimeError(f"pg_dump failed (exit {returncode}): {stderr[:600]}")
+
+    return stdout
+
+
 async def _dump_via_catalog(database: str, schemas: list[str]) -> list[str]:
     """Built-in DDL generator using pg_catalog. Covers common objects."""
     src_dsn = dsn_for_database(state.source_dsn, database)
@@ -580,6 +625,7 @@ async def dump_schema(body: dict):
     database: str = body.get("database", "")
     schemas: list[str] = body.get("schemas", [])
     snapshot: str | None = body.get("snapshot") or None
+    batch: bool = body.get("batch", False)
     if not database:
         raise HTTPException(400, "database is required.")
 
@@ -588,7 +634,17 @@ async def dump_schema(body: dict):
     use_pg_dump = bool(pg_dump) and os.path.isfile(pg_dump)
 
     try:
-        if use_pg_dump:
+        if use_pg_dump and batch:
+            # Raw mode — return entire pg_dump output as single statement, no parsing
+            raw_sql = await _dump_via_pg_dump_raw(database, schemas, snapshot)
+            return {
+                "strategy": "pg_dump_raw",
+                "database": database,
+                "schemas": schemas,
+                "statement_count": 1,
+                "statements": [raw_sql],
+            }
+        elif use_pg_dump:
             stmts = await _dump_via_pg_dump(database, schemas, snapshot)
             strategy = "pg_dump" + (f" --snapshot={snapshot}" if snapshot else "")
         else:

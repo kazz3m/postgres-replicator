@@ -245,8 +245,8 @@ export const schemaDumpApi = {
   setConfig: (pg_dump_path: string) =>
     api.post<{ pg_dump_path: string; strategy: string }>('/schema-dump/config', { pg_dump_path }),
   snapshots: () => api.get<ReplicationSlotSnapshot[]>('/schema-dump/snapshots'),
-  dump: (database: string, schemas: string[], snapshot?: string) =>
-    api.post<SchemaDumpResponse>('/schema-dump/dump', { database, schemas, snapshot: snapshot || null }),
+  dump: (database: string, schemas: string[], snapshot?: string, batch = false) =>
+    api.post<SchemaDumpResponse>('/schema-dump/dump', { database, schemas, snapshot: snapshot || null, batch }),
   apply: (database: string, statements: string[], stopOnError = false, batch = false) =>
     api.post<SchemaApplyResponse>('/schema-dump/apply', { database, statements, stop_on_error: stopOnError, batch }),
 }
