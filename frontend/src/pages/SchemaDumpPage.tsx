@@ -235,14 +235,19 @@ export function SchemaDumpPage() {
                   className="accent-blue-500" />
                 Stop on error
               </label>
-              <button
-                onClick={runApply}
-                disabled={applying || selectedStmts.size === 0}
-                className="flex items-center gap-1.5 text-sm bg-green-800 hover:bg-green-700 px-4 py-1.5 rounded disabled:opacity-50 font-semibold"
-              >
-                {applying ? <Spinner size={3} /> : <Play size={13} />}
-                Apply {selectedStmts.size} on destination
-              </button>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">
+                  dest: <span className="text-blue-300 font-mono">{selectedDb}</span>
+                </span>
+                <button
+                  onClick={runApply}
+                  disabled={applying || selectedStmts.size === 0}
+                  className="flex items-center gap-1.5 text-sm bg-green-800 hover:bg-green-700 px-4 py-1.5 rounded disabled:opacity-50 font-semibold"
+                >
+                  {applying ? <Spinner size={3} /> : <Play size={13} />}
+                  Apply {selectedStmts.size} on destination
+                </button>
+              </div>
             </div>
           </div>
 
