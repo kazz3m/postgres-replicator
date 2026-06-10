@@ -160,6 +160,39 @@ export function StatusPage({ initialSnapshot }: Props) {
     retry: 1,
   })
 
+  // Replication speed — delta bytes / delta time per subscription
+  const speedRef = useRef<Record<string, { bytes: number; ts: number; mbps: number }>>({})
+  const [speedVersion, setSpeedVersion] = useState(0)
+
+  useEffect(() => {
+    if (!copyData?.subscriptions) return
+    const now = Date.now()
+    let changed = false
+    for (const sub of copyData.subscriptions) {
+      // Sum dest heap bytes for copying tables + full src size for done tables
+      // (same formula as totalCopiedBytes below — but we compute it here independently
+      //  so the effect runs on copyData change, not on sourceSizesVersion)
+      const destCopied = sub.tables.reduce((s, t) => {
+        if (['f','s','r'].includes(t.sub_state)) return s + t.table_size_bytes
+        if (t.sub_state === 'd') return s + t.table_size_bytes
+        return s
+      }, 0)
+      const prev = speedRef.current[sub.sub_name]
+      if (prev) {
+        const dt = (now - prev.ts) / 1000  // seconds
+        if (dt >= 1) {
+          const delta = destCopied - prev.bytes
+          const mbps = delta > 0 ? delta / dt / (1024 * 1024) : 0
+          speedRef.current[sub.sub_name] = { bytes: destCopied, ts: now, mbps }
+          changed = true
+        }
+      } else {
+        speedRef.current[sub.sub_name] = { bytes: destCopied, ts: now, mbps: 0 }
+      }
+    }
+    if (changed) setSpeedVersion(v => v + 1)
+  }, [copyData])
+
   // Source table sizes — fetched once per database, never re-polled.
   // Key: "database/schema.table" → bytes
   // v2 = added replica_identity + has_pk; bump version to force refetch on format change
@@ -490,6 +523,9 @@ export function StatusPage({ initialSnapshot }: Props) {
           }, 0)
           const copyPct = totalSourceBytes > 0 ? Math.min(100, totalCopiedBytes / totalSourceBytes * 100) : null
           const showCopyProgress = tablesWithSource.length > 0
+          void speedVersion
+          const mbps = speedRef.current[sub.sub_name]?.mbps ?? 0
+          const showSpeed = mbps > 0.01 && sub.tables.some(t => t.sub_state === 'd')
 
           return (
             <div key={sub.sub_name} className="border-b border-gray-800 last:border-0">
@@ -543,6 +579,15 @@ export function StatusPage({ initialSnapshot }: Props) {
                           <ProgressBar pct={copyPct} color="blue" />
                         </div>
                       </>
+                    )}
+                    {showSpeed && (
+                      <span className="font-mono text-cyan-400 text-[11px]" title="Current copy speed based on destination heap size delta">
+                        {mbps >= 1000
+                          ? `${(mbps / 1024).toFixed(1)} GB/s`
+                          : mbps >= 1
+                          ? `${mbps.toFixed(1)} MB/s`
+                          : `${(mbps * 1024).toFixed(0)} KB/s`}
+                      </span>
                     )}
                   </div>
                 )}
