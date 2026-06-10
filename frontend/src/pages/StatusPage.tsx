@@ -544,106 +544,104 @@ export function StatusPage({ initialSnapshot }: Props) {
 
           return (
             <div key={sub.sub_name} className="border-b border-gray-800 last:border-0">
-              {/* Subscription summary row */}
-              <div className="px-4 py-2.5 flex flex-wrap items-center gap-3 text-xs">
+              {/* Subscription summary row — grid columns: name | badges | tables | progress | wal | actions | expand */}
+              <div className="grid items-center gap-x-4 px-4 py-2.5 text-xs"
+                style={{ gridTemplateColumns: '18px minmax(180px,1fr) auto minmax(0,2fr) minmax(120px,auto) auto auto auto' }}>
+
+                {/* col 1: icon */}
                 <Database size={12} className="text-gray-500 shrink-0" />
-                <span className="font-mono text-gray-300 font-medium">{sub.sub_name}</span>
-                {/* Slot active + sync workers + replication state */}
-                {sub.slot_active
-                  ? <Badge label="active" variant="green" />
-                  : sub.sync_workers > 0
-                    ? <Badge label={`syncing (${sub.sync_workers})`} variant="yellow" />
-                    : <Badge label="inactive" variant="gray" />
-                }
-                {sub.repl_state && (
-                  <span className={clsx(
-                    'text-xs border rounded px-1.5 py-0.5 font-mono',
-                    sub.repl_state === 'streaming' ? 'bg-green-950 border-green-800 text-green-300' :
-                    sub.repl_state === 'catchup'   ? 'bg-yellow-950 border-yellow-800 text-yellow-300' :
-                    'bg-gray-800 border-gray-700 text-gray-300'
-                  )}>
-                    {sub.repl_state}
-                  </span>
-                )}
 
-                {/* Database badge */}
-                {sub.database && (
-                  <span className="text-xs bg-blue-950 border border-blue-800 text-blue-300 rounded px-1.5 py-0.5 font-mono">
-                    {sub.database}
-                  </span>
-                )}
+                {/* col 2: name */}
+                <span className="font-mono text-gray-300 font-medium truncate">{sub.sub_name}</span>
 
-                {/* Table sync counter */}
-                {total > 0 && (
-                  <span className={clsx('font-mono', synced === total ? 'text-green-400' : 'text-blue-400')}>
-                    {synced}/{total} tables synced
-                  </span>
-                )}
-
-                {/* Aggregate copy progress */}
-                {showCopyProgress && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-gray-500">copied:</span>
-                    <span className="font-mono text-blue-300">{fmtBytes(totalCopiedBytes)}</span>
-                    <span className="text-gray-600">/</span>
-                    <span className="font-mono text-gray-400">{fmtBytes(totalSourceBytes)}</span>
-                    {copyPct != null && (
-                      <>
-                        <span className="text-gray-500">({copyPct.toFixed(1)}%)</span>
-                        <div className="w-24">
-                          <ProgressBar pct={copyPct} color="blue" />
-                        </div>
-                      </>
-                    )}
-                    {showSpeed && (
-                      <span className="font-mono text-cyan-400 text-[11px]" title="Current copy speed based on destination heap size delta">
-                        {mbps >= 1000
-                          ? `${(mbps / 1024).toFixed(1)} GB/s`
-                          : mbps >= 1
-                          ? `${mbps.toFixed(1)} MB/s`
-                          : `${(mbps * 1024).toFixed(0)} KB/s`}
-                      </span>
-                    )}
-                  </div>
-                )}
-
-                {/* WAL lag */}
-                <div className="flex items-center gap-1.5">
-                  <span className="text-gray-500">WAL lag:</span>
-                  <span className={clsx('font-mono font-semibold', lagColor(lag))}>{fmtBytes(lag)}</span>
-                  {lag > 0 && (
-                    <div className="w-20">
-                      <ProgressBar pct={Math.min(100, (lag / (1024 ** 3)) * 100)}
-                        color={lag > 1024 ** 3 ? 'yellow' : lag > 100 * 1024 * 1024 ? 'yellow' : 'green'} />
-                    </div>
+                {/* col 3: status badges */}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {sub.slot_active
+                    ? <Badge label="active" variant="green" />
+                    : sub.sync_workers > 0
+                      ? <Badge label={`syncing (${sub.sync_workers})`} variant="yellow" />
+                      : <Badge label="inactive" variant="gray" />
+                  }
+                  {sub.repl_state && (
+                    <span className={clsx(
+                      'border rounded px-1.5 py-0.5 font-mono',
+                      sub.repl_state === 'streaming' ? 'bg-green-950 border-green-800 text-green-300' :
+                      sub.repl_state === 'catchup'   ? 'bg-yellow-950 border-yellow-800 text-yellow-300' :
+                      'bg-gray-800 border-gray-700 text-gray-300'
+                    )}>{sub.repl_state}</span>
+                  )}
+                  {sub.database && (
+                    <span className="bg-blue-950 border border-blue-800 text-blue-300 rounded px-1.5 py-0.5 font-mono">
+                      {sub.database}
+                    </span>
                   )}
                 </div>
 
-                {/* Analyze unanalyzed */}
-                {unanalyzed.length > 0 && (
-                  <button
-                    onClick={() => handleAnalyze(unanalyzed)}
-                    disabled={analyzingTables}
-                    className="flex items-center gap-1 text-xs bg-amber-900/40 hover:bg-amber-800/60 border border-amber-700/60 text-amber-300 px-2 py-0.5 rounded disabled:opacity-50 transition-colors"
-                  >
-                    {analyzingTables ? <Spinner size={2} /> : <FlaskConical size={10} />}
-                    Analyze {unanalyzed.length} unanalyzed
-                  </button>
-                )}
+                {/* col 4: copy progress */}
+                <div className="flex items-center gap-1.5 min-w-0">
+                  {total > 0 && (
+                    <span className={clsx('font-mono shrink-0', synced === total ? 'text-green-400' : 'text-blue-400')}>
+                      {synced}/{total} synced
+                    </span>
+                  )}
+                  {showCopyProgress && (
+                    <>
+                      <span className="text-gray-600 shrink-0">·</span>
+                      <span className="font-mono text-blue-300 shrink-0">{fmtBytes(totalCopiedBytes)}</span>
+                      <span className="text-gray-600 shrink-0">/</span>
+                      <span className="font-mono text-gray-400 shrink-0">{fmtBytes(totalSourceBytes)}</span>
+                      {copyPct != null && (
+                        <>
+                          <span className="text-gray-500 shrink-0">({copyPct.toFixed(1)}%)</span>
+                          <div className="w-24 shrink-0"><ProgressBar pct={copyPct} color="blue" /></div>
+                        </>
+                      )}
+                      {showSpeed && (
+                        <span className="font-mono text-cyan-400 shrink-0" title="Copy speed">
+                          {mbps >= 1000 ? `${(mbps/1024).toFixed(1)} GB/s` : mbps >= 1 ? `${mbps.toFixed(1)} MB/s` : `${(mbps*1024).toFixed(0)} KB/s`}
+                        </span>
+                      )}
+                    </>
+                  )}
+                </div>
 
-                {/* Debug subscription */}
+                {/* col 5: WAL lag */}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="text-gray-500">WAL lag:</span>
+                  <span className={clsx('font-mono font-semibold', lagColor(lag))}>{fmtBytes(lag)}</span>
+                  {lag > 0 && (
+                    <div className="w-16"><ProgressBar pct={Math.min(100, (lag / (1024 ** 3)) * 100)}
+                      color={lag > 1024 ** 3 ? 'yellow' : lag > 100 * 1024 * 1024 ? 'yellow' : 'green'} /></div>
+                  )}
+                </div>
+
+                {/* col 6: analyze button */}
+                <div className="shrink-0">
+                  {unanalyzed.length > 0 && (
+                    <button
+                      onClick={() => handleAnalyze(unanalyzed)}
+                      disabled={analyzingTables}
+                      className="flex items-center gap-1 bg-amber-900/40 hover:bg-amber-800/60 border border-amber-700/60 text-amber-300 px-2 py-0.5 rounded disabled:opacity-50 transition-colors whitespace-nowrap"
+                    >
+                      {analyzingTables ? <Spinner size={2} /> : <FlaskConical size={10} />}
+                      {unanalyzed.length} to analyze
+                    </button>
+                  )}
+                </div>
+
+                {/* col 7: debug sub */}
                 <button
                   onClick={() => setDebugSub({ subName: sub.sub_name, database: sub.database ?? '' })}
-                  className="flex items-center gap-1 text-xs text-gray-600 hover:text-gray-300 border border-gray-700 hover:border-gray-500 px-1.5 py-0.5 rounded transition-colors"
-                  title="Debug subscription — apply worker, WAL lag, conflicts"
+                  className="flex items-center gap-1 text-gray-600 hover:text-gray-300 border border-gray-700 hover:border-gray-500 px-1.5 py-0.5 rounded transition-colors shrink-0"
+                  title="Debug subscription"
                 >
                   <Bug size={10} /> debug sub
                 </button>
 
-                {/* Show/hide tables */}
+                {/* col 8: expand */}
                 <button
                   onClick={() => toggleSubExpanded(sub.sub_name)}
-                  className="flex items-center gap-1 text-gray-400 hover:text-gray-200 ml-auto"
+                  className="flex items-center gap-1 text-gray-400 hover:text-gray-200 shrink-0 whitespace-nowrap"
                 >
                   {subExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                   {subExpanded ? 'Hide tables' : 'Show tables'}
