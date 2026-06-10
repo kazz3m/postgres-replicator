@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { replicationApi, ReplicationSlotInfo, SubscriptionInfo, TableCopyProgress, CopyProgressResponse } from '../api/client'
+import { replicationApi, ReplicationSlotInfo, SubscriptionInfo, TableCopyProgress, CopyProgressResponse, ReplicationCapacity } from '../api/client'
 import { Badge } from '../components/Badge'
 import { DebugTableModal } from '../components/DebugTableModal'
 import { DebugSubscriptionModal } from '../components/DebugSubscriptionModal'
@@ -50,6 +50,30 @@ function statusVariant(s: string): 'green' | 'yellow' | 'blue' | 'red' | 'gray' 
   if (s === 'initializing' || s === 'catching up') return 'yellow'
   if (s === 'error') return 'red'
   return 'gray'
+}
+
+function CapacityPill({ label, used, max, active }: { label: string; used: number; max: number; active?: number }) {
+  const pct = max > 0 ? used / max : 0
+  const color = pct >= 0.9 ? 'text-red-400 border-red-800 bg-red-950/30'
+    : pct >= 0.7 ? 'text-yellow-400 border-yellow-800 bg-yellow-950/30'
+    : 'text-gray-400 border-gray-700 bg-gray-800/50'
+  const barColor = pct >= 0.9 ? 'bg-red-500' : pct >= 0.7 ? 'bg-yellow-500' : 'bg-blue-500'
+  return (
+    <div className={`flex items-center gap-2 border rounded px-2.5 py-1 ${color}`} title={`${label}: ${used} used of ${max} max${active !== undefined ? `, ${active} active` : ''}`}>
+      <div className="flex flex-col gap-0.5 min-w-0">
+        <div className="flex items-baseline gap-1 whitespace-nowrap">
+          <span className="font-semibold tabular-nums">{used}/{max}</span>
+          <span className="text-[10px] opacity-70">{label}</span>
+          {active !== undefined && active !== used && (
+            <span className="text-[10px] opacity-60">({active} active)</span>
+          )}
+        </div>
+        <div className="w-full bg-gray-700/50 rounded-full h-0.5">
+          <div className={`h-0.5 rounded-full ${barColor}`} style={{ width: `${Math.min(100, pct * 100)}%` }} />
+        </div>
+      </div>
+    </div>
+  )
 }
 
 interface Props {
@@ -202,6 +226,13 @@ export function StatusPage({ initialSnapshot }: Props) {
     initialData: initialSnapshot?.subscriptions,
   })
 
+  const { data: capacity } = useQuery<ReplicationCapacity>({
+    queryKey: ['capacity'],
+    queryFn: () => replicationApi.capacity().then(r => r.data),
+    refetchInterval: interval * 1000,
+    retry: false,
+  })
+
   useEffect(() => {
     replicationApi.getInterval().then(r => {
       setIntervalSecs(r.data.interval_seconds)
@@ -337,6 +368,21 @@ export function StatusPage({ initialSnapshot }: Props) {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-bold">Replication Status</h2>
+        {capacity && (
+          <div className="flex items-center gap-3 text-xs">
+            <CapacityPill
+              label="WAL senders"
+              used={capacity.wal_senders_used}
+              max={capacity.wal_senders_max}
+            />
+            <CapacityPill
+              label="slots"
+              used={capacity.slots_used}
+              max={capacity.slots_max}
+              active={capacity.slots_active}
+            />
+          </div>
+        )}
         <div className="flex items-center gap-3">
           {editInterval ? (
             <div className="flex items-center gap-2">

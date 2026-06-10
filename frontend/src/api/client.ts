@@ -258,7 +258,16 @@ export const rolesApi = {
     api.post<RolesApplyResponse>('/roles/apply', { statements, stop_on_error: stopOnError }),
 }
 
+export interface ReplicationCapacity {
+  wal_senders_max: number
+  wal_senders_used: number
+  slots_max: number
+  slots_used: number
+  slots_active: number
+}
+
 export const replicationApi = {
+  capacity: () => api.get<ReplicationCapacity>('/replication/capacity'),
   createPublication: (cfg: PublicationConfig) => api.post('/replication/publication', cfg),
   dropPublication: (name: string) => api.delete(`/replication/publication/${name}`),
   listPublications: () => api.get('/replication/publications'),

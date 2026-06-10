@@ -1509,6 +1509,34 @@ async def set_stats_interval(body: dict):
     return {"interval_seconds": state.stats_refresh_interval}
 
 
+# ── Capacity (wal_senders / slots) ────────────────────────────────────────────
+
+@router.get("/capacity")
+async def get_capacity():
+    """
+    Returns WAL sender and replication slot utilisation from source.
+    Used to display headroom info in the UI header.
+    """
+    _require_connection()
+    src_pool = await get_source_pool(state.source_dsn)
+    async with src_pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT
+                current_setting('max_wal_senders')::int      AS wal_senders_max,
+                current_setting('max_replication_slots')::int AS slots_max,
+                (SELECT count(*) FROM pg_stat_replication)    AS wal_senders_used,
+                (SELECT count(*) FROM pg_replication_slots)   AS slots_used,
+                (SELECT count(*) FROM pg_replication_slots WHERE active) AS slots_active
+        """)
+    return {
+        "wal_senders_max":    row["wal_senders_max"],
+        "wal_senders_used":   int(row["wal_senders_used"]),
+        "slots_max":          row["slots_max"],
+        "slots_used":         int(row["slots_used"]),
+        "slots_active":       int(row["slots_active"]),
+    }
+
+
 # ── Worker / Replication stats ────────────────────────────────────────────────
 
 @router.get("/worker-stats")
