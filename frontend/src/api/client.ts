@@ -278,8 +278,8 @@ export const replicationApi = {
     api.post(`/replication/subscription/${name}/pause${database ? `?database=${encodeURIComponent(database)}` : ''}`),
   resumeSubscription: (name: string, database?: string) =>
     api.post(`/replication/subscription/${name}/resume${database ? `?database=${encodeURIComponent(database)}` : ''}`),
-  addTableToPublication: (pubName: string, table: string) =>
-    api.post(`/replication/publication/${pubName}/add-table`, { table }),
+  addTableToPublication: (pubName: string, table: string, database?: string) =>
+    api.post(`/replication/publication/${pubName}/add-table`, { table, database }),
   dropTableFromPublication: (pubName: string, table: string, database?: string) =>
     api.delete(`/replication/publication/${pubName}/table?table=${encodeURIComponent(table)}${database ? `&database=${encodeURIComponent(database)}` : ''}`),
   refreshPublicationSubscriptions: (pubName: string, database?: string) =>

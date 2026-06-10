@@ -1646,22 +1646,25 @@ async def add_table_to_publication(pub_name: str, body: dict):
     that reference this publication.
     """
     _require_connection()
+    import asyncpg as _asyncpg
     table = body.get("table")  # "schema.table"
+    database: str | None = body.get("database")
     if not table or "." not in table:
         raise HTTPException(400, "table must be 'schema.table'")
 
-    src_pool = await get_source_pool(state.source_dsn)
-    async with src_pool.acquire() as conn:
-        # Validate publication exists
-        exists = await conn.fetchval(
+    src_dsn  = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    dest_dsn = dsn_for_database(state.dest_dsn,   database) if database else state.dest_dsn
+
+    src_conn = await _asyncpg.connect(src_dsn, timeout=15)
+    try:
+        exists = await src_conn.fetchval(
             "SELECT 1 FROM pg_publication WHERE pubname = $1", pub_name
         )
         if not exists:
             raise HTTPException(404, f"Publication '{pub_name}' not found.")
 
-        # Validate + quote table name safely
         schema, tname = table.split(".", 1)
-        safe = await conn.fetchval(
+        safe = await src_conn.fetchval(
             "SELECT quote_ident(table_schema)||'.'||quote_ident(table_name) "
             "FROM information_schema.tables "
             "WHERE table_schema = $1 AND table_name = $2",
@@ -1670,21 +1673,28 @@ async def add_table_to_publication(pub_name: str, body: dict):
         if not safe:
             raise HTTPException(400, f"Table '{table}' does not exist on source.")
 
-        await conn.execute(f'ALTER PUBLICATION "{pub_name}" ADD TABLE {safe}')
+        await src_conn.execute(f'ALTER PUBLICATION "{pub_name}" ADD TABLE {safe}')
+    finally:
+        await src_conn.close()
 
     # Refresh all subscriptions on dest that reference this publication
-    dest_pool = await get_dest_pool(state.dest_dsn)
+    dest_conn = await _asyncpg.connect(dest_dsn, timeout=15)
     refreshed = []
-    async with dest_pool.acquire() as conn:
-        subs = await conn.fetch(
-            "SELECT subname FROM pg_subscription WHERE $1 = ANY(subpublications)", pub_name
-        )
+    try:
+        try:
+            subs = await dest_conn.fetch(
+                "SELECT subname FROM pg_subscription WHERE $1 = ANY(subpublications)", pub_name
+            )
+        except Exception:
+            subs = []
         for sub in subs:
             try:
-                await conn.execute(f'ALTER SUBSCRIPTION "{sub["subname"]}" REFRESH PUBLICATION')
+                await dest_conn.execute(f'ALTER SUBSCRIPTION "{sub["subname"]}" REFRESH PUBLICATION')
                 refreshed.append(sub["subname"])
             except Exception as e:
-                raise HTTPException(500, f"Could not refresh subscription '{sub['subname']}': {e}")
+                pass  # best-effort refresh
+    finally:
+        await dest_conn.close()
 
     return {
         "status": "ok",

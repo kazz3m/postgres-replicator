@@ -57,7 +57,7 @@ export function PublicationManagerPanel({ pubName, database, subName }: Props) {
     const qualified = `${addSchema}.${addTable}`
     setAdding(true); setMsg(null)
     try {
-      await replicationApi.addTableToPublication(pubName, qualified)
+      await replicationApi.addTableToPublication(pubName, qualified, database)
       setMsg({ ok: true, text: `Added ${qualified} to publication. Subscriptions refreshed.` })
       refetchCfg()
       setAddTable(''); setShowAdd(false)
