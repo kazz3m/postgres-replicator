@@ -10,6 +10,14 @@ A web-based GUI for setting up, managing and monitoring **PostgreSQL logical rep
 
 ---
 
+<!-- Screenshots: drag PNG files onto a new GitHub Issue to get hosted URLs, then replace the placeholders below -->
+<!--
+![Status Page](docs/screenshots/status.png)
+![Schema Dump](docs/screenshots/schema_dump.png)
+-->
+
+---
+
 ## What is PostgreSQL Logical Replication?
 
 PostgreSQL logical replication streams row-level changes (INSERT, UPDATE, DELETE, TRUNCATE) from a **publisher** database to one or more **subscriber** databases in near real-time. Unlike physical (streaming) replication it is:
@@ -37,11 +45,14 @@ Common use cases: live migrations, reporting replicas, data warehousing, zero-do
 | **Subscription setup** | Create/update/drop subscriptions with `copy_data` toggle; verifies target tables exist on destination before applying; live step-by-step progress modal; auto-cleans orphaned replication slot on retry |
 | **Schema synchronization** | Inline schema diff and auto-create missing tables on destination before applying replication; no manual `pg_dump` required; full support for **partitioned tables** (detects `relkind='p'` parents and child partitions, correct DDL order, indexes propagated from parent) |
 | **Roles & grants migration** | `pg_dumpall --globals-only` compatible: generates and applies `CREATE ROLE`, `ALTER ROLE`, membership grants, schema grants, table grants and default privileges; Cloud SQL aware (strips `SUPERUSER`/`NOSUPERUSER`) |
-| **Live monitoring** | Per-subscription progress grouped by database; per-table states with human labels (`copying` / `catching up` / `synced` / `ready`); `pg_stat_replication.state` badge (streaming / catchup); aggregate copy progress bar (GB copied / total GB with %) per subscription; replication slot WAL lag; worker health via `pg_stat_subscription`; internal `pg_NNN_sync_NNN` worker slots automatically hidden; table sizes read from `pg_class.relpages` (no lock) — never blocks on long-running transactions |
+| **Live monitoring** | Per-subscription progress in aligned columns: name, status badges, DB badge, copy progress (GB / GB · % · progress bar), WAL lag + mini bar, copy speed (10-sample rolling avg MB/s), ETA per subscription and total ETA in the header; `pg_stat_replication.state` badge (streaming / catchup); internal `pg_NNN_sync_NNN` worker slots automatically hidden; table sizes read from `pg_class.relpages` (no lock) — never blocks on long-running transactions |
+| **Source capacity widget** | WAL senders (`X/max`) and replication slots (`X/max · Y active`) shown in the status page header with colour-coded mini progress bars (green → yellow → red at 70 % / 90 %) |
 | **Conflict handling** | Detect disabled subscriptions, show replication origin LSN, skip conflicting transaction via `ALTER SUBSCRIPTION … SKIP` |
 | **Sequence sync** | Detect and synchronise sequence values between source and destination after replication completes |
 | **Index sync** | Create missing indexes on destination that exist on source |
 | **Workspace persistence** | Named workspaces (profiles) stored in Docker volume or local `data/` directory; remembers table selection, last used timestamp, all publication configs |
+| **Subscription lifecycle** | Pause (`DISABLE`) / Resume (`ENABLE`) / Stop (disable + drop slot) / Drop subscription / Drop publication — all with per-database routing so multi-database setups work correctly |
+| **Vacuum truncate** | `VACUUM (TRUNCATE ONLY)` all destination tables for a stopped subscription — available only when the replication slot is gone; shows destination host + table list in confirmation modal |
 | **Reset replication** | Drop and recreate subscription + slot from scratch with one click and confirmation dialog |
 | **Refresh publication** | `ALTER SUBSCRIPTION … REFRESH PUBLICATION` without full resync |
 | **Stats interval** | Configurable auto-refresh interval for status page |
@@ -163,9 +174,15 @@ pg_dump --schema-only -n public source_db | psql destination_db
 
 The **Replication Progress** panel (Status tab) shows a live view refreshed every N seconds (configurable):
 
-- **Per-subscription row** — subscription name, `active`/`inactive` slot state, `pg_stat_replication` state badge (green `streaming`, yellow `catchup`), destination database badge, tables synced counter, aggregate copy progress (`X GB / Y GB · Z%` with progress bar), WAL lag
-- **Per-table detail** (expandable) — table state badge (`copying` / `catching up` / `synced` / `ready` / `error`), destination heap size, source heap size, rows copied, byte-level progress bar, last ANALYZE timestamp with one-click Analyze button
+- **Header** — total aggregate copy speed (10-sample rolling average across all active subscriptions), total ETA in `Xd Xh Xm` format, "Initial copy in progress" indicator
+- **Source capacity pills** — WAL senders (`X/max`) and replication slots (`X/max · Y active`) with colour-coded mini progress bars (green < 70 %, yellow 70–90 %, red ≥ 90 %)
+- **Per-subscription row** (table-aligned columns) — name, status badges (`active`/`inactive`, `streaming`/`catchup`), DB badge, tables synced counter, aggregate copy progress (`X GB / Y GB · Z%`), progress bar, per-subscription copy speed + ETA, WAL lag with mini bar, `N to analyze` button, debug button
+- **Per-table detail** (expandable) — table state badge, destination heap size, source heap size, rows copied, byte-level progress bar, last ANALYZE timestamp with one-click Analyze button
 - Internal PostgreSQL worker slots (`pg_NNN_sync_NNN_…`) are automatically filtered out and not shown
+
+### Copy speed and ETA
+
+Copy speed is computed client-side from the delta of destination heap bytes between consecutive polls. A **10-sample rolling average** is maintained per subscription to smooth out spikes from lock waits or network jitter. ETA is `remaining_bytes / avg_speed` and is shown both per subscription and as an aggregate total in the header. The estimate becomes reliable after ~3–4 poll intervals (30–40 s at the default 10 s interval).
 
 Source table sizes are fetched **once per database** (not on every poll) to avoid blocking the UI. They use `pg_class.relpages * block_size` instead of `pg_relation_size()` — the latter acquires `AccessShareLock` and can block indefinitely when a long-running transaction holds a lock on the table. `relpages` is lock-free and updated by `VACUUM`/`ANALYZE`, so values may be slightly stale but are always available immediately. Destination table sizes use `pg_relation_size()` (polled each cycle) so that bytes written during the initial COPY snapshot are tracked accurately in real time.
 
@@ -267,6 +284,24 @@ Key endpoints:
 | `GET` | `/api/profiles` | List saved workspace profiles |
 | `POST` | `/api/profiles` | Save new workspace profile |
 | `PATCH` | `/api/profiles/{id}` | Update workspace profile |
+
+---
+
+## Subscription Lifecycle
+
+Each subscription in the **Subscriptions** table has the following actions:
+
+| Action | When available | What it does |
+|---|---|---|
+| **Pause** | Slot active | `ALTER SUBSCRIPTION … DISABLE` — stops the apply worker, slot preserved, resume any time |
+| **Resume** | Slot active, sub disabled | `ALTER SUBSCRIPTION … ENABLE` — restarts from last confirmed LSN |
+| **Stop** | Sub enabled | Disable + `SET slot_name = NONE` + drop slot on source — graceful stop, data preserved |
+| **Reset** | Any | Drop + recreate subscription and slot from scratch — full resync |
+| **Drop sub** | Any | `DROP SUBSCRIPTION` on destination |
+| **Drop pub** | Any | `DROP PUBLICATION` on source |
+| **Vacuum** | Slot dropped | `VACUUM (TRUNCATE ONLY)` all destination tables — reclaims dead tuple storage without a full table scan |
+
+All actions that modify a subscription route to the correct destination database automatically, even in multi-database setups.
 
 ---
 
