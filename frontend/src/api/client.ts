@@ -247,8 +247,8 @@ export const schemaDumpApi = {
   snapshots: () => api.get<ReplicationSlotSnapshot[]>('/schema-dump/snapshots'),
   dump: (database: string, schemas: string[], snapshot?: string) =>
     api.post<SchemaDumpResponse>('/schema-dump/dump', { database, schemas, snapshot: snapshot || null }),
-  apply: (database: string, statements: string[], stopOnError = false) =>
-    api.post<SchemaApplyResponse>('/schema-dump/apply', { database, statements, stop_on_error: stopOnError }),
+  apply: (database: string, statements: string[], stopOnError = false, batch = false) =>
+    api.post<SchemaApplyResponse>('/schema-dump/apply', { database, statements, stop_on_error: stopOnError, batch }),
 }
 
 export const rolesApi = {

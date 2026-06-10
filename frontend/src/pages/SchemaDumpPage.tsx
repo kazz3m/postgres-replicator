@@ -16,6 +16,7 @@ export function SchemaDumpPage() {
   const [dumping, setDumping] = useState(false)
   const [applying, setApplying] = useState(false)
   const [stopOnError, setStopOnError] = useState(false)
+  const [batchMode, setBatchMode] = useState(false)
   const [statements, setStatements] = useState<string[] | null>(null)
   const [dumpStrategy, setDumpStrategy] = useState('')
   const [applyResults, setApplyResults] = useState<{ applied: number; failed: number; results: { sql: string; ok: boolean; error?: string }[] } | null>(null)
@@ -88,7 +89,7 @@ export function SchemaDumpPage() {
     if (!toApply.length) return
     setApplying(true); setError(''); setApplyResults(null)
     try {
-      const { data } = await schemaDumpApi.apply(selectedDb, toApply, stopOnError)
+      const { data } = await schemaDumpApi.apply(selectedDb, toApply, stopOnError, batchMode)
       setApplyResults(data)
     } catch (e: any) {
       setError(e.response?.data?.detail || e.message)
@@ -260,12 +261,21 @@ export function SchemaDumpPage() {
             <button onClick={() => setSelectedStmts(new Set())}
               className="text-xs text-gray-500 hover:text-gray-300">deselect all</button>
             <div className="ml-auto flex items-center gap-3">
-              <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
-                <input type="checkbox" checked={stopOnError}
-                  onChange={e => setStopOnError(e.target.checked)}
-                  className="accent-blue-500" />
-                Stop on error
+              <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer"
+                title="Execute all statements as a single string — handles multi-statement functions. No per-statement result tracking.">
+                <input type="checkbox" checked={batchMode}
+                  onChange={e => setBatchMode(e.target.checked)}
+                  className="accent-purple-500" />
+                Batch (single call)
               </label>
+              {!batchMode && (
+                <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
+                  <input type="checkbox" checked={stopOnError}
+                    onChange={e => setStopOnError(e.target.checked)}
+                    className="accent-blue-500" />
+                  Stop on error
+                </label>
+              )}
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-500">
                   dest: <span className="text-blue-300 font-mono">{selectedDb}</span>

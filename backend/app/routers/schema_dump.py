@@ -41,6 +41,8 @@ def _post_process_pg_dump(sql: str) -> list[str]:
         stripped = line.strip()
         if stripped.startswith("--"):
             continue
+        if stripped.startswith("\\"):       # psql meta-commands (\connect, \restrict, etc.)
+            continue
         if stripped.upper().startswith("SET "):
             continue
         if stripped.upper().startswith("SELECT PG_CATALOG"):
@@ -608,7 +610,12 @@ async def dump_schema(body: dict):
 async def apply_schema(body: dict):
     """
     Apply schema statements on destination database.
-    body: { "database": "dbname", "statements": ["...", ...], "stop_on_error": false }
+    body: {
+      "database": "dbname",
+      "statements": ["...", ...],
+      "stop_on_error": false,
+      "batch": false   -- if true, execute all statements as one string (faster, single transaction)
+    }
     """
     from .. import state as _state
     if not _state.dest_dsn:
@@ -617,17 +624,31 @@ async def apply_schema(body: dict):
     database: str = body.get("database", "")
     statements: list[str] = body.get("statements", [])
     stop_on_error: bool = body.get("stop_on_error", False)
+    batch: bool = body.get("batch", False)
 
     if not database or not statements:
         raise HTTPException(400, "database and statements are required.")
 
     dest_dsn = dsn_for_database(state.dest_dsn, database)
-    conn = await asyncpg.connect(dest_dsn, timeout=30)
+    conn = await asyncpg.connect(dest_dsn, timeout=120)
     results = []
     applied = 0
     failed = 0
 
     try:
+        if batch:
+            # Execute entire dump as one string — handles multi-statement functions,
+            # procedural code with semicolons, etc. No per-statement result tracking.
+            full_sql = "\n\n".join(statements)
+            try:
+                await conn.execute(full_sql)
+                applied = len(statements)
+                results = [{"sql": "(batch)", "ok": True}]
+            except Exception as e:
+                failed = len(statements)
+                results = [{"sql": "(batch)", "ok": False, "error": str(e)}]
+            return {"applied": applied, "failed": failed, "results": results}
+
         for stmt in statements:
             try:
                 await conn.execute(stmt)
