@@ -204,32 +204,27 @@ export function SchemaDumpPage() {
           )}
         </div>
 
-        {/* Snapshot selector — only when pg_dump is active */}
+        {/* Snapshot — only when pg_dump is active */}
         {cfg?.strategy === 'pg_dump' && (
           <div className="mt-3">
             <label className="block text-xs text-gray-500 mb-1">
-              Snapshot <span className="text-gray-600">(optional — use replication slot snapshot to avoid lock waits)</span>
+              Snapshot ID <span className="text-gray-600">(optional — avoids lock waits)</span>
             </label>
-            <select
-              value={selectedSnapshot}
-              onChange={e => setSelectedSnapshot(e.target.value)}
-              className="bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white outline-none focus:border-blue-500 min-w-64"
-            >
-              <option value="">— none (may wait for locks) —</option>
-              {snapshots?.map(s => (
-                <option key={s.slot_name} value={s.slot_name}>
-                  {s.slot_name} ({s.database}) @ {s.confirmed_flush_lsn}
-                </option>
-              ))}
-              {snapshots?.length === 0 && (
-                <option disabled>No active replication slots found</option>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={selectedSnapshot}
+                onChange={e => setSelectedSnapshot(e.target.value)}
+                placeholder="e.g. 00000004-000000B2-1"
+                className="bg-gray-800 border border-gray-600 focus:border-blue-500 rounded px-3 py-1.5 text-sm font-mono text-white outline-none w-72"
+              />
+              {selectedSnapshot && (
+                <span className="text-xs text-green-400">✓ --snapshot={selectedSnapshot}</span>
               )}
-            </select>
-            {selectedSnapshot && (
-              <p className="text-xs text-green-400 mt-1">
-                ✓ pg_dump --snapshot={selectedSnapshot} — no lock waits
-              </p>
-            )}
+            </div>
+            <p className="text-xs text-gray-600 mt-1">
+              To get a snapshot ID: <code className="text-gray-400">BEGIN; SELECT pg_export_snapshot();</code> — keep the transaction open while pg_dump runs, then COMMIT.
+            </p>
           </div>
         )}
 

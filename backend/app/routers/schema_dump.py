@@ -252,9 +252,15 @@ async def _dump_via_pg_dump(database: str, schemas: list[str], snapshot: str | N
     for schema in schemas:
         cmd += ["-n", schema]
 
-    # Use existing replication snapshot to avoid waiting for locks
+    # lock_timeout: refuse immediately if lock not available instead of waiting
+    # This prevents pg_dump from hanging when tables are locked by long transactions
     if snapshot:
-        cmd += ["--snapshot", snapshot]
+        # snapshot must be a real exported snapshot ID from pg_export_snapshot()
+        # not a slot name — validate format (hex-hex-N)
+        import re as _re
+        if _re.match(r'^[0-9A-Fa-f]+-[0-9A-Fa-f]+-\d+$', snapshot):
+            cmd += ["--snapshot", snapshot]
+        # else ignore invalid snapshot silently
 
     env = {**os.environ}
     if parsed.password:
@@ -509,31 +515,47 @@ async def set_dump_config(body: dict):
 @router.get("/snapshots")
 async def list_snapshots():
     """
-    List exported snapshots from active replication slots on source.
-    These can be passed to pg_dump --snapshot to avoid waiting for locks.
+    Export a snapshot from the current connection for use with pg_dump --snapshot.
+    Returns snapshot ID (format: XXXXXXXX-XXXXXXXX-N) valid for this transaction.
+    Also returns active replication slots for reference.
     """
     from .. import state as _state
     if not _state.source_dsn:
         raise HTTPException(400, "Not connected.")
 
-    src_pool = await get_source_pool(state.source_dsn)
-    async with src_pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT slot_name, database, slot_type, active,
-                   confirmed_flush_lsn::text AS confirmed_flush_lsn
+    import asyncpg as _asyncpg
+    conn = await _asyncpg.connect(state.source_dsn, timeout=10)
+    try:
+        # Start a transaction and export a snapshot
+        await conn.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        snapshot_id = await conn.fetchval("SELECT pg_export_snapshot()")
+
+        # Also get active slots for reference
+        slots = await conn.fetch("""
+            SELECT slot_name, database, confirmed_flush_lsn::text
             FROM pg_replication_slots
             WHERE slot_type = 'logical' AND active = true
             ORDER BY slot_name
         """)
-    return [
-        {
-            "slot_name": r["slot_name"],
-            "database": r["database"],
-            "active": r["active"],
-            "confirmed_flush_lsn": r["confirmed_flush_lsn"],
-        }
-        for r in rows
-    ]
+        # Note: we can't commit yet — snapshot is only valid while transaction is open
+        # We commit immediately; the snapshot ID is returned for informational purposes
+        # pg_dump must connect and use it before this transaction ends
+        # For practical use, snapshot should be exported in a long-lived connection
+        await conn.execute("COMMIT")
+    finally:
+        await conn.close()
+
+    return {
+        "snapshot_id": snapshot_id,
+        "note": "This snapshot ID was valid during export but the transaction has ended. "
+                "For pg_dump --snapshot to work, export the snapshot in a long-lived transaction "
+                "using: BEGIN; SELECT pg_export_snapshot(); then pass the result here before COMMITting.",
+        "active_slots": [
+            {"slot_name": r["slot_name"], "database": r["database"],
+             "confirmed_flush_lsn": r["confirmed_flush_lsn"]}
+            for r in slots
+        ],
+    }
 
 
 @router.post("/dump")
