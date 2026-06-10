@@ -1590,13 +1590,14 @@ async def skip_lsn(body: dict):
 # ── Stop subscription ─────────────────────────────────────────────────────────
 
 @router.post("/subscription/{name}/stop")
-async def stop_subscription(name: str):
+async def stop_subscription(name: str, database: str | None = None):
     """
     Gracefully stop replication: DISABLE subscription on dest, drop slot on source.
     Leaves tables and data intact. Use reset to restart from scratch.
     """
     _require_connection()
-    dest_pool = await get_dest_pool(state.dest_dsn)
+    dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
+    dest_pool = await get_dest_pool(dest_dsn)
     src_pool = await get_source_pool(state.source_dsn)
 
     async with dest_pool.acquire() as conn:

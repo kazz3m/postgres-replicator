@@ -229,7 +229,7 @@ export function StatusPage({ initialSnapshot }: Props) {
   async function handleStop(subName: string) {
     setActionLoading(true); setActionError('')
     try {
-      await replicationApi.stopSubscription(subName)
+      await replicationApi.stopSubscription(subName, getSubDatabase(subName))
       refetchProgress(); refetchSlots(); refetchSubs()
     } catch (e: any) {
       setActionError(e.response?.data?.detail || e.message)
