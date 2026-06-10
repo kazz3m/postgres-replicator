@@ -521,8 +521,8 @@ export function StatusPage({ initialSnapshot }: Props) {
             <col style={{ width: 24 }} />        {/* icon */}
             <col style={{ width: '16%' }} />     {/* name */}
             <col style={{ width: '20%' }} />     {/* badges */}
-            <col />                              {/* progress — takes remaining */}
-            <col style={{ width: '14%' }} />     {/* WAL lag + speed */}
+            <col style={{ width: '26%' }} />     {/* progress */}
+            <col style={{ width: '18%' }} />     {/* WAL lag + speed */}
             <col style={{ width: 96 }} />        {/* analyze */}
             <col style={{ width: 70 }} />        {/* debug */}
             <col style={{ width: 88 }} />        {/* expand */}
