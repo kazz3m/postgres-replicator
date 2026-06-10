@@ -1451,11 +1451,13 @@ async def reset_replication(subscription_name: str):
 # ── Pause / Resume ────────────────────────────────────────────────────────────
 
 @router.post("/subscription/{name}/pause")
-async def pause_subscription(name: str):
+async def pause_subscription(name: str, database: str | None = None):
     """ALTER SUBSCRIPTION ... DISABLE — stops apply worker, keeps slot intact."""
     _require_connection()
-    pool = await get_dest_pool(state.dest_dsn)
-    async with pool.acquire() as conn:
+    import asyncpg as _asyncpg
+    dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
+    conn = await _asyncpg.connect(dest_dsn, timeout=10)
+    try:
         row = await conn.fetchrow(
             "SELECT subenabled FROM pg_subscription WHERE subname = $1", name
         )
@@ -1464,15 +1466,19 @@ async def pause_subscription(name: str):
         if not row["subenabled"]:
             return {"status": "already_paused", "subscription_name": name}
         await conn.execute(f'ALTER SUBSCRIPTION "{name}" DISABLE')
+    finally:
+        await conn.close()
     return {"status": "paused", "subscription_name": name}
 
 
 @router.post("/subscription/{name}/resume")
-async def resume_subscription(name: str):
+async def resume_subscription(name: str, database: str | None = None):
     """ALTER SUBSCRIPTION ... ENABLE — restarts apply worker from where it left off."""
     _require_connection()
-    pool = await get_dest_pool(state.dest_dsn)
-    async with pool.acquire() as conn:
+    import asyncpg as _asyncpg
+    dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
+    conn = await _asyncpg.connect(dest_dsn, timeout=10)
+    try:
         row = await conn.fetchrow(
             "SELECT subenabled FROM pg_subscription WHERE subname = $1", name
         )
@@ -1481,6 +1487,8 @@ async def resume_subscription(name: str):
         if row["subenabled"]:
             return {"status": "already_running", "subscription_name": name}
         await conn.execute(f'ALTER SUBSCRIPTION "{name}" ENABLE')
+    finally:
+        await conn.close()
     return {"status": "resumed", "subscription_name": name}
 
 

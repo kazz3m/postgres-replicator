@@ -235,10 +235,14 @@ export function StatusPage({ initialSnapshot }: Props) {
     }
   }
 
+  function getSubDatabase(subName: string): string | undefined {
+    return copyData?.subscriptions?.find(s => s.sub_name === subName)?.database ?? undefined
+  }
+
   async function handlePause(subName: string) {
     setActionLoading(true); setActionError('')
     try {
-      await replicationApi.pauseSubscription(subName)
+      await replicationApi.pauseSubscription(subName, getSubDatabase(subName))
       refetchProgress(); refetchSubs()
     } catch (e: any) {
       setActionError(e.response?.data?.detail || e.message)
@@ -250,7 +254,7 @@ export function StatusPage({ initialSnapshot }: Props) {
   async function handleResume(subName: string) {
     setActionLoading(true); setActionError('')
     try {
-      await replicationApi.resumeSubscription(subName)
+      await replicationApi.resumeSubscription(subName, getSubDatabase(subName))
       refetchProgress(); refetchSubs()
     } catch (e: any) {
       setActionError(e.response?.data?.detail || e.message)

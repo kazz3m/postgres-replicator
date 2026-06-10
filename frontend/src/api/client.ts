@@ -236,8 +236,10 @@ export const replicationApi = {
   workerStats: () => api.get<WorkerStat[]>('/replication/worker-stats'),
   listSubscriptionsTyped: () => api.get<SubscriptionInfo[]>('/replication/subscriptions'),
   stopSubscription: (name: string) => api.post(`/replication/subscription/${name}/stop`),
-  pauseSubscription: (name: string) => api.post(`/replication/subscription/${name}/pause`),
-  resumeSubscription: (name: string) => api.post(`/replication/subscription/${name}/resume`),
+  pauseSubscription: (name: string, database?: string) =>
+    api.post(`/replication/subscription/${name}/pause${database ? `?database=${encodeURIComponent(database)}` : ''}`),
+  resumeSubscription: (name: string, database?: string) =>
+    api.post(`/replication/subscription/${name}/resume${database ? `?database=${encodeURIComponent(database)}` : ''}`),
   addTableToPublication: (pubName: string, table: string) =>
     api.post(`/replication/publication/${pubName}/add-table`, { table }),
   listSequences: () => api.get<SequenceInfo[]>('/replication/sequences'),
