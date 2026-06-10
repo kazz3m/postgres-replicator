@@ -735,12 +735,19 @@ async def debug_subscription(sub_name: str, database: str):
             result["subscription_error"] = str(e)
 
         # pg_replication_origin_status — last applied LSN
+        # Cloud SQL does not grant access to this view — skip silently
         try:
-            origin_rows = await dc.fetch("""
-                SELECT external_id, remote_lsn::text, local_lsn::text
-                FROM pg_replication_origin_status
-            """)
-            result["replication_origin"] = [dict(r) for r in origin_rows]
+            is_cloud_sql = await dc.fetchval(
+                "SELECT 1 FROM pg_database WHERE datname = 'cloudsqladmin'"
+            )
+            if is_cloud_sql:
+                result["replication_origin"] = []
+            else:
+                origin_rows = await dc.fetch("""
+                    SELECT external_id, remote_lsn::text, local_lsn::text
+                    FROM pg_replication_origin_status
+                """)
+                result["replication_origin"] = [dict(r) for r in origin_rows]
         except Exception as e:
             result["replication_origin_error"] = str(e)
 
