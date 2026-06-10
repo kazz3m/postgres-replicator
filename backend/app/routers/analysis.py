@@ -73,8 +73,8 @@ async def list_database_schema_list(database: str):
             SELECT
                 n.nspname AS schema_name,
                 COUNT(c.oid) AS table_count,
-                COALESCE(SUM(pg_total_relation_size(c.oid)), 0) AS total_size_bytes,
-                pg_size_pretty(COALESCE(SUM(pg_total_relation_size(c.oid)), 0)) AS total_size_pretty
+                COALESCE(SUM(c.relpages::bigint * current_setting('block_size')::bigint), 0) AS total_size_bytes,
+                pg_size_pretty(COALESCE(SUM(c.relpages::bigint * current_setting('block_size')::bigint), 0)) AS total_size_pretty
             FROM pg_namespace n
             LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relkind = 'r'
             WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast', 'pg_temp_1', 'pg_toast_temp_1')
@@ -114,12 +114,8 @@ async def list_schema_tables(database: str, schema: str):
         rows = await conn.fetch("""
             SELECT
                 t.table_name,
-                COALESCE(pg_total_relation_size(
-                    quote_ident(t.table_schema)||'.'||quote_ident(t.table_name)
-                ), 0) AS size_bytes,
-                pg_size_pretty(COALESCE(pg_total_relation_size(
-                    quote_ident(t.table_schema)||'.'||quote_ident(t.table_name)
-                ), 0)) AS size_pretty,
+                COALESCE(c.relpages::bigint * current_setting('block_size')::bigint, 0) AS size_bytes,
+                pg_size_pretty(COALESCE(c.relpages::bigint * current_setting('block_size')::bigint, 0)) AS size_pretty,
                 COALESCE(c.reltuples::bigint, 0) AS row_estimate,
                 c.relreplident,
                 c.relkind = 'p'          AS is_partitioned,
@@ -167,12 +163,8 @@ async def list_database_schemas(database: str):
             SELECT
                 t.table_schema,
                 t.table_name,
-                COALESCE(pg_total_relation_size(
-                    quote_ident(t.table_schema)||'.'||quote_ident(t.table_name)
-                ), 0) AS size_bytes,
-                pg_size_pretty(COALESCE(pg_total_relation_size(
-                    quote_ident(t.table_schema)||'.'||quote_ident(t.table_name)
-                ), 0)) AS size_pretty,
+                COALESCE(c.relpages::bigint * current_setting('block_size')::bigint, 0) AS size_bytes,
+                pg_size_pretty(COALESCE(c.relpages::bigint * current_setting('block_size')::bigint, 0)) AS size_pretty,
                 COALESCE(c.reltuples::bigint, 0) AS row_estimate,
                 c.relreplident
             FROM information_schema.tables t
@@ -295,8 +287,8 @@ async def list_schemas():
             SELECT
                 t.table_schema,
                 t.table_name,
-                COALESCE(pg_total_relation_size(quote_ident(t.table_schema)||'.'||quote_ident(t.table_name)), 0) AS size_bytes,
-                pg_size_pretty(COALESCE(pg_total_relation_size(quote_ident(t.table_schema)||'.'||quote_ident(t.table_name)), 0)) AS size_pretty,
+                COALESCE(c.relpages::bigint * current_setting('block_size')::bigint, 0) AS size_bytes,
+                pg_size_pretty(COALESCE(c.relpages::bigint * current_setting('block_size')::bigint, 0)) AS size_pretty,
                 COALESCE(c.reltuples::bigint, 0) AS row_estimate,
                 c.relreplident
             FROM information_schema.tables t
