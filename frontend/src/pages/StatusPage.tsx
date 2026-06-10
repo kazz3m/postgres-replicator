@@ -4,6 +4,7 @@ import { replicationApi, ReplicationSlotInfo, SubscriptionInfo, TableCopyProgres
 import { Badge } from '../components/Badge'
 import { DebugTableModal } from '../components/DebugTableModal'
 import { DebugSubscriptionModal } from '../components/DebugSubscriptionModal'
+import { PublicationManagerPanel } from '../components/PublicationManagerPanel'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { Spinner } from '../components/Spinner'
 import { SequenceSyncPanel } from '../components/SequenceSyncPanel'
@@ -108,6 +109,8 @@ export function StatusPage({ initialSnapshot }: Props) {
   }
   // Debug modal (table)
   const [debugTarget, setDebugTarget] = useState<{ schema: string; table: string; database: string; subName: string } | null>(null)
+  // Publication manager
+  const [managePub, setManagePub] = useState<{ pubName: string; database: string; subName: string } | null>(null)
   // Debug modal (subscription)
   const [debugSub, setDebugSub] = useState<{ subName: string; database: string } | null>(null)
 
@@ -655,20 +658,36 @@ export function StatusPage({ initialSnapshot }: Props) {
                     </td>
                     <td className="px-4 py-2">
                       <div className="flex flex-wrap gap-1 items-center">
-                        {sub.subpublications?.map((p: string) => (
-                          <button
-                            key={p}
-                            onClick={() => setSchemaPub(schemaPub === p ? null : p)}
-                            className={`text-xs px-1.5 py-0.5 rounded border transition-colors ${
-                              schemaPub === p
-                                ? 'border-blue-500 text-blue-300 bg-blue-900/30'
-                                : 'border-gray-700 text-gray-400 hover:border-gray-500'
-                            }`}
-                            title="Show schema / sequence panel for this publication"
-                          >
-                            {p}
-                          </button>
-                        ))}
+                        {sub.subpublications?.map((p: string) => {
+                          const db = getSubDatabase(sub.subname) ?? ''
+                          const isManaging = managePub?.pubName === p && managePub?.database === db
+                          return (
+                            <div key={p} className="flex items-center gap-1">
+                              <button
+                                onClick={() => setSchemaPub(schemaPub === p ? null : p)}
+                                className={`text-xs px-1.5 py-0.5 rounded border transition-colors ${
+                                  schemaPub === p
+                                    ? 'border-blue-500 text-blue-300 bg-blue-900/30'
+                                    : 'border-gray-700 text-gray-400 hover:border-gray-500'
+                                }`}
+                                title="Show schema / sequence panel for this publication"
+                              >
+                                {p}
+                              </button>
+                              <button
+                                onClick={() => setManagePub(isManaging ? null : { pubName: p, database: db, subName: sub.subname })}
+                                className={clsx('text-xs px-1.5 py-0.5 rounded border transition-colors',
+                                  isManaging
+                                    ? 'border-purple-500 text-purple-300 bg-purple-900/30'
+                                    : 'border-gray-700 text-gray-500 hover:border-gray-500 hover:text-gray-300'
+                                )}
+                                title="Manage publication tables"
+                              >
+                                Manage
+                              </button>
+                            </div>
+                          )
+                        })}
                       </div>
                     </td>
                     <td className="px-4 py-2 text-gray-400">{sub.subslotname || '–'}</td>
@@ -757,6 +776,15 @@ export function StatusPage({ initialSnapshot }: Props) {
           </>
         )}
       </div>
+
+      {/* Publication manager — shown when Manage clicked */}
+      {managePub && (
+        <PublicationManagerPanel
+          pubName={managePub.pubName}
+          database={managePub.database}
+          subName={managePub.subName}
+        />
+      )}
 
       {/* Roles & Grants migration — always available */}
       <RolesSyncPanel />

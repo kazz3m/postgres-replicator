@@ -1694,6 +1694,63 @@ async def add_table_to_publication(pub_name: str, body: dict):
     }
 
 
+@router.delete("/publication/{pub_name}/table")
+async def drop_table_from_publication(pub_name: str, table: str, database: str | None = None):
+    """
+    ALTER PUBLICATION pub DROP TABLE schema.table
+    table: query param "schema.table"
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+    if not table or "." not in table:
+        raise HTTPException(400, "table must be 'schema.table'")
+    schema, tname = table.split(".", 1)
+
+    src_dsn = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    conn = await _asyncpg.connect(src_dsn, timeout=15)
+    try:
+        exists = await conn.fetchval("SELECT 1 FROM pg_publication WHERE pubname = $1", pub_name)
+        if not exists:
+            raise HTTPException(404, f"Publication '{pub_name}' not found.")
+        await conn.execute(f'ALTER PUBLICATION "{pub_name}" DROP TABLE "{schema}"."{tname}"')
+    finally:
+        await conn.close()
+
+    return {"status": "ok", "publication": pub_name, "table_dropped": table}
+
+
+@router.post("/publication/{pub_name}/refresh-subscriptions")
+async def refresh_publication_subscriptions(pub_name: str, database: str | None = None):
+    """
+    ALTER SUBSCRIPTION ... REFRESH PUBLICATION for all subscriptions referencing this publication.
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+    dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
+    conn = await _asyncpg.connect(dest_dsn, timeout=15)
+    refreshed = []
+    errors = []
+    try:
+        try:
+            subs = await conn.fetch(
+                "SELECT subname FROM pg_subscription WHERE $1 = ANY(subpublications)", pub_name
+            )
+        except Exception:
+            subs = await conn.fetch(
+                "SELECT subname FROM pg_stat_subscription WHERE subname IS NOT NULL GROUP BY subname"
+            )
+        for sub in subs:
+            try:
+                await conn.execute(f'ALTER SUBSCRIPTION "{sub["subname"]}" REFRESH PUBLICATION')
+                refreshed.append(sub["subname"])
+            except Exception as e:
+                errors.append({"sub": sub["subname"], "error": str(e)})
+    finally:
+        await conn.close()
+
+    return {"status": "ok", "refreshed": refreshed, "errors": errors}
+
+
 # ── Sequence sync ─────────────────────────────────────────────────────────────
 
 @router.get("/sequences", response_model=List[SequenceInfo])
