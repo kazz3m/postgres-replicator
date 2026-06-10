@@ -275,6 +275,12 @@ export const replicationApi = {
   listSubscriptionsTyped: () => api.get<SubscriptionInfo[]>('/replication/subscriptions'),
   stopSubscription: (name: string, database?: string) =>
     api.post(`/replication/subscription/${name}/stop${database ? `?database=${encodeURIComponent(database)}` : ''}`),
+  subscriptionTables: (name: string, database?: string) =>
+    api.get<{ dest_host: string; tables: string[] }>(`/replication/subscription/${name}/tables${database ? `?database=${encodeURIComponent(database)}` : ''}`),
+  vacuumTruncate: (name: string, database?: string) =>
+    api.post<{ dest_host: string; applied: number; failed: number; results: { table: string; ok: boolean; error?: string }[] }>(
+      `/replication/subscription/${name}/vacuum-truncate${database ? `?database=${encodeURIComponent(database)}` : ''}`
+    ),
   pauseSubscription: (name: string, database?: string) =>
     api.post(`/replication/subscription/${name}/pause${database ? `?database=${encodeURIComponent(database)}` : ''}`),
   resumeSubscription: (name: string, database?: string) =>

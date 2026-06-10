@@ -1638,6 +1638,96 @@ async def stop_subscription(name: str, database: str | None = None):
     return {"status": "stopped", "subscription_name": name, "slot_dropped": bool(slot_name)}
 
 
+# ── Vacuum truncate ────────────────────────────────────────────────────────────
+
+@router.post("/subscription/{name}/vacuum-truncate")
+async def vacuum_truncate_subscription(name: str, database: str | None = None):
+    """
+    VACUUM (TRUNCATE ONLY) on all destination tables in the subscription.
+    Returns per-table results. Only allowed when the slot is absent (replication stopped).
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+    import urllib.parse
+
+    dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
+
+    # Parse host for informational response
+    parsed = urllib.parse.urlparse(dest_dsn)
+    dest_host = f"{parsed.hostname}:{parsed.port or 5432}{parsed.path}"
+
+    dest_conn = await _asyncpg.connect(dest_dsn, timeout=10)
+    try:
+        # Fetch subscription tables from pg_subscription_rel + pg_class
+        tables = await dest_conn.fetch("""
+            SELECT n.nspname AS schema_name, c.relname AS table_name
+            FROM pg_subscription s
+            JOIN pg_subscription_rel sr ON sr.srsubid = s.oid
+            JOIN pg_class c ON c.oid = sr.srrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE s.subname = $1
+            ORDER BY n.nspname, c.relname
+        """, name)
+
+        if not tables:
+            raise HTTPException(404, f"Subscription '{name}' not found or has no tracked tables.")
+
+        results = []
+        for row in tables:
+            schema = row["schema_name"]
+            table = row["table_name"]
+            qualified = f'"{schema}"."{table}"'
+            try:
+                await dest_conn.execute(f"VACUUM (TRUNCATE ONLY) {qualified}")
+                results.append({"table": f"{schema}.{table}", "ok": True})
+            except Exception as e:
+                results.append({"table": f"{schema}.{table}", "ok": False, "error": str(e)})
+    finally:
+        await dest_conn.close()
+
+    applied = sum(1 for r in results if r["ok"])
+    failed = sum(1 for r in results if not r["ok"])
+    return {
+        "dest_host": dest_host,
+        "applied": applied,
+        "failed": failed,
+        "results": results,
+    }
+
+
+# ── Get subscription tables (for vacuum preview) ───────────────────────────────
+
+@router.get("/subscription/{name}/tables")
+async def get_subscription_tables(name: str, database: str | None = None):
+    """Returns list of tables tracked by the subscription on destination."""
+    _require_connection()
+    import asyncpg as _asyncpg
+    import urllib.parse
+
+    dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
+    parsed = urllib.parse.urlparse(dest_dsn)
+    dest_host = f"{parsed.hostname}:{parsed.port or 5432}{parsed.path}"
+
+    dest_conn = await _asyncpg.connect(dest_dsn, timeout=10)
+    try:
+        tables = await dest_conn.fetch("""
+            SELECT n.nspname AS schema_name, c.relname AS table_name
+            FROM pg_subscription s
+            JOIN pg_subscription_rel sr ON sr.srsubid = s.oid
+            JOIN pg_class c ON c.oid = sr.srrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE s.subname = $1
+            ORDER BY n.nspname, c.relname
+        """, name)
+    finally:
+        await dest_conn.close()
+
+    return {
+        "dest_host": dest_host,
+        "tables": [f"{r['schema_name']}.{r['table_name']}" for r in tables],
+    }
+
+
 # ── Add table to publication ──────────────────────────────────────────────────
 
 @router.post("/publication/{pub_name}/add-table")

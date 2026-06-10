@@ -64,6 +64,9 @@ export function StatusPage({ initialSnapshot }: Props) {
   const [confirmReset, setConfirmReset] = useState<string | null>(null)
   const [confirmStop, setConfirmStop] = useState<string | null>(null)
   const [confirmDropSlot, setConfirmDropSlot] = useState<string | null>(null)
+  const [vacuumTarget, setVacuumTarget] = useState<{ subName: string; destHost: string; tables: string[] } | null>(null)
+  const [vacuumLoading, setVacuumLoading] = useState(false)
+  const [vacuumResult, setVacuumResult] = useState<{ applied: number; failed: number; results: { table: string; ok: boolean; error?: string }[] } | null>(null)
   const [actionLoading, setActionLoading] = useState(false)
   const [actionError, setActionError] = useState('')
   // Add table to publication — modal
@@ -242,6 +245,12 @@ export function StatusPage({ initialSnapshot }: Props) {
     return copyData?.subscriptions?.find(s => s.sub_name === subName)?.database ?? undefined
   }
 
+  function isSlotDropped(sub: any): boolean {
+    // Slot is gone if subslotname is null/empty OR the slot doesn't appear in the slots list
+    if (!sub.subslotname) return true
+    return !(slots ?? []).some((s: ReplicationSlotInfo) => s.slot_name === sub.subslotname)
+  }
+
   async function handlePause(subName: string) {
     setActionLoading(true); setActionError('')
     try {
@@ -283,6 +292,32 @@ export function StatusPage({ initialSnapshot }: Props) {
       setActionError(e.response?.data?.detail || e.message)
     } finally {
       setActionLoading(false); setConfirmDropSlot(null)
+    }
+  }
+
+  async function handleVacuumOpen(subName: string) {
+    const db = getSubDatabase(subName)
+    try {
+      const res = await replicationApi.subscriptionTables(subName, db)
+      setVacuumTarget({ subName, destHost: res.data.dest_host, tables: res.data.tables })
+      setVacuumResult(null)
+    } catch (e: any) {
+      setActionError(e.response?.data?.detail || e.message)
+    }
+  }
+
+  async function handleVacuumRun() {
+    if (!vacuumTarget) return
+    setVacuumLoading(true)
+    try {
+      const db = getSubDatabase(vacuumTarget.subName)
+      const res = await replicationApi.vacuumTruncate(vacuumTarget.subName, db)
+      setVacuumResult(res.data)
+    } catch (e: any) {
+      setActionError(e.response?.data?.detail || e.message)
+      setVacuumTarget(null)
+    } finally {
+      setVacuumLoading(false)
     }
   }
 
@@ -723,6 +758,14 @@ export function StatusPage({ initialSnapshot }: Props) {
                           Reset
                         </button>
                         <button
+                          onClick={() => handleVacuumOpen(sub.subname)}
+                          disabled={actionLoading || !isSlotDropped(sub)}
+                          title={isSlotDropped(sub) ? 'VACUUM (TRUNCATE ONLY) all destination tables — reclaims dead tuple storage' : 'Available only after slot is dropped (replication stopped)'}
+                          className="text-xs text-teal-400/70 hover:text-teal-300 border border-teal-900/50 hover:border-teal-700 px-2 py-1 rounded disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1"
+                        >
+                          <Database size={10} /> Vacuum
+                        </button>
+                        <button
                           onClick={() => setConfirmDropSlot(sub.subslotname || sub.subname)}
                           disabled={actionLoading}
                           className="text-xs text-red-500/60 hover:text-red-400 border border-red-900/50 hover:border-red-800 px-2 py-1 rounded disabled:opacity-30"
@@ -838,6 +881,71 @@ export function StatusPage({ initialSnapshot }: Props) {
           onConfirm={() => handleDropSlot(confirmDropSlot)}
           onCancel={() => setConfirmDropSlot(null)}
         />
+      )}
+
+      {vacuumTarget && !vacuumResult && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 max-w-lg w-full mx-4">
+            <h3 className="text-lg font-bold text-teal-400 mb-1">Vacuum Destination Tables</h3>
+            <p className="text-gray-400 text-xs mb-3">
+              Runs <code className="bg-gray-800 px-1 rounded">VACUUM (TRUNCATE ONLY)</code> on all replicated tables.<br />
+              This reclaims dead tuple storage without a full table scan.
+            </p>
+            <div className="bg-gray-800 rounded px-3 py-2 mb-4 text-xs">
+              <span className="text-gray-500">Destination: </span>
+              <span className="text-teal-300 font-mono">{vacuumTarget.destHost}</span>
+            </div>
+            <div className="mb-4">
+              <div className="text-xs text-gray-500 mb-1">{vacuumTarget.tables.length} tables:</div>
+              <div className="max-h-48 overflow-y-auto bg-gray-950 rounded border border-gray-800 px-3 py-2 space-y-0.5">
+                {vacuumTarget.tables.map(t => (
+                  <div key={t} className="font-mono text-xs text-gray-300">{t}</div>
+                ))}
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setVacuumTarget(null)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+              >Cancel</button>
+              <button
+                onClick={handleVacuumRun}
+                disabled={vacuumLoading}
+                className="px-4 py-2 bg-teal-700 hover:bg-teal-600 rounded text-sm font-semibold flex items-center gap-2 disabled:opacity-50"
+              >
+                {vacuumLoading ? <Spinner size={3} /> : <Database size={13} />}
+                Run Vacuum
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {vacuumResult && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 max-w-lg w-full mx-4">
+            <h3 className="text-lg font-bold text-teal-400 mb-3">Vacuum Complete</h3>
+            <div className="flex gap-4 mb-4 text-sm">
+              <span className="text-green-400">✓ {vacuumResult.applied} succeeded</span>
+              {vacuumResult.failed > 0 && <span className="text-red-400">✗ {vacuumResult.failed} failed</span>}
+            </div>
+            <div className="max-h-64 overflow-y-auto bg-gray-950 rounded border border-gray-800 px-3 py-2 space-y-1">
+              {vacuumResult.results.map(r => (
+                <div key={r.table} className="flex items-start gap-2 text-xs font-mono">
+                  <span className={r.ok ? 'text-green-500' : 'text-red-400'}>{r.ok ? '✓' : '✗'}</span>
+                  <span className={r.ok ? 'text-gray-300' : 'text-red-300'}>{r.table}</span>
+                  {r.error && <span className="text-red-500 text-[10px] ml-1">{r.error}</span>}
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end mt-4">
+              <button
+                onClick={() => { setVacuumTarget(null); setVacuumResult(null) }}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+              >Close</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {debugSub && (
