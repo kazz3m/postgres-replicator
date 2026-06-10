@@ -22,6 +22,10 @@ export function SchemaDumpPage() {
   const [applyResults, setApplyResults] = useState<{ applied: number; failed: number; results: { sql: string; ok: boolean; error?: string }[] } | null>(null)
   const [streamLog, setStreamLog] = useState<{ i: number; sql: string; ok: boolean; error?: string }[]>([])
   const [streamDone, setStreamDone] = useState<{ applied: number; failed: number } | null>(null)
+  const [pipeMode, setPipeMode] = useState(false)
+  const [pipeLog, setPipeLog] = useState<{ line: string; error: boolean }[]>([])
+  const [pipeDone, setPipeDone] = useState<{ ok: boolean; exit_code: number } | null>(null)
+  const [piping, setPiping] = useState(false)
   const [error, setError] = useState('')
   const [expandedStmt, setExpandedStmt] = useState<Set<number>>(new Set())
   const [selectedStmts, setSelectedStmts] = useState<Set<number>>(new Set())
@@ -126,6 +130,40 @@ export function SchemaDumpPage() {
       setError(e.message)
     } finally {
       setApplying(false)
+    }
+  }
+
+  async function runPipe() {
+    if (!selectedDb || selectedSchemas.size === 0) return
+    setPiping(true); setPipeLog([]); setPipeDone(null); setError('')
+    try {
+      const resp = await fetch('/api/schema-dump/pipe-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ database: selectedDb, schemas: [...selectedSchemas], snapshot: selectedSnapshot || null }),
+      })
+      if (!resp.ok) { setError(await resp.text()); return }
+      const reader = resp.body!.getReader()
+      const dec = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        const lines = buf.split('\n'); buf = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.trim()) continue
+          try {
+            const msg = JSON.parse(line)
+            if (msg.done) setPipeDone({ ok: msg.ok, exit_code: msg.exit_code })
+            else setPipeLog(prev => [...prev, { line: msg.line, error: msg.error }])
+          } catch { /* ignore */ }
+        }
+      }
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setPiping(false)
     }
   }
 
@@ -260,22 +298,35 @@ export function SchemaDumpPage() {
           </div>
         )}
 
-        <div className="mt-3 flex items-center gap-4">
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          {/* Pipe mode — pg_dump | psql directly */}
+          {cfg?.strategy === 'pg_dump' && (
+            <button
+              onClick={runPipe}
+              disabled={!selectedDb || selectedSchemas.size === 0 || piping || applying}
+              className="flex items-center gap-1.5 text-sm bg-purple-800 hover:bg-purple-700 px-4 py-2 rounded disabled:opacity-50 font-semibold"
+              title="pg_dump source | psql destination — fastest, no intermediate storage"
+            >
+              {piping ? <Spinner size={3} /> : <Play size={13} />}
+              Replicate via pg_dump pipe
+            </button>
+          )}
+
           <button
             onClick={runDump}
-            disabled={!selectedDb || selectedSchemas.size === 0 || dumping}
+            disabled={!selectedDb || selectedSchemas.size === 0 || dumping || piping}
             className="flex items-center gap-1.5 text-sm bg-blue-800 hover:bg-blue-700 px-4 py-2 rounded disabled:opacity-50 font-semibold"
           >
             {dumping ? <Spinner size={3} /> : <Download size={13} />}
             Generate schema DDL
           </button>
-          {cfg?.strategy === 'pg_dump' && (
+          {cfg?.strategy === 'pg_dump' && !pipeMode && (
             <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none"
-              title="Skip statement parsing — return raw pg_dump output as single block. Apply executes it as one call.">
+              title="Skip parsing — raw pg_dump → single execute call">
               <input type="checkbox" checked={batchMode}
                 onChange={e => setBatchMode(e.target.checked)}
                 className="accent-purple-500" />
-              <span>Batch mode <span className="text-gray-600">(no parsing, raw pg_dump → single execute)</span></span>
+              <span>Batch mode</span>
             </label>
           )}
         </div>
@@ -366,6 +417,38 @@ export function SchemaDumpPage() {
                 </div>
               )
             })}
+          </div>
+        </div>
+      )}
+
+      {/* Pipe log */}
+      {(piping || pipeLog.length > 0 || pipeDone) && (
+        <div className="bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-gray-700 flex items-center gap-3">
+            {piping && !pipeDone && <Spinner size={3} />}
+            {pipeDone && (pipeDone.ok
+              ? <CheckCircle size={13} className="text-green-400" />
+              : <AlertTriangle size={13} className="text-red-400" />)}
+            <span className="text-sm font-semibold text-gray-300">
+              {pipeDone
+                ? pipeDone.ok ? 'pg_dump | psql — done ✓' : `pg_dump | psql — exit code ${pipeDone.exit_code}`
+                : 'pg_dump | psql — running…'}
+            </span>
+            <span className="text-xs text-gray-500 ml-1 font-mono">{selectedDb}</span>
+            {pipeLog.filter(l => l.error).length > 0 && (
+              <span className="text-xs text-red-400 ml-auto">{pipeLog.filter(l => l.error).length} error(s)</span>
+            )}
+          </div>
+          <div className="max-h-96 overflow-y-auto font-mono text-xs p-2 space-y-0.5 bg-gray-950"
+            ref={el => { if (el) el.scrollTop = el.scrollHeight }}>
+            {pipeLog.length === 0 && piping && (
+              <div className="text-gray-600 animate-pulse">Waiting for output…</div>
+            )}
+            {pipeLog.map((entry, i) => (
+              <div key={i} className={clsx('py-0.5', entry.error ? 'text-red-400' : 'text-gray-400')}>
+                {entry.line}
+              </div>
+            ))}
           </div>
         </div>
       )}

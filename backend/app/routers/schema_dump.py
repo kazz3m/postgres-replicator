@@ -779,3 +779,179 @@ async def apply_schema_stream(request: Request):
         yield json.dumps({"done": True, "applied": applied, "failed": failed}) + "\n"
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+
+@router.post("/pipe-stream")
+async def pipe_stream(request: Request):
+    """
+    Run pg_dump on source and pipe directly to psql on destination.
+    Streams log lines as NDJSON: { "line": "...", "error": bool }
+    Final line: { "done": true, "ok": bool, "exit_code": N }
+
+    Requires pg_dump_path configured. psql is looked up next to pg_dump.
+    Works on Windows (Python subprocess pipe, no shell pipe needed).
+    body: { "database": "dbname", "schemas": ["..."], "snapshot": "..." }
+    """
+    from .. import state as _state
+    if not _state.source_dsn or not _state.dest_dsn:
+        raise HTTPException(400, "Not connected.")
+
+    body = await request.json()
+    database: str = body.get("database", "")
+    schemas: list[str] = body.get("schemas", [])
+    snapshot: str | None = body.get("snapshot") or None
+
+    if not database:
+        raise HTTPException(400, "database is required.")
+
+    pg_dump = state.pg_dump_path.strip()
+    if not pg_dump or not os.path.isfile(pg_dump):
+        raise HTTPException(400, "pg_dump path not configured or not found.")
+
+    # Derive psql path from pg_dump path (same directory)
+    import pathlib
+    pg_dump_dir = pathlib.Path(pg_dump).parent
+    psql_name = "psql.exe" if os.name == "nt" else "psql"
+    psql_path = pg_dump_dir / psql_name
+    if not psql_path.exists():
+        # fallback: try PATH
+        import shutil
+        found = shutil.which("psql")
+        if not found:
+            raise HTTPException(400, f"psql not found next to pg_dump ({psql_path}) and not in PATH.")
+        psql_path = pathlib.Path(found)
+
+    import urllib.parse
+    src_parsed = urllib.parse.urlparse(dsn_for_database(state.source_dsn, database))
+    dst_parsed = urllib.parse.urlparse(dsn_for_database(state.dest_dsn, database))
+
+    dump_cmd = [
+        str(pg_dump),
+        "--schema-only", "--no-owner", "--no-acl", "--no-comments",
+        "-h", src_parsed.hostname or "localhost",
+        "-p", str(src_parsed.port or 5432),
+        "-U", src_parsed.username or "postgres",
+        src_parsed.path.lstrip("/"),
+    ]
+    for schema in schemas:
+        dump_cmd += ["-n", schema]
+    if snapshot:
+        import re as _re
+        if _re.match(r'^[0-9A-Fa-f]+-[0-9A-Fa-f]+-\d+$', snapshot):
+            dump_cmd += ["--snapshot", snapshot]
+
+    psql_cmd = [
+        str(psql_path),
+        "-h", dst_parsed.hostname or "localhost",
+        "-p", str(dst_parsed.port or 5432),
+        "-U", dst_parsed.username or "postgres",
+        "-d", dst_parsed.path.lstrip("/"),
+        "--no-password",
+        "-v", "ON_ERROR_STOP=0",   # continue on errors, report them
+        "-v", "ECHO=errors",
+    ]
+
+    env = {**os.environ}
+    if src_parsed.password:
+        env["PGPASSWORD"] = src_parsed.password
+    # For psql we need dest password — use PGPASSWORD if same, else pgpass file
+    # Simplest: set PGPASSWORD to dest password for psql (overrides source for psql call)
+    # We run them as separate processes so env is independent
+    src_env = {**os.environ}
+    dst_env = {**os.environ}
+    if src_parsed.password:
+        src_env["PGPASSWORD"] = src_parsed.password
+    if dst_parsed.password:
+        dst_env["PGPASSWORD"] = dst_parsed.password
+
+    async def generate():
+        import concurrent.futures
+
+        def _run_pipe():
+            """Run pg_dump | psql in a thread, yield log lines."""
+            lines = []
+            try:
+                dump_proc = subprocess.Popen(
+                    dump_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=src_env,
+                )
+                psql_proc = subprocess.Popen(
+                    psql_cmd,
+                    stdin=dump_proc.stdout,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,  # merge stdout+stderr
+                    env=dst_env,
+                )
+                # Allow dump_proc to receive SIGPIPE if psql exits early
+                dump_proc.stdout.close()  # type: ignore
+
+                # Stream psql output line by line
+                for raw_line in psql_proc.stdout:  # type: ignore
+                    line = raw_line.decode("utf-8", errors="replace").rstrip()
+                    lines.append(line)
+
+                psql_proc.wait()
+                dump_proc.wait()
+
+                dump_stderr = dump_proc.stderr.read().decode("utf-8", errors="replace")  # type: ignore
+                return psql_proc.returncode, dump_proc.returncode, lines, dump_stderr
+            except Exception as e:
+                return -1, -1, lines, str(e)
+
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            # Stream lines as they come — run in thread but yield progressively
+            # Since ThreadPoolExecutor doesn't support incremental yield,
+            # we use a queue-based approach
+            import queue as _queue
+            q: _queue.Queue = _queue.Queue()
+
+            def _run_pipe_queued():
+                try:
+                    dump_proc = subprocess.Popen(
+                        dump_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=src_env,
+                    )
+                    psql_proc = subprocess.Popen(
+                        psql_cmd, stdin=dump_proc.stdout,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=dst_env,
+                    )
+                    dump_proc.stdout.close()  # type: ignore
+                    for raw_line in psql_proc.stdout:  # type: ignore
+                        line = raw_line.decode("utf-8", errors="replace").rstrip()
+                        q.put(("line", line))
+                    psql_proc.wait()
+                    dump_proc.wait()
+                    dump_err = dump_proc.stderr.read().decode("utf-8", errors="replace")  # type: ignore
+                    if dump_err.strip():
+                        q.put(("dump_err", dump_err.strip()))
+                    q.put(("done", psql_proc.returncode))
+                except Exception as e:
+                    q.put(("error", str(e)))
+                    q.put(("done", -1))
+
+            fut = loop.run_in_executor(pool, _run_pipe_queued)
+
+            while True:
+                try:
+                    item = await loop.run_in_executor(None, lambda: q.get(timeout=0.1))
+                    kind, val = item
+                    if kind == "line":
+                        is_err = any(kw in val.lower() for kw in ("error", "warning", "fatal"))
+                        yield json.dumps({"line": val, "error": is_err}) + "\n"
+                    elif kind == "dump_err":
+                        yield json.dumps({"line": f"[pg_dump stderr] {val}", "error": True}) + "\n"
+                    elif kind == "error":
+                        yield json.dumps({"line": f"[error] {val}", "error": True}) + "\n"
+                    elif kind == "done":
+                        ok = val == 0
+                        yield json.dumps({"done": True, "ok": ok, "exit_code": val}) + "\n"
+                        break
+                except Exception:
+                    # queue.get timeout — check if future is done
+                    if fut.done():
+                        break
+                    await asyncio.sleep(0.05)
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
