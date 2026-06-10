@@ -518,14 +518,14 @@ export function StatusPage({ initialSnapshot }: Props) {
         {/* Per-subscription rows */}
         <table className="w-full text-xs table-fixed" style={{ tableLayout: 'fixed' }}>
           <colgroup>
-            <col style={{ width: 28 }} />        {/* icon */}
-            <col style={{ width: '18%' }} />      {/* name */}
-            <col style={{ width: '22%' }} />      {/* badges */}
-            <col />                               {/* progress — takes remaining */}
-            <col style={{ width: '16%' }} />      {/* WAL lag + speed */}
-            <col style={{ width: 110 }} />        {/* analyze */}
-            <col style={{ width: 80 }} />         {/* debug */}
-            <col style={{ width: 100 }} />        {/* expand */}
+            <col style={{ width: 24 }} />        {/* icon */}
+            <col style={{ width: '16%' }} />     {/* name */}
+            <col style={{ width: '20%' }} />     {/* badges */}
+            <col />                              {/* progress — takes remaining */}
+            <col style={{ width: '14%' }} />     {/* WAL lag + speed */}
+            <col style={{ width: 96 }} />        {/* analyze */}
+            <col style={{ width: 70 }} />        {/* debug */}
+            <col style={{ width: 88 }} />        {/* expand */}
           </colgroup>
           <tbody>
         {copyData?.subscriptions?.map(sub => {
@@ -559,14 +559,14 @@ export function StatusPage({ initialSnapshot }: Props) {
               <tr className="border-b border-gray-800 hover:bg-gray-800/20">
 
                 {/* col 1: icon */}
-                <td className="pl-4 py-2.5 w-7"><Database size={12} className="text-gray-500" /></td>
+                <td className="pl-3 py-2 w-6"><Database size={11} className="text-gray-500" /></td>
 
                 {/* col 2: name */}
-                <td className="px-2 py-2.5"><span className="font-mono text-gray-300 font-medium truncate block">{sub.sub_name}</span></td>
+                <td className="px-1.5 py-2"><span className="font-mono text-gray-300 font-medium truncate block">{sub.sub_name}</span></td>
 
                 {/* col 3: badges */}
-                <td className="px-2 py-2.5">
-                  <div className="flex items-center gap-1.5 flex-wrap">
+                <td className="px-1.5 py-2">
+                  <div className="flex items-center gap-1 flex-wrap">
                     {sub.slot_active
                       ? <Badge label="active" variant="green" />
                       : sub.sync_workers > 0
@@ -588,8 +588,8 @@ export function StatusPage({ initialSnapshot }: Props) {
                 </td>
 
                 {/* col 4: copy progress */}
-                <td className="px-2 py-2.5">
-                  <div className="flex items-center gap-1.5 text-xs flex-wrap">
+                <td className="px-1.5 py-2">
+                  <div className="flex items-center gap-1 text-xs flex-wrap">
                     {total > 0 && (
                       <span className={clsx('font-mono whitespace-nowrap', synced === total ? 'text-green-400' : 'text-blue-400')}>
                         {synced}/{total} synced
@@ -613,8 +613,8 @@ export function StatusPage({ initialSnapshot }: Props) {
                 </td>
 
                 {/* col 5: WAL lag + speed */}
-                <td className="px-2 py-2.5">
-                  <div className="flex items-center gap-1.5 text-xs flex-wrap">
+                <td className="px-1.5 py-2">
+                  <div className="flex items-center gap-1 text-xs flex-wrap">
                     <span className="text-gray-500 whitespace-nowrap">WAL lag:</span>
                     <span className={clsx('font-mono font-semibold whitespace-nowrap', lagColor(lag))}>{fmtBytes(lag)}</span>
                     {lag > 0 && (
@@ -630,12 +630,12 @@ export function StatusPage({ initialSnapshot }: Props) {
                 </td>
 
                 {/* col 6: analyze */}
-                <td className="px-2 py-2.5 text-xs">
+                <td className="px-1.5 py-2 text-xs">
                   {unanalyzed.length > 0 && (
                     <button
                       onClick={() => handleAnalyze(unanalyzed)}
                       disabled={analyzingTables}
-                      className="flex items-center gap-1 bg-amber-900/40 hover:bg-amber-800/60 border border-amber-700/60 text-amber-300 px-2 py-0.5 rounded disabled:opacity-50 transition-colors whitespace-nowrap"
+                      className="flex items-center gap-0.5 bg-amber-900/40 hover:bg-amber-800/60 border border-amber-700/60 text-amber-300 px-1.5 py-0.5 rounded disabled:opacity-50 transition-colors whitespace-nowrap"
                     >
                       {analyzingTables ? <Spinner size={2} /> : <FlaskConical size={10} />}
                       {unanalyzed.length} to analyze
@@ -644,21 +644,21 @@ export function StatusPage({ initialSnapshot }: Props) {
                 </td>
 
                 {/* col 7: debug */}
-                <td className="px-2 py-2.5 text-xs">
+                <td className="px-1 py-2 text-xs">
                   <button
                     onClick={() => setDebugSub({ subName: sub.sub_name, database: sub.database ?? '' })}
-                    className="flex items-center gap-1 text-gray-600 hover:text-gray-300 border border-gray-700 hover:border-gray-500 px-1.5 py-0.5 rounded transition-colors whitespace-nowrap"
+                    className="flex items-center gap-0.5 text-gray-600 hover:text-gray-300 border border-gray-700 hover:border-gray-500 px-1 py-0.5 rounded transition-colors whitespace-nowrap"
                     title="Debug subscription"
                   >
-                    <Bug size={10} /> debug sub
+                    <Bug size={10} /> debug
                   </button>
                 </td>
 
                 {/* col 8: expand */}
-                <td className="pr-4 py-2.5 text-xs text-right">
+                <td className="pr-3 py-2 text-xs text-right">
                   <button
                     onClick={() => toggleSubExpanded(sub.sub_name)}
-                    className="flex items-center gap-1 text-gray-400 hover:text-gray-200 whitespace-nowrap ml-auto"
+                    className="flex items-center gap-0.5 text-gray-400 hover:text-gray-200 whitespace-nowrap ml-auto"
                   >
                     {subExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                     {subExpanded ? 'Hide tables' : 'Show tables'}
