@@ -1596,12 +1596,12 @@ async def stop_subscription(name: str, database: str | None = None):
     Leaves tables and data intact. Use reset to restart from scratch.
     """
     _require_connection()
+    import asyncpg as _asyncpg
     dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
-    dest_pool = await get_dest_pool(dest_dsn)
-    src_pool = await get_source_pool(state.source_dsn)
 
-    async with dest_pool.acquire() as conn:
-        row = await conn.fetchrow(
+    dest_conn = await _asyncpg.connect(dest_dsn, timeout=10)
+    try:
+        row = await dest_conn.fetchrow(
             "SELECT subslotname, subenabled FROM pg_subscription WHERE subname = $1", name
         )
         if not row:
@@ -1609,21 +1609,22 @@ async def stop_subscription(name: str, database: str | None = None):
 
         if row["subenabled"]:
             try:
-                await conn.execute(f'ALTER SUBSCRIPTION "{name}" DISABLE')
+                await dest_conn.execute(f'ALTER SUBSCRIPTION "{name}" DISABLE')
             except Exception as e:
                 raise HTTPException(500, f"Could not disable subscription: {e}")
 
         slot_name = row["subslotname"]
 
-    # Detach slot so source can clean up WAL; slot name stays in pg_subscription
-    # but replication stops. We use SET slot_name = NONE to detach gracefully.
-    async with dest_pool.acquire() as conn:
+        # Detach slot so source can clean up WAL
         try:
-            await conn.execute(f'ALTER SUBSCRIPTION "{name}" SET (slot_name = NONE)')
+            await dest_conn.execute(f'ALTER SUBSCRIPTION "{name}" SET (slot_name = NONE)')
         except Exception:
             pass
+    finally:
+        await dest_conn.close()
 
     if slot_name:
+        src_pool = await get_source_pool(state.source_dsn)
         async with src_pool.acquire() as conn:
             still_exists = await conn.fetchval(
                 "SELECT 1 FROM pg_replication_slots WHERE slot_name = $1", slot_name
