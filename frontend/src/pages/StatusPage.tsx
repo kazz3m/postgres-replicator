@@ -396,10 +396,10 @@ export function StatusPage({ initialSnapshot }: Props) {
     }
   }
 
-  async function handleSetWorkers(subName: string, workers: number) {
+  async function handleSetWorkers(_subName: string, workers: number) {
     setWorkersLoading(true)
     try {
-      await replicationApi.setSyncWorkers(subName, workers, getSubDatabase(subName))
+      await replicationApi.setSyncWorkers('_global', workers)
       setEditWorkers(null)
       refetchSubs()
     } catch (e: any) {
@@ -871,7 +871,41 @@ export function StatusPage({ initialSnapshot }: Props) {
 
       {/* Subscriptions */}
       <div className="bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-700 font-semibold text-gray-300">Subscriptions</div>
+        <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-3">
+          <span className="font-semibold text-gray-300 flex-1">Subscriptions</span>
+          {subs?.length > 0 && (subs[0] as any).max_sync_workers != null && (
+            editWorkers?.subName === '__global__' ? (
+              <div className="flex items-center gap-1.5 text-xs">
+                <span className="text-gray-500">max sync workers:</span>
+                <input
+                  type="number" min={1} max={32}
+                  value={editWorkers!.value}
+                  onChange={e => setEditWorkers(prev => prev ? { ...prev, value: e.target.value } : null)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && editWorkers) handleSetWorkers('__global__', parseInt(editWorkers.value))
+                    if (e.key === 'Escape') setEditWorkers(null)
+                  }}
+                  className="w-10 bg-gray-800 border border-gray-600 rounded px-1 py-0.5 text-xs text-center outline-none focus:border-blue-500"
+                  autoFocus
+                />
+                <button
+                  onClick={() => editWorkers && handleSetWorkers('__global__', parseInt(editWorkers.value))}
+                  disabled={workersLoading}
+                  className="text-blue-400 hover:text-blue-300 border border-blue-800 px-1.5 py-0.5 rounded disabled:opacity-40"
+                >{workersLoading ? '…' : 'Set'}</button>
+                <button onClick={() => setEditWorkers(null)} className="text-gray-500 hover:text-gray-300">✕</button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setEditWorkers({ subName: '__global__', value: String((subs[0] as any).max_sync_workers) })}
+                className="text-xs text-gray-500 hover:text-gray-300 border border-gray-700 hover:border-gray-500 px-2 py-1 rounded"
+                title="Cluster-wide max_sync_workers_per_subscription — limits parallel sync slots during initial copy. Uses ALTER SYSTEM SET + pg_reload_conf. On Cloud SQL: change via GCP Console → Instance flags or gcloud sql instances patch --database-flags."
+              >
+                sync workers: {(subs[0] as any).max_sync_workers}
+              </button>
+            )
+          )}
+        </div>
         {!subs?.length ? (
           <div className="p-4 text-gray-500 text-sm">No subscriptions found.</div>
         ) : (
@@ -967,36 +1001,6 @@ export function StatusPage({ initialSnapshot }: Props) {
                         >
                           <Database size={10} /> Vacuum
                         </button>
-                        {/* Sync workers — PG 16+ only */}
-                        {sub.max_sync_workers === null ? null : editWorkers?.subName === sub.subname ? (
-                          <div className="flex items-center gap-1">
-                            <input
-                              type="number" min={1} max={32}
-                              value={editWorkers!.value}
-                              onChange={e => setEditWorkers(prev => prev ? { ...prev, value: e.target.value } : null)}
-                              onKeyDown={e => {
-                                if (e.key === 'Enter' && editWorkers) handleSetWorkers(sub.subname, parseInt(editWorkers.value))
-                                if (e.key === 'Escape') setEditWorkers(null)
-                              }}
-                              className="w-10 bg-gray-800 border border-gray-600 rounded px-1 py-0.5 text-xs text-center outline-none focus:border-blue-500"
-                              autoFocus
-                            />
-                            <button
-                              onClick={() => editWorkers && handleSetWorkers(sub.subname, parseInt(editWorkers.value))}
-                              disabled={workersLoading}
-                              className="text-xs text-blue-400 hover:text-blue-300 border border-blue-800 px-1.5 py-0.5 rounded disabled:opacity-40"
-                            >{workersLoading ? '…' : 'Set'}</button>
-                            <button onClick={() => setEditWorkers(null)} className="text-gray-500 hover:text-gray-300 text-xs">✕</button>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => setEditWorkers({ subName: sub.subname, value: String(sub.max_sync_workers ?? 2) })}
-                            className="text-xs text-gray-500 hover:text-gray-300 border border-gray-700 hover:border-gray-500 px-2 py-1 rounded flex items-center gap-1"
-                            title="ALTER SUBSCRIPTION SET (max_sync_workers_per_subscription = N) — limits parallel sync slots used during initial copy"
-                          >
-                            workers: {sub.max_sync_workers ?? '?'}
-                          </button>
-                        )}
                         <button
                           onClick={() => setConfirmDropSub(sub.subname)}
                           disabled={actionLoading}
