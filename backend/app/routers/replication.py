@@ -399,16 +399,23 @@ async def list_subscriptions():
     async with pool.acquire() as conn:
         pg_ver = await conn.fetchval("SELECT current_setting('server_version_num')::int")
         # submaxsyncworkers column added in PG 17
+        # max_sync_workers_per_subscription ALTER param available from PG 16
         if pg_ver >= 170000:
             rows = await conn.fetch("""
                 SELECT subname, subenabled, subpublications, subslotname,
                        submaxsyncworkers AS max_sync_workers
                 FROM pg_subscription
             """)
-        else:
+        elif pg_ver >= 160000:
             rows = await conn.fetch("""
                 SELECT subname, subenabled, subpublications, subslotname,
                        2 AS max_sync_workers
+                FROM pg_subscription
+            """)
+        else:
+            rows = await conn.fetch("""
+                SELECT subname, subenabled, subpublications, subslotname,
+                       NULL::int AS max_sync_workers
                 FROM pg_subscription
             """)
     return [dict(r) for r in rows]
@@ -1520,14 +1527,18 @@ async def set_sync_workers(name: str, body: dict, database: str | None = None):
     conn = await _asyncpg.connect(dest_dsn, timeout=10)
     try:
         pg_ver = await conn.fetchval("SELECT current_setting('server_version_num')::int")
+        pg_major = pg_ver // 10000
         if pg_ver < 160000:
-            raise HTTPException(400, f"max_sync_workers_per_subscription requires PostgreSQL 16+. Current: {pg_ver // 10000}.x")
+            raise HTTPException(400, f"max_sync_workers_per_subscription requires PostgreSQL 16+. Destination is {pg_major}.x — set max_sync_workers in postgresql.conf instead.")
         exists = await conn.fetchval("SELECT 1 FROM pg_subscription WHERE subname = $1", name)
         if not exists:
             raise HTTPException(404, f"Subscription '{name}' not found.")
-        await conn.execute(
-            f'ALTER SUBSCRIPTION "{name}" SET (max_sync_workers_per_subscription = {workers})'
-        )
+        try:
+            await conn.execute(
+                f'ALTER SUBSCRIPTION "{name}" SET (max_sync_workers_per_subscription = {workers})'
+            )
+        except Exception as e:
+            raise HTTPException(400, f"PostgreSQL {pg_major}.x does not support this parameter: {e}. Use max_sync_workers in postgresql.conf.")
     finally:
         await conn.close()
     return {"status": "ok", "subscription_name": name, "max_sync_workers_per_subscription": workers}

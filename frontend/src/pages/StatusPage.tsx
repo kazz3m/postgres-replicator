@@ -967,8 +967,8 @@ export function StatusPage({ initialSnapshot }: Props) {
                         >
                           <Database size={10} /> Vacuum
                         </button>
-                        {/* Sync workers */}
-                        {editWorkers?.subName === sub.subname ? (
+                        {/* Sync workers — PG 16+ only */}
+                        {sub.max_sync_workers === null ? null : editWorkers?.subName === sub.subname ? (
                           <div className="flex items-center gap-1">
                             <input
                               type="number" min={1} max={32}
