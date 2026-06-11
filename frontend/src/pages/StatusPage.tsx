@@ -451,21 +451,46 @@ export function StatusPage({ initialSnapshot }: Props) {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-bold">Replication Status</h2>
-        {capacity && (
-          <div className="flex items-center gap-3 text-xs">
-            <CapacityPill
-              label="WAL senders"
-              used={capacity.wal_senders_used}
-              max={capacity.wal_senders_max}
-            />
-            <CapacityPill
-              label="slots"
-              used={capacity.slots_used}
-              max={capacity.slots_max}
-              active={capacity.slots_active}
-            />
-          </div>
-        )}
+        <div className="flex items-center gap-3 text-xs">
+          {capacity && (
+            <>
+              <CapacityPill label="WAL senders" used={capacity.wal_senders_used} max={capacity.wal_senders_max} />
+              <CapacityPill label="slots" used={capacity.slots_used} max={capacity.slots_max} active={capacity.slots_active} />
+            </>
+          )}
+          {subs?.length > 0 && (subs[0] as any).max_sync_workers != null && (
+            editWorkers?.subName === '__global__' ? (
+              <div className="flex items-center gap-1.5">
+                <span className="text-gray-500">sync workers:</span>
+                <input
+                  type="number" min={1} max={32}
+                  value={editWorkers!.value}
+                  onChange={e => setEditWorkers(prev => prev ? { ...prev, value: e.target.value } : null)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && editWorkers) handleSetWorkers('__global__', parseInt(editWorkers.value))
+                    if (e.key === 'Escape') setEditWorkers(null)
+                  }}
+                  className="w-10 bg-gray-800 border border-gray-600 rounded px-1 py-0.5 text-center outline-none focus:border-blue-500"
+                  autoFocus
+                />
+                <button onClick={() => editWorkers && handleSetWorkers('__global__', parseInt(editWorkers.value))} disabled={workersLoading}
+                  className="text-blue-400 hover:text-blue-300 border border-blue-800 px-1.5 py-0.5 rounded disabled:opacity-40">
+                  {workersLoading ? '…' : 'Set'}
+                </button>
+                <button onClick={() => setEditWorkers(null)} className="text-gray-500 hover:text-gray-300">✕</button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setEditWorkers({ subName: '__global__', value: String((subs[0] as any).max_sync_workers) })}
+                className="flex flex-col gap-0.5 border border-gray-700 hover:border-gray-500 text-gray-400 hover:text-gray-300 rounded px-2.5 py-1 bg-gray-800/50"
+                title="Cluster-wide max_sync_workers_per_subscription — limits parallel sync slots during initial copy. Uses ALTER SYSTEM SET + pg_reload_conf. On Cloud SQL: GCP Console → Instance flags, or: gcloud sql instances patch INSTANCE --database-flags max_sync_workers_per_subscription=N"
+              >
+                <span className="font-semibold tabular-nums">{(subs[0] as any).max_sync_workers} <span className="font-normal opacity-70">sync workers</span></span>
+                <div className="w-full bg-gray-700/50 rounded-full h-0.5" />
+              </button>
+            )
+          )}
+        </div>
         <div className="flex items-center gap-3">
           {editInterval ? (
             <div className="flex items-center gap-2">
@@ -871,41 +896,7 @@ export function StatusPage({ initialSnapshot }: Props) {
 
       {/* Subscriptions */}
       <div className="bg-gray-900 border border-gray-700 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-3">
-          <span className="font-semibold text-gray-300 flex-1">Subscriptions</span>
-          {subs?.length > 0 && (subs[0] as any).max_sync_workers != null && (
-            editWorkers?.subName === '__global__' ? (
-              <div className="flex items-center gap-1.5 text-xs">
-                <span className="text-gray-500">max sync workers:</span>
-                <input
-                  type="number" min={1} max={32}
-                  value={editWorkers!.value}
-                  onChange={e => setEditWorkers(prev => prev ? { ...prev, value: e.target.value } : null)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && editWorkers) handleSetWorkers('__global__', parseInt(editWorkers.value))
-                    if (e.key === 'Escape') setEditWorkers(null)
-                  }}
-                  className="w-10 bg-gray-800 border border-gray-600 rounded px-1 py-0.5 text-xs text-center outline-none focus:border-blue-500"
-                  autoFocus
-                />
-                <button
-                  onClick={() => editWorkers && handleSetWorkers('__global__', parseInt(editWorkers.value))}
-                  disabled={workersLoading}
-                  className="text-blue-400 hover:text-blue-300 border border-blue-800 px-1.5 py-0.5 rounded disabled:opacity-40"
-                >{workersLoading ? '…' : 'Set'}</button>
-                <button onClick={() => setEditWorkers(null)} className="text-gray-500 hover:text-gray-300">✕</button>
-              </div>
-            ) : (
-              <button
-                onClick={() => setEditWorkers({ subName: '__global__', value: String((subs[0] as any).max_sync_workers) })}
-                className="text-xs text-gray-500 hover:text-gray-300 border border-gray-700 hover:border-gray-500 px-2 py-1 rounded"
-                title="Cluster-wide max_sync_workers_per_subscription — limits parallel sync slots during initial copy. Uses ALTER SYSTEM SET + pg_reload_conf. On Cloud SQL: change via GCP Console → Instance flags or gcloud sql instances patch --database-flags."
-              >
-                sync workers: {(subs[0] as any).max_sync_workers}
-              </button>
-            )
-          )}
-        </div>
+        <div className="px-4 py-3 border-b border-gray-700 font-semibold text-gray-300">Subscriptions</div>
         {!subs?.length ? (
           <div className="p-4 text-gray-500 text-sm">No subscriptions found.</div>
         ) : (
