@@ -9,10 +9,9 @@ import { ConfirmModal } from '../components/ConfirmModal'
 import { Spinner } from '../components/Spinner'
 import { SequenceSyncPanel } from '../components/SequenceSyncPanel'
 import { SchemaSyncPanel } from '../components/SchemaSyncPanel'
-import { AddTableModal } from '../components/AddTableModal'
 import { IndexSyncPanel } from '../components/IndexSyncPanel'
 import { RolesSyncPanel } from '../components/RolesSyncPanel'
-import { RefreshCw, AlertTriangle, Square, PlusCircle, Layers, Database, ChevronDown, ChevronRight, FlaskConical, Bug } from 'lucide-react'
+import { RefreshCw, AlertTriangle, Square, Layers, Database, ChevronDown, ChevronRight, FlaskConical, Bug } from 'lucide-react'
 import clsx from 'clsx'
 import type { WorkspaceSnapshot } from './WorkspacePicker'
 
@@ -107,9 +106,6 @@ export function StatusPage({ initialSnapshot }: Props) {
   const [vacuumResult, setVacuumResult] = useState<{ applied: number; failed: number; results: { table: string; ok: boolean; error?: string }[] } | null>(null)
   const [actionLoading, setActionLoading] = useState(false)
   const [actionError, setActionError] = useState('')
-  // Add table to publication — modal
-  const [addTablePub, setAddTablePub] = useState<string | null>(null)
-  const [addTableResult, setAddTableResult] = useState('')
   // Schema sync — track active publication for schema panel
   const [schemaPub, setSchemaPub] = useState<string | null>(null)
   // Index panel after stop
@@ -352,13 +348,7 @@ export function StatusPage({ initialSnapshot }: Props) {
     }
   }
 
-  function handleAddTableDone(tables: string[], refreshed: string[]) {
-    setAddTableResult(
-      `Added ${tables.length} table${tables.length !== 1 ? 's' : ''}, refreshed: ${refreshed.join(', ') || 'none'}`
-    )
-    setAddTablePub(null)
-    qc.invalidateQueries({ queryKey: ['subscriptions'] })
-  }
+
 
   async function handleDropSlot(slotName: string) {
     setActionLoading(true); setActionError('')
@@ -1034,25 +1024,6 @@ export function StatusPage({ initialSnapshot }: Props) {
               </tbody>
             </table>
 
-            {/* Add table to publication — opens modal tree picker */}
-            <div className="px-4 py-3 border-t border-gray-700 flex items-center gap-3">
-              <button
-                onClick={() => {
-                  const pubs = (subs as any[]).flatMap((s: any) => s.subpublications ?? [])
-                  const uniquePubs = [...new Set<string>(pubs)]
-                  setAddTablePub(uniquePubs[0] ?? null)
-                  setAddTableResult('')
-                }}
-                className="text-xs text-gray-400 hover:text-gray-200 flex items-center gap-1.5"
-              >
-                <PlusCircle size={12} /> Add table to publication...
-              </button>
-              {addTableResult && (
-                <span className={`text-xs ${addTableResult.startsWith('Error') ? 'text-red-400' : 'text-green-400'}`}>
-                  {addTableResult}
-                </span>
-              )}
-            </div>
           </>
         )}
       </div>
@@ -1082,15 +1053,6 @@ export function StatusPage({ initialSnapshot }: Props) {
         <IndexSyncPanel publication={indexPub} />
       )}
 
-
-      {/* Add table modal */}
-      {addTablePub && (
-        <AddTableModal
-          pubName={addTablePub}
-          onClose={() => setAddTablePub(null)}
-          onAdded={handleAddTableDone}
-        />
-      )}
 
       {confirmStop && (
         <ConfirmModal
