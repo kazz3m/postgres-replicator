@@ -397,10 +397,20 @@ async def list_subscriptions():
     _require_connection()
     pool = await get_dest_pool(state.dest_dsn)
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT subname, subenabled, subpublications, subslotname
-            FROM pg_subscription
-        """)
+        pg_ver = await conn.fetchval("SELECT current_setting('server_version_num')::int")
+        # submaxsyncworkers column added in PG 17
+        if pg_ver >= 170000:
+            rows = await conn.fetch("""
+                SELECT subname, subenabled, subpublications, subslotname,
+                       submaxsyncworkers AS max_sync_workers
+                FROM pg_subscription
+            """)
+        else:
+            rows = await conn.fetch("""
+                SELECT subname, subenabled, subpublications, subslotname,
+                       2 AS max_sync_workers
+                FROM pg_subscription
+            """)
     return [dict(r) for r in rows]
 
 
@@ -1490,6 +1500,37 @@ async def resume_subscription(name: str, database: str | None = None):
     finally:
         await conn.close()
     return {"status": "resumed", "subscription_name": name}
+
+
+# ── Sync workers limit ────────────────────────────────────────────────────────
+
+@router.post("/subscription/{name}/set-workers")
+async def set_sync_workers(name: str, body: dict, database: str | None = None):
+    """
+    ALTER SUBSCRIPTION … SET (max_sync_workers_per_subscription = N)
+    Requires PostgreSQL 16+. On older versions returns a warning.
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+    workers = body.get("workers")
+    if not isinstance(workers, int) or workers < 1 or workers > 32:
+        raise HTTPException(400, "workers must be an integer between 1 and 32.")
+
+    dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
+    conn = await _asyncpg.connect(dest_dsn, timeout=10)
+    try:
+        pg_ver = await conn.fetchval("SELECT current_setting('server_version_num')::int")
+        if pg_ver < 160000:
+            raise HTTPException(400, f"max_sync_workers_per_subscription requires PostgreSQL 16+. Current: {pg_ver // 10000}.x")
+        exists = await conn.fetchval("SELECT 1 FROM pg_subscription WHERE subname = $1", name)
+        if not exists:
+            raise HTTPException(404, f"Subscription '{name}' not found.")
+        await conn.execute(
+            f'ALTER SUBSCRIPTION "{name}" SET (max_sync_workers_per_subscription = {workers})'
+        )
+    finally:
+        await conn.close()
+    return {"status": "ok", "subscription_name": name, "max_sync_workers_per_subscription": workers}
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────

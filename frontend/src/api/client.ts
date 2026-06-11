@@ -282,6 +282,11 @@ export const replicationApi = {
   setInterval: (interval_seconds: number) => api.put('/replication/stats/interval', { interval_seconds }),
   workerStats: () => api.get<WorkerStat[]>('/replication/worker-stats'),
   listSubscriptionsTyped: () => api.get<SubscriptionInfo[]>('/replication/subscriptions'),
+  setSyncWorkers: (name: string, workers: number, database?: string) =>
+    api.post<{ status: string; max_sync_workers_per_subscription: number }>(
+      `/replication/subscription/${name}/set-workers${database ? `?database=${encodeURIComponent(database)}` : ''}`,
+      { workers }
+    ),
   stopSubscription: (name: string, database?: string) =>
     api.post(`/replication/subscription/${name}/stop${database ? `?database=${encodeURIComponent(database)}` : ''}`),
   subscriptionTables: (name: string, database?: string) =>

@@ -100,6 +100,8 @@ export function StatusPage({ initialSnapshot }: Props) {
   const [confirmDropSlot, setConfirmDropSlot] = useState<string | null>(null)
   const [confirmDropSub, setConfirmDropSub] = useState<string | null>(null)
   const [confirmDropPub, setConfirmDropPub] = useState<{ subName: string; pubName: string } | null>(null)
+  const [editWorkers, setEditWorkers] = useState<{ subName: string; value: string } | null>(null)
+  const [workersLoading, setWorkersLoading] = useState(false)
   const [vacuumTarget, setVacuumTarget] = useState<{ subName: string; destHost: string; tables: string[] } | null>(null)
   const [vacuumLoading, setVacuumLoading] = useState(false)
   const [vacuumResult, setVacuumResult] = useState<{ applied: number; failed: number; results: { table: string; ok: boolean; error?: string }[] } | null>(null)
@@ -391,6 +393,19 @@ export function StatusPage({ initialSnapshot }: Props) {
       setActionError(e.response?.data?.detail || e.message)
     } finally {
       setActionLoading(false); setConfirmDropPub(null)
+    }
+  }
+
+  async function handleSetWorkers(subName: string, workers: number) {
+    setWorkersLoading(true)
+    try {
+      await replicationApi.setSyncWorkers(subName, workers, getSubDatabase(subName))
+      setEditWorkers(null)
+      refetchSubs()
+    } catch (e: any) {
+      setActionError(e.response?.data?.detail || e.message)
+    } finally {
+      setWorkersLoading(false)
     }
   }
 
@@ -952,6 +967,36 @@ export function StatusPage({ initialSnapshot }: Props) {
                         >
                           <Database size={10} /> Vacuum
                         </button>
+                        {/* Sync workers */}
+                        {editWorkers?.subName === sub.subname ? (
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number" min={1} max={32}
+                              value={editWorkers!.value}
+                              onChange={e => setEditWorkers(prev => prev ? { ...prev, value: e.target.value } : null)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' && editWorkers) handleSetWorkers(sub.subname, parseInt(editWorkers.value))
+                                if (e.key === 'Escape') setEditWorkers(null)
+                              }}
+                              className="w-10 bg-gray-800 border border-gray-600 rounded px-1 py-0.5 text-xs text-center outline-none focus:border-blue-500"
+                              autoFocus
+                            />
+                            <button
+                              onClick={() => editWorkers && handleSetWorkers(sub.subname, parseInt(editWorkers.value))}
+                              disabled={workersLoading}
+                              className="text-xs text-blue-400 hover:text-blue-300 border border-blue-800 px-1.5 py-0.5 rounded disabled:opacity-40"
+                            >{workersLoading ? '…' : 'Set'}</button>
+                            <button onClick={() => setEditWorkers(null)} className="text-gray-500 hover:text-gray-300 text-xs">✕</button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setEditWorkers({ subName: sub.subname, value: String(sub.max_sync_workers ?? 2) })}
+                            className="text-xs text-gray-500 hover:text-gray-300 border border-gray-700 hover:border-gray-500 px-2 py-1 rounded flex items-center gap-1"
+                            title="ALTER SUBSCRIPTION SET (max_sync_workers_per_subscription = N) — limits parallel sync slots used during initial copy"
+                          >
+                            workers: {sub.max_sync_workers ?? '?'}
+                          </button>
+                        )}
                         <button
                           onClick={() => setConfirmDropSub(sub.subname)}
                           disabled={actionLoading}
