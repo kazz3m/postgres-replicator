@@ -571,7 +571,7 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                   <table className="w-full text-xs">
                     <thead><tr className="text-gray-500 border-b border-gray-700">
                       <th className="text-left py-1 pr-2">PID</th>
-                      <th className="text-left py-1 pr-2">User / App</th>
+                      <th className="text-left py-1 pr-2">User / App / DB</th>
                       <th className="text-left py-1 pr-2">Tx age</th>
                       <th className="text-left py-1 pr-2">State</th>
                       <th className="text-left py-1 pr-2">Wait</th>
@@ -586,6 +586,7 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                           <td className="py-1.5 pr-2">
                             <div className="text-gray-300">{String(t.usename)}</div>
                             <div className="text-gray-500 text-[10px]">{truncate(String(t.application_name ?? ''), 20)}</div>
+                            {t.datname != null && <div className="text-blue-400/70 text-[10px] font-mono">{String(t.datname)}</div>}
                           </td>
                           <td className={clsx('py-1.5 pr-2 font-mono', (t.xact_age_s as number) > 300 ? 'text-red-300' : 'text-yellow-300')}>
                             {t.xact_age_s != null ? `${t.xact_age_s}s` : '—'}

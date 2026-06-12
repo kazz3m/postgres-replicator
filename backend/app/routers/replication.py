@@ -706,7 +706,11 @@ async def debug_subscription(sub_name: str, database: str):
     result: dict = {}
 
     # ── Destination side ──────────────────────────────────────────────────────
+    # Use the subscription's database for pg_subscription / pg_stat_subscription queries.
+    # Use the default dest DSN for cluster-wide views (pg_stat_activity, pg_locks) —
+    # these are visible from any database so no need to switch.
     dest_dsn = dsn_for_database(state.dest_dsn, database)
+    dest_dsn_default = state.dest_dsn  # cluster-wide queries
     try:
         dc = await _asyncpg.connect(dest_dsn, timeout=10)
     except Exception as e:
@@ -768,11 +772,22 @@ async def debug_subscription(sub_name: str, database: str):
         except Exception:
             result["error_counts"] = None  # not available on older PG
 
-        # pg_stat_activity for apply worker — wait event, query, state
+        await dc.close()
+
+    # ── Destination cluster-wide queries (pg_stat_activity, pg_locks) ──────────
+    # These views are cluster-wide — connect via default DSN, not per-database.
+    apply_pids = [r["pid"] for r in result.get("stat_subscription", []) if r.get("pid") and not r.get("rel_name")]
+    try:
+        dc2 = await _asyncpg.connect(dest_dsn_default, timeout=10)
+    except Exception as e:
+        result["dest_cluster_error"] = str(e)
+        dc2 = None
+
+    if dc2:
+        # pg_stat_activity for apply worker
         try:
-            apply_pids = [r["pid"] for r in result.get("stat_subscription", []) if r.get("pid") and not r.get("rel_name")]
             if apply_pids:
-                activity_rows = await dc.fetch("""
+                activity_rows = await dc2.fetch("""
                     SELECT pid, state, wait_event_type, wait_event,
                            LEFT(query, 200) AS query,
                            EXTRACT(EPOCH FROM (now() - state_change))::int AS state_age_s,
@@ -787,11 +802,10 @@ async def debug_subscription(sub_name: str, database: str):
         except Exception as e:
             result["apply_worker_activity_error"] = str(e)
 
-        # locks held by apply worker (blocking WAL apply)
+        # locks held by apply worker
         try:
-            apply_pids = [r["pid"] for r in result.get("stat_subscription", []) if r.get("pid") and not r.get("rel_name")]
             if apply_pids:
-                lock_rows = await dc.fetch("""
+                lock_rows = await dc2.fetch("""
                     SELECT l.pid, l.mode, l.granted, l.locktype,
                            l.relation::regclass::text AS rel_name,
                            a.state, a.wait_event_type, a.wait_event,
@@ -808,11 +822,10 @@ async def debug_subscription(sub_name: str, database: str):
         except Exception as e:
             result["apply_worker_locks_error"] = str(e)
 
-        # processes blocking apply worker on dest (hold locks that apply needs)
+        # processes blocking apply worker on dest
         try:
-            apply_pids = [r["pid"] for r in result.get("stat_subscription", []) if r.get("pid") and not r.get("rel_name")]
             if apply_pids:
-                blocker_rows = await dc.fetch("""
+                blocker_rows = await dc2.fetch("""
                     WITH blockers AS (
                         SELECT DISTINCT ON (blocked.pid, blocker.pid)
                                blocked.pid AS wait_pid,
@@ -844,10 +857,10 @@ async def debug_subscription(sub_name: str, database: str):
         except Exception as e:
             result["apply_worker_blockers_error"] = str(e)
 
-        # long-running transactions on dest that may slow down apply
+        # long-running transactions on dest cluster (any database)
         try:
-            long_tx_rows = await dc.fetch("""
-                SELECT pid, usename, application_name, state,
+            long_tx_rows = await dc2.fetch("""
+                SELECT pid, usename, application_name, datname, state,
                        wait_event_type, wait_event,
                        EXTRACT(EPOCH FROM (now() - xact_start))::int AS xact_age_s,
                        EXTRACT(EPOCH FROM (now() - query_start))::int AS query_age_s,
@@ -863,7 +876,7 @@ async def debug_subscription(sub_name: str, database: str):
         except Exception as e:
             result["long_running_tx_error"] = str(e)
 
-        await dc.close()
+        await dc2.close()
 
     # ── Source side ───────────────────────────────────────────────────────────
     src_dsn = dsn_for_database(state.source_dsn, database)
