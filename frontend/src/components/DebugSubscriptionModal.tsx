@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { replicationApi } from '../api/client'
 import { Spinner } from './Spinner'
 import { X, RefreshCw, AlertTriangle, CheckCircle, ShieldCheck, SkipForward } from 'lucide-react'
@@ -122,6 +122,10 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
     }
   }
 
+  // Apply throughput: track latest_end_lsn across two loads to compute bytes/s
+  const throughputRef = useRef<{ lsn: string; ts: number } | null>(null)
+  const [throughputMbps, setThroughputMbps] = useState<number | null>(null)
+
   const sub         = data?.subscription as R | null | undefined
   const statRows    = (data?.stat_subscription as R[] | undefined) ?? []
   const applyWorker = statRows.find(r => r.rel_name == null)
@@ -132,6 +136,28 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
   const statRepl    = data?.stat_replication as R | null | undefined
   const applyLocks  = (data?.apply_worker_locks as R[] | undefined) ?? []
   const walsenderBlockers = (data?.walsender_blockers as R[] | undefined) ?? []
+  const applyActivity = (data?.apply_worker_activity as R[] | undefined) ?? []
+  const applyBlockers = (data?.apply_worker_blockers as R[] | undefined) ?? []
+  const longRunningTx = (data?.long_running_tx as R[] | undefined) ?? []
+
+  // Compute throughput from successive latest_end_lsn values
+  if (applyWorker?.latest_end_lsn && applyWorker.latest_end_lsn !== '—') {
+    const lsn = String(applyWorker.latest_end_lsn)
+    const prev = throughputRef.current
+    if (prev && prev.lsn !== lsn) {
+      // Parse LSN hex bytes: "X/YYYYYYYY" → BigInt for diff
+      const parseLsn = (s: string) => {
+        const [hi, lo] = s.split('/').map(x => parseInt(x, 16))
+        return BigInt(hi) * BigInt(0x100000000) + BigInt(lo)
+      }
+      try {
+        const dt = (Date.now() - prev.ts) / 1000
+        const delta = Number(parseLsn(lsn) - parseLsn(prev.lsn))
+        if (dt > 0 && delta > 0) setThroughputMbps(delta / dt / (1024 * 1024))
+      } catch { /* ignore parse errors */ }
+    }
+    throughputRef.current = { lsn, ts: Date.now() }
+  }
 
   const applyDown   = !applyWorker?.pid
   const lagBytes    = slot?.lag_bytes as number | undefined
@@ -193,6 +219,18 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                 <div className="mb-2 flex items-start gap-2 bg-red-950/60 border border-red-800 rounded p-3 text-xs text-red-300">
                   <AlertTriangle size={13} className="shrink-0 mt-0.5" />
                   <span><strong>{walsenderBlockers.length} process(es) blocking WAL sender on source</strong></span>
+                </div>
+              )}
+              {applyBlockers.length > 0 && (
+                <div className="mb-2 flex items-start gap-2 bg-red-950/60 border border-red-800 rounded p-3 text-xs text-red-300">
+                  <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                  <span><strong>{applyBlockers.length} process(es) blocking apply worker on destination</strong> — transactions holding locks that prevent WAL application.</span>
+                </div>
+              )}
+              {longRunningTx.length > 0 && (
+                <div className="mb-2 flex items-start gap-2 bg-yellow-950/60 border border-yellow-800 rounded p-3 text-xs text-yellow-300">
+                  <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                  <span><strong>{longRunningTx.length} long-running transaction(s) on destination (&gt;30s)</strong> — may delay apply worker or cause lock contention.</span>
                 </div>
               )}
               {riIssues.length > 0 && (
@@ -320,6 +358,11 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                         <KV label="Last msg receipt" value={String(applyWorker.last_msg_receipt_time ?? '—')} />
                         <KV label="Latest end LSN" value={String(applyWorker.latest_end_lsn ?? '—')} />
                         <KV label="Latest end time" value={String(applyWorker.latest_end_time ?? '—')} />
+                        {throughputMbps != null && (
+                          <KV label="Apply throughput"
+                            value={throughputMbps >= 1 ? `${throughputMbps.toFixed(2)} MB/s` : `${(throughputMbps * 1024).toFixed(0)} KB/s`}
+                            ok={throughputMbps > 1} warn={throughputMbps < 0.1} />
+                        )}
                       </>
                     ) : (
                       <div className="flex items-center gap-1.5 text-xs text-yellow-400">
@@ -327,6 +370,25 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                       </div>
                     )}
                   </Section>
+
+                  {applyActivity.length > 0 && (
+                    <Section title="Apply worker activity (pg_stat_activity)">
+                      {applyActivity.map((a, i) => (
+                        <div key={i}>
+                          <KV label="State" value={String(a.state ?? '—')}
+                            ok={a.state === 'active'} warn={a.state === 'idle in transaction'} />
+                          <KV label="Wait event"
+                            value={a.wait_event ? `${a.wait_event_type}/${a.wait_event}` : '—'}
+                            warn={!!a.wait_event && a.wait_event_type === 'Lock'} />
+                          <KV label="State age" value={a.state_age_s != null ? `${a.state_age_s}s` : '—'}
+                            warn={(a.state_age_s as number) > 60} />
+                          {a.query != null && String(a.query) !== '' && (
+                            <KV label="Query" value={truncate(String(a.query), 120)} mono={true} />
+                          )}
+                        </div>
+                      ))}
+                    </Section>
+                  )}
 
                   {syncWorkers.length > 0 && (
                     <Section title={`Sync workers (${syncWorkers.length} active)`}>
@@ -471,6 +533,77 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                 </Section>
               )}
 
+              {/* Apply worker blockers on dest */}
+              {applyBlockers.length > 0 && (
+                <Section title={`Processes blocking apply worker on dest (${applyBlockers.length})`}>
+                  <table className="w-full text-xs">
+                    <thead><tr className="text-gray-500 border-b border-gray-700">
+                      <th className="text-left py-1 pr-2">Hold PID</th>
+                      <th className="text-left py-1 pr-2">User / App</th>
+                      <th className="text-left py-1 pr-2">Tx age</th>
+                      <th className="text-left py-1 pr-2">Lock object</th>
+                      <th className="text-left py-1">State / Query</th>
+                    </tr></thead>
+                    <tbody>
+                      {applyBlockers.map((b, i) => (
+                        <tr key={i} className="border-b border-gray-800 bg-red-950/20">
+                          <td className="py-1.5 pr-2 font-mono text-red-300">{String(b.hold_pid)}</td>
+                          <td className="py-1.5 pr-2 text-gray-300">
+                            <div>{String(b.hold_user)}</div>
+                            <div className="text-gray-500 text-[10px]">{String(b.hold_app ?? '—')}</div>
+                          </td>
+                          <td className="py-1.5 pr-2 font-mono text-yellow-300">{b.xact_age_s != null ? `${b.xact_age_s}s` : '—'}</td>
+                          <td className="py-1.5 pr-2 font-mono text-[10px] text-gray-300">{truncate(String(b.lock_object ?? '—'), 30)}</td>
+                          <td className="py-1.5">
+                            <div className="text-gray-400">{String(b.hold_state ?? '—')}</div>
+                            <div className="font-mono text-[10px] text-gray-500" title={String(b.hold_query ?? '')}>{truncate(String(b.hold_query ?? ''), 60)}</div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </Section>
+              )}
+
+              {/* Long-running transactions on dest */}
+              {longRunningTx.length > 0 && (
+                <Section title={`Long-running transactions on dest (${longRunningTx.length}, >30s)`}>
+                  <table className="w-full text-xs">
+                    <thead><tr className="text-gray-500 border-b border-gray-700">
+                      <th className="text-left py-1 pr-2">PID</th>
+                      <th className="text-left py-1 pr-2">User / App</th>
+                      <th className="text-left py-1 pr-2">Tx age</th>
+                      <th className="text-left py-1 pr-2">State</th>
+                      <th className="text-left py-1 pr-2">Wait</th>
+                      <th className="text-left py-1">Query</th>
+                    </tr></thead>
+                    <tbody>
+                      {longRunningTx.map((t, i) => (
+                        <tr key={i} className={clsx('border-b border-gray-800',
+                          (t.xact_age_s as number) > 300 ? 'bg-red-950/20' : 'bg-yellow-950/10'
+                        )}>
+                          <td className="py-1.5 pr-2 font-mono text-gray-300">{String(t.pid)}</td>
+                          <td className="py-1.5 pr-2">
+                            <div className="text-gray-300">{String(t.usename)}</div>
+                            <div className="text-gray-500 text-[10px]">{truncate(String(t.application_name ?? ''), 20)}</div>
+                          </td>
+                          <td className={clsx('py-1.5 pr-2 font-mono', (t.xact_age_s as number) > 300 ? 'text-red-300' : 'text-yellow-300')}>
+                            {t.xact_age_s != null ? `${t.xact_age_s}s` : '—'}
+                          </td>
+                          <td className="py-1.5 pr-2 text-gray-400 text-[10px]">{String(t.state ?? '—')}</td>
+                          <td className="py-1.5 pr-2 text-gray-400 text-[10px]">
+                            {t.wait_event ? `${t.wait_event_type}/${t.wait_event}` : '—'}
+                          </td>
+                          <td className="py-1.5 font-mono text-[10px] text-gray-400" title={String(t.query ?? '')}>
+                            {truncate(String(t.query ?? ''), 60)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </Section>
+              )}
+
               {/* Replica identity issues */}
               {riIssues.length > 0 && (
                 <Section title={`Tables without PK or with REPLICA IDENTITY issues (${riIssues.length})`}>
@@ -545,11 +678,13 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
               {/* Errors */}
               {(['dest_error','source_error','stat_subscription_error','subscription_error',
                  'replication_origin_error','replication_slot_error','stat_replication_error',
-                 'apply_worker_locks_error','walsender_blockers_error'] as const).some(k => data[k]) && (
+                 'apply_worker_locks_error','walsender_blockers_error',
+                 'apply_worker_activity_error','apply_worker_blockers_error','long_running_tx_error'] as const).some(k => data[k]) && (
                 <div className="mt-2 space-y-0.5 text-xs text-red-400">
                   {(['dest_error','source_error','stat_subscription_error','subscription_error',
                      'replication_origin_error','replication_slot_error','stat_replication_error',
-                     'apply_worker_locks_error','walsender_blockers_error'] as const).map(k =>
+                     'apply_worker_locks_error','walsender_blockers_error',
+                     'apply_worker_activity_error','apply_worker_blockers_error','long_running_tx_error'] as const).map(k =>
                     data[k] != null ? <div key={k}>{k.replace(/_/g,' ')}: {String(data[k])}</div> : null
                   )}
                 </div>

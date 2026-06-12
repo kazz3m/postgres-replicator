@@ -768,6 +768,25 @@ async def debug_subscription(sub_name: str, database: str):
         except Exception:
             result["error_counts"] = None  # not available on older PG
 
+        # pg_stat_activity for apply worker — wait event, query, state
+        try:
+            apply_pids = [r["pid"] for r in result.get("stat_subscription", []) if r.get("pid") and not r.get("rel_name")]
+            if apply_pids:
+                activity_rows = await dc.fetch("""
+                    SELECT pid, state, wait_event_type, wait_event,
+                           LEFT(query, 200) AS query,
+                           EXTRACT(EPOCH FROM (now() - state_change))::int AS state_age_s,
+                           EXTRACT(EPOCH FROM (now() - query_start))::int AS query_age_s,
+                           backend_type
+                    FROM pg_stat_activity
+                    WHERE pid = ANY($1::int[])
+                """, apply_pids)
+                result["apply_worker_activity"] = [dict(r) for r in activity_rows]
+            else:
+                result["apply_worker_activity"] = []
+        except Exception as e:
+            result["apply_worker_activity_error"] = str(e)
+
         # locks held by apply worker (blocking WAL apply)
         try:
             apply_pids = [r["pid"] for r in result.get("stat_subscription", []) if r.get("pid") and not r.get("rel_name")]
@@ -788,6 +807,61 @@ async def debug_subscription(sub_name: str, database: str):
                 result["apply_worker_locks"] = []
         except Exception as e:
             result["apply_worker_locks_error"] = str(e)
+
+        # processes blocking apply worker on dest (hold locks that apply needs)
+        try:
+            apply_pids = [r["pid"] for r in result.get("stat_subscription", []) if r.get("pid") and not r.get("rel_name")]
+            if apply_pids:
+                blocker_rows = await dc.fetch("""
+                    WITH blockers AS (
+                        SELECT DISTINCT ON (blocked.pid, blocker.pid)
+                               blocked.pid AS wait_pid,
+                               blocker.pid AS hold_pid,
+                               blocker.usename AS hold_user,
+                               blocker.application_name AS hold_app,
+                               EXTRACT(EPOCH FROM (now() - blocker.xact_start))::int AS xact_age_s,
+                               blocker.state AS hold_state,
+                               blocker.wait_event_type AS hold_wait_type,
+                               blocker.wait_event AS hold_wait_event,
+                               LEFT(blocker.query, 200) AS hold_query,
+                               wl.mode AS wait_mode,
+                               hl.mode AS hold_mode,
+                               COALESCE(wl.relation::regclass::text, wl.locktype) AS lock_object
+                        FROM pg_stat_activity blocked
+                        JOIN pg_locks wl ON wl.pid = blocked.pid AND NOT wl.granted
+                        JOIN pg_locks hl ON hl.locktype = wl.locktype
+                                         AND hl.granted
+                                         AND (hl.relation IS NOT DISTINCT FROM wl.relation)
+                                         AND hl.transactionid IS NOT DISTINCT FROM wl.transactionid
+                                         AND hl.pid <> wl.pid
+                        JOIN pg_stat_activity blocker ON blocker.pid = hl.pid
+                        WHERE blocked.pid = ANY($1::int[])
+                    ) SELECT * FROM blockers ORDER BY xact_age_s DESC NULLS LAST
+                """, apply_pids)
+                result["apply_worker_blockers"] = [dict(r) for r in blocker_rows]
+            else:
+                result["apply_worker_blockers"] = []
+        except Exception as e:
+            result["apply_worker_blockers_error"] = str(e)
+
+        # long-running transactions on dest that may slow down apply
+        try:
+            long_tx_rows = await dc.fetch("""
+                SELECT pid, usename, application_name, state,
+                       wait_event_type, wait_event,
+                       EXTRACT(EPOCH FROM (now() - xact_start))::int AS xact_age_s,
+                       EXTRACT(EPOCH FROM (now() - query_start))::int AS query_age_s,
+                       LEFT(query, 200) AS query
+                FROM pg_stat_activity
+                WHERE xact_start IS NOT NULL
+                  AND state <> 'idle'
+                  AND EXTRACT(EPOCH FROM (now() - xact_start)) > 30
+                ORDER BY xact_start ASC
+                LIMIT 15
+            """)
+            result["long_running_tx"] = [dict(r) for r in long_tx_rows]
+        except Exception as e:
+            result["long_running_tx_error"] = str(e)
 
         await dc.close()
 
