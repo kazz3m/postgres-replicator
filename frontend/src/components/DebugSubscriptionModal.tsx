@@ -469,7 +469,7 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                         </>
                       ) : (errCounts?.apply_error_count as number) > 0 ? (
                         <div className="text-xs text-gray-500 py-0.5 italic">
-                          Last error message not available (requires PostgreSQL 16+ on destination) — check destination logs or see All Workers below.
+                          Last error message not available (requires PostgreSQL 17+ on destination) — check destination logs or see All Workers below.
                         </div>
                       ) : null}
                       <KV label="Sync errors" value={String(errCounts.sync_error_count)}

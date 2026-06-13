@@ -808,21 +808,20 @@ async def debug_subscription(sub_name: str, database: str):
         except Exception as e:
             result["replication_origin_error"] = str(e)
 
-        # pg_stat_subscription_stats — error counts + last error (PG 15+)
+        # pg_stat_subscription_stats — error counts (PG 15+), last_error cols (PG 17+)
         try:
-            stats_row = await dc.fetchrow("""
-                SELECT apply_error_count, sync_error_count,
-                       last_apply_error_message,
-                       last_apply_error_time::text,
-                       last_sync_error_message,
-                       last_sync_error_time::text
-                FROM pg_stat_subscription_stats
-                WHERE subname = $1
-            """, sub_name)
-            result["error_counts"] = dict(stats_row) if stats_row else None
-        except Exception:
-            # PG 15 doesn't have last_*_error_* columns — fallback to counts only
-            try:
+            pg_ver = await dc.fetchval("SELECT current_setting('server_version_num')::int")
+            if pg_ver >= 170000:
+                stats_row = await dc.fetchrow("""
+                    SELECT apply_error_count, sync_error_count,
+                           last_apply_error_message,
+                           last_apply_error_time::text,
+                           last_sync_error_message,
+                           last_sync_error_time::text
+                    FROM pg_stat_subscription_stats
+                    WHERE subname = $1
+                """, sub_name)
+            else:
                 stats_row = await dc.fetchrow("""
                     SELECT apply_error_count, sync_error_count,
                            NULL AS last_apply_error_message,
@@ -832,9 +831,9 @@ async def debug_subscription(sub_name: str, database: str):
                     FROM pg_stat_subscription_stats
                     WHERE subname = $1
                 """, sub_name)
-                result["error_counts"] = dict(stats_row) if stats_row else None
-            except Exception:
-                result["error_counts"] = None
+            result["error_counts"] = dict(stats_row) if stats_row else None
+        except Exception:
+            result["error_counts"] = None
 
         await dc.close()
 
