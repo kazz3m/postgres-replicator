@@ -940,6 +940,24 @@ async def debug_subscription(sub_name: str, database: str):
         except Exception as e:
             result["long_running_tx_error"] = str(e)
 
+        # All logical replication workers for this subscription (PG15 fallback for last error)
+        # application_name for apply worker = sub_name
+        try:
+            worker_rows = await dc2.fetch("""
+                SELECT pid, datname, usename, application_name,
+                       state, wait_event_type, wait_event, backend_type,
+                       LEFT(query, 500) AS query,
+                       EXTRACT(EPOCH FROM (now() - state_change))::int AS state_age_s,
+                       EXTRACT(EPOCH FROM (now() - query_start))::int AS query_age_s
+                FROM pg_stat_activity
+                WHERE backend_type = 'logical replication worker'
+                   OR application_name = $1
+                ORDER BY pid
+            """, sub_name)
+            result["all_replication_workers"] = [dict(r) for r in worker_rows]
+        except Exception as e:
+            result["all_replication_workers_error"] = str(e)
+
         await dc2.close()
 
     # ── Source side ───────────────────────────────────────────────────────────

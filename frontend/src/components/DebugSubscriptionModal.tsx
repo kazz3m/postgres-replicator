@@ -139,6 +139,8 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
   const applyActivity = (data?.apply_worker_activity as R[] | undefined) ?? []
   const applyBlockers = (data?.apply_worker_blockers as R[] | undefined) ?? []
   const longRunningTx = (data?.long_running_tx as R[] | undefined) ?? []
+  const allWorkers    = (data?.all_replication_workers as R[] | undefined) ?? []
+  const hasLastError  = errCounts?.last_apply_error_message != null
 
   // Compute throughput from successive latest_end_lsn values
   if (applyWorker?.latest_end_lsn && applyWorker.latest_end_lsn !== '—') {
@@ -409,21 +411,67 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                     </Section>
                   )}
 
+                  {allWorkers.length > 0 && (
+                    <Section title={`All replication workers (${allWorkers.length})`}>
+                      <table className="w-full text-xs">
+                        <thead><tr className="text-gray-500 border-b border-gray-700">
+                          <th className="text-left py-1 pr-2">PID</th>
+                          <th className="text-left py-1 pr-2">DB</th>
+                          <th className="text-left py-1 pr-2">State</th>
+                          <th className="text-left py-1 pr-2">Wait</th>
+                          <th className="text-left py-1 pr-2">Age</th>
+                          <th className="text-left py-1">Query</th>
+                        </tr></thead>
+                        <tbody>
+                          {allWorkers.map((w, i) => (
+                            <tr key={i} className={clsx('border-b border-gray-800',
+                              w.state === 'idle in transaction (aborted)' ? 'bg-red-950/20' :
+                              w.state !== 'idle' ? 'bg-yellow-950/10' : ''
+                            )}>
+                              <td className="py-1 pr-2 font-mono text-gray-300">{String(w.pid)}</td>
+                              <td className="py-1 pr-2 text-blue-300/70 text-[10px] font-mono">{String(w.datname ?? '—')}</td>
+                              <td className="py-1 pr-2 text-[10px]">
+                                <span className={clsx(
+                                  w.state === 'idle in transaction (aborted)' ? 'text-red-400' :
+                                  w.state === 'active' ? 'text-green-400' :
+                                  w.state === 'idle' ? 'text-gray-500' : 'text-yellow-300'
+                                )}>{String(w.state ?? '—')}</span>
+                              </td>
+                              <td className="py-1 pr-2 text-gray-500 text-[10px]">
+                                {w.wait_event ? `${w.wait_event_type}/${w.wait_event}` : '—'}
+                              </td>
+                              <td className="py-1 pr-2 font-mono text-[10px] text-gray-400">
+                                {w.state_age_s != null ? `${w.state_age_s}s` : '—'}
+                              </td>
+                              <td className="py-1 font-mono text-[10px] text-gray-400" title={String(w.query ?? '')}>
+                                {truncate(String(w.query ?? ''), 80)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </Section>
+                  )}
+
                   {errCounts && (
                     <Section title="Error counts (pg_stat_subscription_stats)">
                       <KV label="Apply errors" value={String(errCounts.apply_error_count)}
                         warn={(errCounts.apply_error_count as number) > 0} ok={(errCounts.apply_error_count as number) === 0} />
-                      {errCounts.last_apply_error_message != null && (
+                      {hasLastError ? (
                         <>
                           <KV label="Last apply error time" value={String(errCounts.last_apply_error_time ?? '—')} warn mono />
                           <div className="flex items-start gap-2 text-xs py-1">
                             <span className="text-gray-500 w-48 shrink-0">Last apply error</span>
                             <span className="font-mono text-red-300 break-all bg-red-950/30 border border-red-900/40 rounded px-2 py-1 text-[11px] leading-relaxed">
-                              {String(errCounts.last_apply_error_message)}
+                              {String(errCounts!.last_apply_error_message)}
                             </span>
                           </div>
                         </>
-                      )}
+                      ) : (errCounts?.apply_error_count as number) > 0 ? (
+                        <div className="text-xs text-gray-500 py-0.5 italic">
+                          Last error message not available (requires PostgreSQL 16+ on destination) — check destination logs or see All Workers below.
+                        </div>
+                      ) : null}
                       <KV label="Sync errors" value={String(errCounts.sync_error_count)}
                         warn={(errCounts.sync_error_count as number) > 0} ok={(errCounts.sync_error_count as number) === 0} />
                       {errCounts.last_sync_error_message != null && (
