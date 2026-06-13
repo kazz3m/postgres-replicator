@@ -528,6 +528,28 @@ async def copy_progress():
             SELECT application_name, state
             FROM pg_stat_replication
         """)
+        # Detect which table OIDs have their CREATE_REPLICATION_SLOT blocked on source.
+        # Sync worker slot names: pg_<suboid>_sync_<reloid>_<random>
+        # Blocked = walsender PID waiting for a lock (ungranted in pg_locks).
+        try:
+            blocked_slot_rows = await src_conn.fetch("""
+                SELECT a.query
+                FROM pg_stat_activity a
+                JOIN pg_locks l ON l.pid = a.pid AND NOT l.granted
+                WHERE a.query ILIKE '%CREATE_REPLICATION_SLOT%'
+                   OR a.query ILIKE '%create replication slot%'
+            """)
+            # Extract reloid from slot name pattern pg_NNN_sync_RELOID_NNN
+            import re as _re2
+            _slot_re = _re2.compile(r'pg_\d+_sync_(\d+)_\d+')
+            blocked_table_oids: set[int] = set()
+            for row in blocked_slot_rows:
+                q = row["query"] or ""
+                m = _slot_re.search(q)
+                if m:
+                    blocked_table_oids.add(int(m.group(1)))
+        except Exception:
+            blocked_table_oids = set()
     repl_state_map = {r["application_name"]: r["state"] for r in repl_rows}
 
     # Only keep real subscription slots (exclude worker sync slots)
@@ -574,8 +596,9 @@ async def copy_progress():
         """)]
 
     state_label = {'i':'initializing','d':'copying','f':'catching up','s':'synced','r':'ready','e':'error'}
-    state_label_waiting = {**state_label, 'd': 'waiting'}
-    state_label_locked  = {**state_label, 'd': 'locked'}
+    state_label_waiting      = {**state_label, 'd': 'waiting'}
+    state_label_locked       = {**state_label, 'd': 'locked'}
+    state_label_slot_pending = {**state_label, 'd': 'slot pending'}
 
     def _decode_state(v) -> str:
         """Normalize srsubstate — asyncpg may return bytes on Windows."""
@@ -669,9 +692,12 @@ async def copy_progress():
             if sub_state == 'd' and copy_active:
                 subs_by_name[sub_name].copying_active = True
                 global_copying = True
-            # 'd' status: copying → waiting → locked (sync worker blocked by lock)
+            # 'd' status priority: copying > slot_pending > locked > waiting
+            table_oid = r["table_oid"]
             if copy_active:
                 label_map = state_label
+            elif table_oid and int(table_oid) in blocked_table_oids:
+                label_map = state_label_slot_pending
             elif sync_blocked:
                 label_map = state_label_locked
             else:

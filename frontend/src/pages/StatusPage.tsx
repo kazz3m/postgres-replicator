@@ -53,10 +53,11 @@ function lagColor(bytes: number): string {
   return 'text-green-400'
 }
 
-function statusVariant(s: string): 'green' | 'yellow' | 'blue' | 'red' | 'gray' {
+function statusVariant(s: string): 'green' | 'yellow' | 'blue' | 'red' | 'gray' | 'orange' {
   if (s === 'synced' || s === 'ready') return 'green'
   if (s === 'copying') return 'blue'
   if (s === 'initializing' || s === 'catching up' || s === 'waiting') return 'yellow'
+  if (s === 'slot pending') return 'orange'
   if (s === 'error' || s === 'locked') return 'red'
   return 'gray'
 }
@@ -130,7 +131,7 @@ export function StatusPage({ initialSnapshot }: Props) {
     else { setSortCol(col); setSortDir('asc') }
   }
   const STATE_ORDER: Record<string, number> = {
-    locked: 0, copying: 1, waiting: 2, initializing: 3, 'catching up': 4, synced: 5, ready: 6, error: 7, unknown: 8,
+    locked: 0, 'slot pending': 1, copying: 2, waiting: 3, initializing: 4, 'catching up': 5, synced: 6, ready: 7, error: 8, unknown: 9,
   }
   function sortTables(tables: TableCopyProgress[]) {
     return [...tables].sort((a, b) => {
