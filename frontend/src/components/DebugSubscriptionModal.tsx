@@ -140,7 +140,6 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
   const applyBlockers = (data?.apply_worker_blockers as R[] | undefined) ?? []
   const longRunningTx = (data?.long_running_tx as R[] | undefined) ?? []
   const allWorkers    = (data?.all_replication_workers as R[] | undefined) ?? []
-  const hasLastError  = errCounts?.last_apply_error_message != null
 
   // Compute throughput from successive latest_end_lsn values
   if (applyWorker?.latest_end_lsn && applyWorker.latest_end_lsn !== '—') {
@@ -208,14 +207,7 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
               {hasErrors && (
                 <div className="mb-2 flex items-start gap-2 bg-red-950/60 border border-red-800 rounded p-3 text-xs text-red-300">
                   <AlertTriangle size={13} className="shrink-0 mt-0.5" />
-                  <div className="space-y-1">
-                    <span><strong>Errors detected</strong> — apply errors: {String(errCounts?.apply_error_count)}, sync errors: {String(errCounts?.sync_error_count)}</span>
-                    {errCounts?.last_apply_error_message != null && (
-                      <div className="font-mono text-[11px] text-red-200 bg-red-950/50 rounded px-2 py-1 break-all">
-                        {String(errCounts.last_apply_error_message)}
-                      </div>
-                    )}
-                  </div>
+                  <span><strong>Errors detected</strong> — apply errors: {String(errCounts?.apply_error_count)}, sync errors: {String(errCounts?.sync_error_count)}. Check <em>All replication workers</em> below or destination logs.</span>
                 </div>
               )}
               {blockedApplyLocks.length > 0 && (
@@ -457,31 +449,8 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                     <Section title="Error counts (pg_stat_subscription_stats)">
                       <KV label="Apply errors" value={String(errCounts.apply_error_count)}
                         warn={(errCounts.apply_error_count as number) > 0} ok={(errCounts.apply_error_count as number) === 0} />
-                      {hasLastError ? (
-                        <>
-                          <KV label="Last apply error time" value={String(errCounts.last_apply_error_time ?? '—')} warn mono />
-                          <div className="flex items-start gap-2 text-xs py-1">
-                            <span className="text-gray-500 w-48 shrink-0">Last apply error</span>
-                            <span className="font-mono text-red-300 break-all bg-red-950/30 border border-red-900/40 rounded px-2 py-1 text-[11px] leading-relaxed">
-                              {String(errCounts!.last_apply_error_message)}
-                            </span>
-                          </div>
-                        </>
-                      ) : (errCounts?.apply_error_count as number) > 0 ? (
-                        <div className="text-xs text-gray-500 py-0.5 italic">
-                          Last error message not available (requires PostgreSQL 17+ on destination) — check destination logs or see All Workers below.
-                        </div>
-                      ) : null}
                       <KV label="Sync errors" value={String(errCounts.sync_error_count)}
                         warn={(errCounts.sync_error_count as number) > 0} ok={(errCounts.sync_error_count as number) === 0} />
-                      {errCounts.last_sync_error_message != null && (
-                        <div className="flex items-start gap-2 text-xs py-1">
-                          <span className="text-gray-500 w-48 shrink-0">Last sync error</span>
-                          <span className="font-mono text-red-300 break-all bg-red-950/30 border border-red-900/40 rounded px-2 py-1 text-[11px] leading-relaxed">
-                            {String(errCounts.last_sync_error_message)}
-                          </span>
-                        </div>
-                      )}
                     </Section>
                   )}
 
