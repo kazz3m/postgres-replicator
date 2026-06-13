@@ -574,8 +574,8 @@ async def copy_progress():
         """)]
 
     state_label = {'i':'initializing','d':'copying','f':'catching up','s':'synced','r':'ready','e':'error'}
-    # 'd' with no active COPY process = waiting for sync worker slot
     state_label_waiting = {**state_label, 'd': 'waiting'}
+    state_label_locked  = {**state_label, 'd': 'locked'}
 
     def _decode_state(v) -> str:
         """Normalize srsubstate — asyncpg may return bytes on Windows."""
@@ -602,13 +602,22 @@ async def copy_progress():
             COALESCE(cp.bytes_processed, 0)              AS bytes_processed,
             COALESCE(pg_relation_size(c.oid), 0)         AS table_size_bytes,
             GREATEST(psu.last_analyze, psu.last_autoanalyze) AS last_analyze,
-            (cp.pid IS NOT NULL)                         AS copy_active
+            (cp.pid IS NOT NULL)                         AS copy_active,
+            sw.pid                                       AS sync_worker_pid,
+            -- sync worker has an ungranted lock = blocked waiting for table lock
+            EXISTS(
+                SELECT 1 FROM pg_locks l
+                WHERE l.pid = sw.pid AND NOT l.granted
+            )                                            AS sync_worker_blocked
         FROM pg_subscription_rel sr
         JOIN pg_subscription s   ON s.oid  = sr.srsubid
         JOIN pg_class       c    ON c.oid  = sr.srrelid
         JOIN pg_namespace   n    ON n.oid  = c.relnamespace
         LEFT JOIN pg_stat_progress_copy cp  ON cp.relid  = c.oid
         LEFT JOIN pg_stat_user_tables   psu ON psu.relid = c.oid
+        LEFT JOIN pg_stat_subscription  sw  ON sw.subid  = s.oid
+                                            AND sw.relid  = c.oid
+                                            AND sw.pid IS NOT NULL
         ORDER BY s.subname, n.nspname, c.relname
     """
 
@@ -650,6 +659,7 @@ async def copy_progress():
 
             sub_state = _decode_state(r["sub_state"])
             copy_active = bool(r["copy_active"]) if sub_state == 'd' else False
+            sync_blocked = bool(r["sync_worker_blocked"]) if sub_state == 'd' and not copy_active else False
             tuples_done, tuples_total = r["tuples_done"], r["tuples_total"]
             copy_pct: Optional[float] = None
             if sub_state == 'd' and copy_active and tuples_done > 0 and tuples_total > 0:
@@ -659,8 +669,13 @@ async def copy_progress():
             if sub_state == 'd' and copy_active:
                 subs_by_name[sub_name].copying_active = True
                 global_copying = True
-            # Use 'waiting' label for 'd' without an active COPY process
-            label_map = state_label if copy_active else state_label_waiting
+            # 'd' status: copying → waiting → locked (sync worker blocked by lock)
+            if copy_active:
+                label_map = state_label
+            elif sync_blocked:
+                label_map = state_label_locked
+            else:
+                label_map = state_label_waiting
             last_analyze = r["last_analyze"]
             subs_by_name[sub_name].tables.append(TableCopyProgress(
                 schema_name=r["schema_name"], table_name=r["table_name"],

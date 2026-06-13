@@ -57,7 +57,7 @@ function statusVariant(s: string): 'green' | 'yellow' | 'blue' | 'red' | 'gray' 
   if (s === 'synced' || s === 'ready') return 'green'
   if (s === 'copying') return 'blue'
   if (s === 'initializing' || s === 'catching up' || s === 'waiting') return 'yellow'
-  if (s === 'error') return 'red'
+  if (s === 'error' || s === 'locked') return 'red'
   return 'gray'
 }
 
@@ -130,7 +130,7 @@ export function StatusPage({ initialSnapshot }: Props) {
     else { setSortCol(col); setSortDir('asc') }
   }
   const STATE_ORDER: Record<string, number> = {
-    copying: 0, waiting: 1, initializing: 2, 'catching up': 3, synced: 4, ready: 5, error: 6, unknown: 7,
+    locked: 0, copying: 1, waiting: 2, initializing: 3, 'catching up': 4, synced: 5, ready: 6, error: 7, unknown: 8,
   }
   function sortTables(tables: TableCopyProgress[]) {
     return [...tables].sort((a, b) => {
