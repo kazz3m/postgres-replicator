@@ -56,7 +56,7 @@ function lagColor(bytes: number): string {
 function statusVariant(s: string): 'green' | 'yellow' | 'blue' | 'red' | 'gray' {
   if (s === 'synced' || s === 'ready') return 'green'
   if (s === 'copying') return 'blue'
-  if (s === 'initializing' || s === 'catching up') return 'yellow'
+  if (s === 'initializing' || s === 'catching up' || s === 'waiting') return 'yellow'
   if (s === 'error') return 'red'
   return 'gray'
 }
@@ -130,7 +130,7 @@ export function StatusPage({ initialSnapshot }: Props) {
     else { setSortCol(col); setSortDir('asc') }
   }
   const STATE_ORDER: Record<string, number> = {
-    copying: 0, initializing: 1, 'catching up': 2, synced: 3, ready: 4, error: 5, unknown: 6,
+    copying: 0, waiting: 1, initializing: 2, 'catching up': 3, synced: 4, ready: 5, error: 6, unknown: 7,
   }
   function sortTables(tables: TableCopyProgress[]) {
     return [...tables].sort((a, b) => {
@@ -524,7 +524,7 @@ export function StatusPage({ initialSnapshot }: Props) {
           {(() => {
             void speedVersion
             const totalMbps = Object.values(speedRef.current).reduce((s, v) => s + v.avgMbps, 0)
-            const anyActive = copyData?.subscriptions?.some(s => s.tables.some(t => t.sub_state === 'd'))
+            const anyActive = copyData?.subscriptions?.some(s => s.tables.some(t => t.status === 'copying'))
             if (!anyActive || totalMbps < 0.01) return null
             const label = totalMbps >= 1000
               ? `${(totalMbps / 1024).toFixed(1)} GB/s`
@@ -538,7 +538,7 @@ export function StatusPage({ initialSnapshot }: Props) {
               const copied = withSrc.reduce((s, t) => {
                 const src = getSourceSize(sub.database, t.schema_name, t.table_name) ?? 0
                 if (['f','s','r'].includes(t.sub_state)) return s + src
-                if (t.sub_state === 'd') return s + Math.min(t.table_size_bytes, src)
+                if (t.sub_state === 'd' && t.status === 'copying') return s + Math.min(t.table_size_bytes, src)
                 return s
               }, 0)
               return sum + Math.max(0, srcTotal - copied)
@@ -600,15 +600,15 @@ export function StatusPage({ initialSnapshot }: Props) {
           const totalCopiedBytes = tablesWithSource.reduce((s, t) => {
             const srcSize = getSourceSize(sub.database, t.schema_name, t.table_name) ?? 0
             if (['f','s','r'].includes(t.sub_state)) return s + srcSize
-            // For copying tables use dest heap size (same metric as per-table progress bar)
-            if (t.sub_state === 'd') return s + Math.min(t.table_size_bytes, srcSize)
+            // Only count actively copying tables (not 'waiting')
+            if (t.sub_state === 'd' && t.status === 'copying') return s + Math.min(t.table_size_bytes, srcSize)
             return s
           }, 0)
           const copyPct = totalSourceBytes > 0 ? Math.min(100, totalCopiedBytes / totalSourceBytes * 100) : null
           const showCopyProgress = tablesWithSource.length > 0
           void speedVersion
           const mbps = speedRef.current[sub.sub_name]?.avgMbps ?? 0
-          const hasActiveCopy = sub.tables.some(t => t.sub_state === 'd')
+          const hasActiveCopy = sub.tables.some(t => t.status === 'copying')
           const showSpeed = mbps > 0.01 && hasActiveCopy
           const remainingBytes = totalSourceBytes - totalCopiedBytes
           const etaSecs = showSpeed && remainingBytes > 0 ? remainingBytes / (mbps * 1024 * 1024) : null
@@ -758,7 +758,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                   </thead>
                   <tbody>
                     {sortTables(sub.tables).map((row: TableCopyProgress) => {
-                      const isCopying = row.sub_state === 'd'
+                      const isCopying = row.status === 'copying'
                       const isDone = ['f','s','r'].includes(row.sub_state)
                       const srcSize = getSourceSize(sub.database, row.schema_name, row.table_name)
                       const srcRowEst = getSourceRowEstimate(sub.database, row.schema_name, row.table_name)

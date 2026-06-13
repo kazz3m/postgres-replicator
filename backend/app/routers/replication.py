@@ -574,6 +574,8 @@ async def copy_progress():
         """)]
 
     state_label = {'i':'initializing','d':'copying','f':'catching up','s':'synced','r':'ready','e':'error'}
+    # 'd' with no active COPY process = waiting for sync worker slot
+    state_label_waiting = {**state_label, 'd': 'waiting'}
 
     def _decode_state(v) -> str:
         """Normalize srsubstate — asyncpg may return bytes on Windows."""
@@ -599,7 +601,8 @@ async def copy_progress():
             COALESCE(NULLIF(c.reltuples::bigint, -1), 0) AS tuples_total,
             COALESCE(cp.bytes_processed, 0)              AS bytes_processed,
             COALESCE(pg_relation_size(c.oid), 0)         AS table_size_bytes,
-            GREATEST(psu.last_analyze, psu.last_autoanalyze) AS last_analyze
+            GREATEST(psu.last_analyze, psu.last_autoanalyze) AS last_analyze,
+            (cp.pid IS NOT NULL)                         AS copy_active
         FROM pg_subscription_rel sr
         JOIN pg_subscription s   ON s.oid  = sr.srsubid
         JOIN pg_class       c    ON c.oid  = sr.srrelid
@@ -646,24 +649,27 @@ async def copy_progress():
                 )
 
             sub_state = _decode_state(r["sub_state"])
+            copy_active = bool(r["copy_active"]) if sub_state == 'd' else False
             tuples_done, tuples_total = r["tuples_done"], r["tuples_total"]
             copy_pct: Optional[float] = None
-            if sub_state == 'd' and tuples_done > 0 and tuples_total > 0:
+            if sub_state == 'd' and copy_active and tuples_done > 0 and tuples_total > 0:
                 copy_pct = min(100.0, tuples_done / tuples_total * 100)
             elif sub_state in ('f', 's', 'r'):
                 copy_pct = 100.0
-            if sub_state == 'd':
+            if sub_state == 'd' and copy_active:
                 subs_by_name[sub_name].copying_active = True
                 global_copying = True
+            # Use 'waiting' label for 'd' without an active COPY process
+            label_map = state_label if copy_active else state_label_waiting
             last_analyze = r["last_analyze"]
             subs_by_name[sub_name].tables.append(TableCopyProgress(
                 schema_name=r["schema_name"], table_name=r["table_name"],
                 table_oid=r["table_oid"],
                 row_estimate=tuples_total if tuples_total and tuples_total > 0 else None,
-                sub_state=sub_state, status=state_label.get(sub_state, 'unknown'),
-                tuples_done=tuples_done if sub_state == 'd' else None,
-                tuples_total=tuples_total if sub_state == 'd' else None,
-                bytes_processed=r["bytes_processed"] if sub_state == 'd' else None,
+                sub_state=sub_state, status=label_map.get(sub_state, 'unknown'),
+                tuples_done=tuples_done if sub_state == 'd' and copy_active else None,
+                tuples_total=tuples_total if sub_state == 'd' and copy_active else None,
+                bytes_processed=r["bytes_processed"] if sub_state == 'd' and copy_active else None,
                 table_size_bytes=r["table_size_bytes"],
                 source_size_bytes=None,  # filled in below
                 copy_pct=copy_pct,
