@@ -577,12 +577,14 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       ? { schemas: Array.from(selectedSchemas).map(toSchema) }
       : { tables: Array.from(selectedTables).map(toSchemaTable) }
 
+    // Resolve database once — used in all three steps
+    const database = replConfigs[pubName]?.database
+      ?? (selectedTables.size > 0 ? [...selectedTables][0].split('.')[0] : undefined)
+      ?? (selectedSchemas.size > 0 ? [...selectedSchemas][0].split('.')[0] : undefined)
+
     // Step 1 — create publication
     setStep(0, { state: 'running' })
     try {
-      const database = replConfigs[pubName]?.database
-        ?? (selectedTables.size > 0 ? [...selectedTables][0].split('.')[0] : undefined)
-        ?? (selectedSchemas.size > 0 ? [...selectedSchemas][0].split('.')[0] : undefined)
       await replicationApi.createPublication({ publication_name: pubName, target, database })
       setStep(0, { state: 'ok', detail: `FOR ${selectedSchemas.size > 0 ? 'TABLES IN SCHEMA' : 'TABLE'} ${selectedSchemas.size > 0 ? Array.from(selectedSchemas).map(toSchema).join(', ') : Array.from(selectedTables).map(toSchemaTable).slice(0, 3).join(', ') + (selectedTables.size > 3 ? ` +${selectedTables.size - 3} more` : '')}` })
     } catch (e: any) {
@@ -596,7 +598,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
     setStep(1, { state: 'running' })
     try {
       if (selectedTables.size > 0) {
-        const { data: diffs } = await replicationApi.schemaCheck(Array.from(selectedTables).map(toSchemaTable), replConfigs[pubName]?.database)
+        const { data: diffs } = await replicationApi.schemaCheck(Array.from(selectedTables).map(toSchemaTable), database)
         const missing = diffs.filter(d => !d.exists_on_dest)
         if (missing.length > 0) {
           setStep(1, { state: 'error', detail: `Missing on destination: ${missing.map(d => d.table).join(', ')}` })
@@ -619,7 +621,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
         publication_name: pubName,
         source_dsn: sourceDsn,
         copy_data: copyData,
-        database: replConfigs[pubName]?.database,
+        database,
       })
       setStep(2, { state: 'ok', detail: copyData ? 'Initial data copy will begin shortly' : 'Replication active (no initial copy)' })
       setResult(`Publication "${pubName}" and subscription "${subName}" created successfully.`)
@@ -627,7 +629,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
         pub_name: pubName, sub_name: subName, copy_data: copyData,
         tables: tablesToCheck,
         schemas: Array.from(selectedSchemas).map(toSchema),
-        database: replConfigs[pubName]?.database,
+        database,
         last_applied: new Date().toISOString(), last_status: 'ok', last_error: undefined,
       })
     } catch (e: any) {
@@ -638,7 +640,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
         pub_name: pubName, sub_name: subName, copy_data: copyData,
         tables: tablesToCheck,
         schemas: Array.from(selectedSchemas).map(toSchema),
-        database: replConfigs[pubName]?.database,
+        database,
         last_applied: new Date().toISOString(), last_status: 'error', last_error: msg,
       })
     } finally {
