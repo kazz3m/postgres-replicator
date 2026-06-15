@@ -715,7 +715,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       {tablesToCheck.length > 0 && (
         <SchemaCheckPanel
           tables={tablesToCheck}
-          database={replConfigs[pubName]?.database}
+          database={replConfigs[pubName]?.database ?? [...selectedDbs][0]}
           onAllOk={setSchemaOk}
         />
       )}
