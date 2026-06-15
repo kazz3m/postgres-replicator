@@ -112,12 +112,14 @@ interface ApplyModalProps {
   steps: Step[]
   done: boolean
   onClose: () => void
-  onConfirm: () => void
+  onConfirm: (startFromStep?: number) => void
 }
 
 function ApplyModal({ pubName, subName, steps, done, onClose, onConfirm }: ApplyModalProps) {
   const started = steps.some(s => s.state !== 'pending')
   const hasError = steps.some(s => s.state === 'error')
+  // Find first failed step index for retry
+  const firstErrorStep = steps.findIndex(s => s.state === 'error')
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -163,7 +165,7 @@ function ApplyModal({ pubName, subName, steps, done, onClose, onConfirm }: Apply
                 className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm">
                 Cancel
               </button>
-              <button onClick={onConfirm}
+              <button onClick={() => onConfirm(0)}
                 className="px-4 py-2 bg-blue-700 hover:bg-blue-600 rounded text-sm font-semibold">
                 Apply
               </button>
@@ -173,6 +175,21 @@ function ApplyModal({ pubName, subName, steps, done, onClose, onConfirm }: Apply
             <span className="text-xs text-gray-500 flex items-center gap-1.5">
               <Spinner size={3} /> Working...
             </span>
+          )}
+          {done && hasError && firstErrorStep > 0 && (
+            <button
+              onClick={() => onConfirm(firstErrorStep)}
+              className="px-4 py-2 bg-blue-700 hover:bg-blue-600 rounded text-sm font-semibold flex items-center gap-1.5"
+              title={`Retry from step ${firstErrorStep + 1} — skip already completed steps`}
+            >
+              ↺ Retry from step {firstErrorStep + 1}
+            </button>
+          )}
+          {done && hasError && firstErrorStep === 0 && (
+            <button onClick={() => onConfirm(0)}
+              className="px-4 py-2 bg-blue-700 hover:bg-blue-600 rounded text-sm font-semibold">
+              ↺ Retry all
+            </button>
           )}
           {done && (
             <button onClick={onClose}
@@ -567,9 +584,13 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
     setApplySteps(prev => prev.map((s, idx) => idx === i ? { ...s, ...patch } : s))
   }
 
-  async function applyReplication() {
-    const steps = initSteps()
-    setApplySteps(steps)
+  async function applyReplication(startFromStep = 0) {
+    // When retrying from a specific step, keep previous steps as-is (ok/skipped)
+    setApplySteps(prev => {
+      const steps = startFromStep > 0 ? [...prev] : initSteps()
+      for (let i = startFromStep; i < steps.length; i++) steps[i] = { ...steps[i], state: 'pending', detail: undefined }
+      return steps
+    })
     setApplyDone(false)
     setLoading(true); setError(''); setResult('')
 
@@ -583,34 +604,38 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       ?? (selectedSchemas.size > 0 ? [...selectedSchemas][0].split('.')[0] : undefined)
 
     // Step 1 — create publication
-    setStep(0, { state: 'running' })
-    try {
-      await replicationApi.createPublication({ publication_name: pubName, target, database })
-      setStep(0, { state: 'ok', detail: `FOR ${selectedSchemas.size > 0 ? 'TABLES IN SCHEMA' : 'TABLE'} ${selectedSchemas.size > 0 ? Array.from(selectedSchemas).map(toSchema).join(', ') : Array.from(selectedTables).map(toSchemaTable).slice(0, 3).join(', ') + (selectedTables.size > 3 ? ` +${selectedTables.size - 3} more` : '')}` })
-    } catch (e: any) {
-      const msg = extractError(e)
-      setStep(0, { state: 'error', detail: msg })
-      setApplyDone(true); setLoading(false)
-      return
+    if (startFromStep <= 0) {
+      setStep(0, { state: 'running' })
+      try {
+        await replicationApi.createPublication({ publication_name: pubName, target, database })
+        setStep(0, { state: 'ok', detail: `FOR ${selectedSchemas.size > 0 ? 'TABLES IN SCHEMA' : 'TABLE'} ${selectedSchemas.size > 0 ? Array.from(selectedSchemas).map(toSchema).join(', ') : Array.from(selectedTables).map(toSchemaTable).slice(0, 3).join(', ') + (selectedTables.size > 3 ? ` +${selectedTables.size - 3} more` : '')}` })
+      } catch (e: any) {
+        const msg = extractError(e)
+        setStep(0, { state: 'error', detail: msg })
+        setApplyDone(true); setLoading(false)
+        return
+      }
     }
 
-    // Step 2 — verify tables (subscription create will also check, but show it explicitly)
-    setStep(1, { state: 'running' })
-    try {
-      if (selectedTables.size > 0) {
-        const { data: diffs } = await replicationApi.schemaCheck(Array.from(selectedTables).map(toSchemaTable), database)
-        const missing = diffs.filter(d => !d.exists_on_dest)
-        if (missing.length > 0) {
-          setStep(1, { state: 'error', detail: `Missing on destination: ${missing.map(d => d.table).join(', ')}` })
-          setApplyDone(true); setLoading(false)
-          return
+    // Step 2 — verify tables
+    if (startFromStep <= 1) {
+      setStep(1, { state: 'running' })
+      try {
+        if (selectedTables.size > 0) {
+          const { data: diffs } = await replicationApi.schemaCheck(Array.from(selectedTables).map(toSchemaTable), database)
+          const missing = diffs.filter(d => !d.exists_on_dest)
+          if (missing.length > 0) {
+            setStep(1, { state: 'error', detail: `Missing on destination: ${missing.map(d => d.table).join(', ')}` })
+            setApplyDone(true); setLoading(false)
+            return
+          }
         }
+        setStep(1, { state: 'ok', detail: 'All tables present on destination' })
+      } catch (e: any) {
+        setStep(1, { state: 'error', detail: extractError(e) })
+        setApplyDone(true); setLoading(false)
+        return
       }
-      setStep(1, { state: 'ok', detail: 'All tables present on destination' })
-    } catch (e: any) {
-      setStep(1, { state: 'error', detail: extractError(e) })
-      setApplyDone(true); setLoading(false)
-      return
     }
 
     // Step 3 — create subscription
@@ -907,7 +932,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
           steps={applySteps}
           done={applyDone}
           onClose={() => { setShowApplyModal(false); setApplySteps([]); setApplyDone(false) }}
-          onConfirm={applyReplication}
+          onConfirm={(startFromStep) => applyReplication(startFromStep)}
         />
       )}
       {confirmAction === 'drop_pub' && (
