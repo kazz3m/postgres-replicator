@@ -271,16 +271,38 @@ function SchemaNode({
           {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         </span>
         <Database size={12} className="text-blue-400 shrink-0" />
-        <span className="font-semibold text-sm flex-1 truncate">{schema.schema_name}</span>
+        <span className="font-semibold text-sm truncate">{schema.schema_name}</span>
+        {/* Publication badges — derived from publishedMap without needing tables loaded */}
+        {(() => {
+          const pubCounts: Record<string, number> = {}
+          Object.entries(publishedMap).forEach(([qualifiedTable, pubs]) => {
+            const [tSchema] = qualifiedTable.split('.')
+            if (tSchema === schema.schema_name) {
+              pubs.forEach(pub => { pubCounts[pub] = (pubCounts[pub] ?? 0) + 1 })
+            }
+          })
+          const entries = Object.entries(pubCounts)
+          if (entries.length === 0) return null
+          return (
+            <div className="flex items-center gap-1 flex-wrap shrink-0" onClick={e => e.stopPropagation()}>
+              {entries.map(([pub, count]) => (
+                <button
+                  key={pub}
+                  onClick={e => handlePubClick(pub, e)}
+                  disabled={loadingPub === pub}
+                  className="flex items-center gap-1 text-[10px] font-mono bg-amber-950/50 hover:bg-amber-900/60 border border-amber-700/60 text-amber-300 px-1.5 py-0.5 rounded transition-colors disabled:opacity-50"
+                  title={`Open publication ${pub} in Setup tab`}
+                >
+                  {loadingPub === pub ? <Spinner size={2} /> : null}
+                  {pub} <span className="text-amber-500">({count})</span>
+                </button>
+              ))}
+            </div>
+          )
+        })()}
         <span className="text-gray-500 text-xs shrink-0">
           {schema.table_count} tables · {schema.total_size_pretty}
         </span>
-        {/* Show blocked count once tables are loaded */}
-        {tables && tables.length - freeTables.length > 0 && (
-          <span className="text-xs text-amber-500/70 shrink-0">
-            {tables.length - freeTables.length} in pub
-          </span>
-        )}
         {pgMajor >= 15 && (
           <div
             className="flex items-center gap-1.5 ml-3 pl-3 border-l border-gray-700 shrink-0"
