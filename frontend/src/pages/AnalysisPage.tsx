@@ -270,9 +270,9 @@ function SchemaNode({
         <span className="text-gray-500 shrink-0">
           {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         </span>
+        {/* Left: icon + name + pub badges — flex-1 pushes right side to edge */}
         <Database size={12} className="text-blue-400 shrink-0" />
-        <span className="font-semibold text-sm truncate">{schema.schema_name}</span>
-        {/* Publication badges — derived from publishedMap without needing tables loaded */}
+        <span className="font-semibold text-sm shrink-0">{schema.schema_name}</span>
         {(() => {
           const pubCounts: Record<string, number> = {}
           Object.entries(publishedMap).forEach(([qualifiedTable, pubs]) => {
@@ -282,15 +282,15 @@ function SchemaNode({
             }
           })
           const entries = Object.entries(pubCounts)
-          if (entries.length === 0) return null
+          if (entries.length === 0) return <span className="flex-1 min-w-0" />
           return (
-            <div className="flex items-center gap-1 flex-wrap shrink-0" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-1 flex-1 flex-wrap min-w-0 ml-1" onClick={e => e.stopPropagation()}>
               {entries.map(([pub, count]) => (
                 <button
                   key={pub}
                   onClick={e => handlePubClick(pub, e)}
                   disabled={loadingPub === pub}
-                  className="flex items-center gap-1 text-[10px] font-mono bg-amber-950/50 hover:bg-amber-900/60 border border-amber-700/60 text-amber-300 px-1.5 py-0.5 rounded transition-colors disabled:opacity-50"
+                  className="flex items-center gap-1 text-[10px] font-mono bg-amber-950/50 hover:bg-amber-900/60 border border-amber-700/60 text-amber-300 px-1.5 py-0.5 rounded transition-colors disabled:opacity-50 shrink-0"
                   title={`Open publication ${pub} in Setup tab`}
                 >
                   {loadingPub === pub ? <Spinner size={2} /> : null}
@@ -300,7 +300,8 @@ function SchemaNode({
             </div>
           )
         })()}
-        <span className="text-gray-500 text-xs shrink-0">
+        {/* Right: table count + size — always at the end */}
+        <span className="text-gray-500 text-xs shrink-0 ml-auto">
           {schema.table_count} tables · {schema.total_size_pretty}
         </span>
         {pgMajor >= 15 && (
