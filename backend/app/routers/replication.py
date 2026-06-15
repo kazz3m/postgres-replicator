@@ -301,9 +301,9 @@ async def create_or_update_subscription(config: SubscriptionConfig):
     async def _do_create_subscription() -> None:
         dedicated_conn = None
         try:
-            dedicated_conn = await _asyncpg.connect(dest_dsn_db, timeout=15)
+            dedicated_conn = await _asyncpg.connect(dest_dsn_db, timeout=30)
             copy_data_sql = "true" if config.copy_data else "false"
-            await dedicated_conn.execute("SET statement_timeout = '30s'")
+            await dedicated_conn.execute("SET statement_timeout = '120s'")
             await dedicated_conn.execute(f"""
                 CREATE SUBSCRIPTION "{config.subscription_name}"
                 CONNECTION $conn_str${conn_dsn}$conn_str$
@@ -1583,8 +1583,8 @@ async def reset_replication(subscription_name: str):
     import asyncpg as _asyncpg
     dedicated_conn = None
     try:
-        dedicated_conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
-        await dedicated_conn.execute("SET statement_timeout = '30s'")
+        dedicated_conn = await _asyncpg.connect(state.dest_dsn, timeout=30)
+        await dedicated_conn.execute("SET statement_timeout = '120s'")
         await dedicated_conn.execute(f"""
             CREATE SUBSCRIPTION "{subscription_name}"
             CONNECTION $conn_str${conn_dsn}$conn_str$
