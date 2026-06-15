@@ -81,11 +81,15 @@ async def create_or_update_publication(config: PublicationConfig):
 
 
 @router.delete("/publication/{name}")
-async def drop_publication(name: str):
+async def drop_publication(name: str, database: str | None = None):
     _require_connection()
-    pool = await get_source_pool(state.source_dsn)
-    async with pool.acquire() as conn:
+    import asyncpg as _asyncpg
+    src_dsn = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    conn = await _asyncpg.connect(src_dsn, timeout=10)
+    try:
         await conn.execute(f'DROP PUBLICATION IF EXISTS "{name}"')
+    finally:
+        await conn.close()
     return {"status": "dropped", "name": name}
 
 
@@ -351,12 +355,14 @@ async def create_or_update_subscription(config: SubscriptionConfig):
 
 
 @router.delete("/subscription/{name}")
-async def drop_subscription(name: str):
+async def drop_subscription(name: str, database: str | None = None):
     _require_connection()
-    dest_pool = await get_dest_pool(state.dest_dsn)
+    import asyncpg as _asyncpg
+    dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
     src_pool = await get_source_pool(state.source_dsn)
 
-    async with dest_pool.acquire() as conn:
+    conn = await _asyncpg.connect(dest_dsn, timeout=10)
+    try:
         row = await conn.fetchrow(
             "SELECT subslotname, subenabled FROM pg_subscription WHERE subname = $1", name
         )
@@ -364,18 +370,15 @@ async def drop_subscription(name: str):
             raise HTTPException(404, f"Subscription '{name}' not found.")
         slot_name = row["subslotname"]
 
-        # Fix #6: DISABLE must succeed before DROP when subscription is enabled.
-        # An active replication slot cannot be dropped while the apply worker holds it.
         if row["subenabled"]:
             try:
                 await conn.execute(f'ALTER SUBSCRIPTION "{name}" DISABLE')
             except Exception as e:
-                raise HTTPException(
-                    500,
-                    f"Could not disable subscription '{name}' before dropping: {e}. "
-                    f"The subscription may still be active. Retry or disable it manually."
-                )
+                raise HTTPException(500,
+                    f"Could not disable subscription '{name}' before dropping: {e}.")
         await conn.execute(f'DROP SUBSCRIPTION IF EXISTS "{name}"')
+    finally:
+        await conn.close()
 
     # Drop orphaned slot on source if DROP SUBSCRIPTION didn't clean it up
     if slot_name:

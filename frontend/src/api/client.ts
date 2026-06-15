@@ -269,10 +269,12 @@ export interface ReplicationCapacity {
 export const replicationApi = {
   capacity: () => api.get<ReplicationCapacity>('/replication/capacity'),
   createPublication: (cfg: PublicationConfig) => api.post('/replication/publication', cfg),
-  dropPublication: (name: string) => api.delete(`/replication/publication/${name}`),
+  dropPublication: (name: string, database?: string) =>
+    api.delete(`/replication/publication/${name}${database ? `?database=${encodeURIComponent(database)}` : ''}`),
   listPublications: () => api.get('/replication/publications'),
   createSubscription: (cfg: SubscriptionConfig) => api.post('/replication/subscription', cfg),
-  dropSubscription: (name: string) => api.delete(`/replication/subscription/${name}`),
+  dropSubscription: (name: string, database?: string) =>
+    api.delete(`/replication/subscription/${name}${database ? `?database=${encodeURIComponent(database)}` : ''}`),
   listSubscriptions: () => api.get('/replication/subscriptions'),
   listSlots: () => api.get<ReplicationSlotInfo[]>('/replication/slots'),
   dropSlot: (name: string) => api.delete(`/replication/slot/${name}`),

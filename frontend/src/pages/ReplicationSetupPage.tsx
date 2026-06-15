@@ -676,7 +676,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
   async function dropPublication() {
     setLoading(true); setError('')
     try {
-      await replicationApi.dropPublication(pubName)
+      await replicationApi.dropPublication(pubName, replConfigs[pubName]?.database ?? [...selectedDbs][0])
       setResult(`Publication "${pubName}" dropped.`)
     } catch (e: any) {
       setError(extractError(e))
@@ -686,7 +686,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
   async function dropSubscription() {
     setLoading(true); setError('')
     try {
-      await replicationApi.dropSubscription(subName)
+      await replicationApi.dropSubscription(subName, replConfigs[pubName]?.database ?? [...selectedDbs][0])
       setResult(`Subscription "${subName}" dropped.`)
     } catch (e: any) {
       setError(extractError(e))
