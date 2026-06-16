@@ -459,6 +459,7 @@ interface DbNodeProps {
   db: DatabaseInfo
   pgMajor: number
   search: string
+  hideEmpty: boolean
   selectedTables: Set<string>
   selectedSchemas: Set<string>
   onSelectionChange: (tables: Set<string>, schemas: Set<string>) => void
@@ -468,7 +469,7 @@ interface DbNodeProps {
 }
 
 function DbNode({
-  db, pgMajor, search, selectedTables, selectedSchemas, onSelectionChange, onOpenPublication, onCreateReplication, initiallyExpanded,
+  db, pgMajor, search, hideEmpty, selectedTables, selectedSchemas, onSelectionChange, onOpenPublication, onCreateReplication, initiallyExpanded,
 }: DbNodeProps) {
   const qc = useQueryClient()
   const [expanded, setExpanded] = useState(initiallyExpanded)
@@ -493,10 +494,12 @@ function DbNode({
 
   const q = search.trim().toLowerCase()
 
-  // Filter schemas by search (schema name match — table matches handled inside SchemaNode)
-  const filteredSchemas = (schemas ?? []).filter(s =>
-    !q || s.schema_name.toLowerCase().includes(q)
-  )
+  // Filter schemas by search and hideEmpty
+  const filteredSchemas = (schemas ?? []).filter(s => {
+    if (hideEmpty && s.table_count === 0) return false
+    if (q && !s.schema_name.toLowerCase().includes(q)) return false
+    return true
+  })
 
   const dbSelectedTables = [...selectedTables].filter(k => k.startsWith(`${db.database}.`)).length
   const dbSelectedSchemas = [...selectedSchemas].filter(k => k.startsWith(`${db.database}.`)).length
@@ -617,6 +620,7 @@ function DbNode({
 
 export function AnalysisPage({ selectedTables, selectedSchemas, pgMajor, onSelectionChange, onOpenPublication, onCreateReplication }: Props) {
   const [search, setSearch] = useState('')
+  const [hideEmpty, setHideEmpty] = useState(true)
 
   const { data: databases, isLoading, error } = useQuery({
     queryKey: ['cluster-databases'],
@@ -671,6 +675,15 @@ export function AnalysisPage({ selectedTables, selectedSchemas, pgMajor, onSelec
             className="w-full bg-gray-800 border border-gray-600 rounded pl-8 pr-3 py-1.5 text-xs focus:outline-none focus:border-blue-500"
           />
         </div>
+        <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={hideEmpty}
+            onChange={e => setHideEmpty(e.target.checked)}
+            className="accent-blue-500"
+          />
+          Hide empty schemas
+        </label>
         {(totalSelectedTables > 0 || totalSelectedSchemas > 0) && (
           <button
             onClick={() => onSelectionChange(new Set(), new Set())}
@@ -693,6 +706,7 @@ export function AnalysisPage({ selectedTables, selectedSchemas, pgMajor, onSelec
             db={db}
             pgMajor={pgMajor}
             search={search}
+            hideEmpty={hideEmpty}
             selectedTables={selectedTables}
             selectedSchemas={selectedSchemas}
             onSelectionChange={onSelectionChange}
