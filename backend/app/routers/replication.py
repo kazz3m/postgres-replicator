@@ -2284,21 +2284,22 @@ async def _diff_table_list(table_pairs: list[tuple[str, str]], database: str | N
         for schema_name, table_name in table_pairs:
             fqn = f"{schema_name}.{table_name}"
 
-            src_cols = await src_conn.fetch("""
-                SELECT column_name, udt_name AS data_type,
-                       is_nullable = 'NO' AS not_null
-                FROM information_schema.columns
-                WHERE table_schema = $1 AND table_name = $2
-                ORDER BY ordinal_position
-            """, schema_name, table_name)
-
-            dest_cols = await dest_conn.fetch("""
-                SELECT column_name, udt_name AS data_type,
-                       is_nullable = 'NO' AS not_null
-                FROM information_schema.columns
-                WHERE table_schema = $1 AND table_name = $2
-                ORDER BY ordinal_position
-            """, schema_name, table_name)
+            # Use pg_catalog for not_null — information_schema.is_nullable misses NOT NULL
+            # inherited from partitioned parent tables.
+            _col_query = """
+                SELECT a.attname AS column_name,
+                       t.typname AS data_type,
+                       a.attnotnull AS not_null
+                FROM pg_attribute a
+                JOIN pg_class c ON c.oid = a.attrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_type t ON t.oid = a.atttypid
+                WHERE n.nspname = $1 AND c.relname = $2
+                  AND a.attnum > 0 AND NOT a.attisdropped
+                ORDER BY a.attnum
+            """
+            src_cols  = await src_conn.fetch(_col_query, schema_name, table_name)
+            dest_cols = await dest_conn.fetch(_col_query, schema_name, table_name)
             table_exists = await dest_conn.fetchval(
                     "SELECT 1 FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2",
                     schema_name, table_name,
