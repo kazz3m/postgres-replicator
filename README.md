@@ -267,23 +267,86 @@ Interactive docs available at **http://localhost:8000/docs** (Swagger UI) when r
 
 Key endpoints:
 
+**Connections**
+
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/connections/connect` | Connect to source + destination, run pre-flight checks |
+| `GET` | `/api/connections/status` | Current connection state |
+
+**Analysis**
+
+| Method | Path | Description |
+|---|---|---|
 | `GET` | `/api/analysis/databases` | List databases with sizes and dest existence flag |
 | `GET` | `/api/analysis/database-schema-list` | Lazy-load schemas for a database |
 | `GET` | `/api/analysis/schema-tables` | Lazy-load tables for a schema |
 | `GET` | `/api/analysis/published-tables` | Tables grouped by publication name |
+| `POST` | `/api/analysis/ensure-database` | Create database on destination if missing |
+
+**Publications & Subscriptions**
+
+| Method | Path | Description |
+|---|---|---|
 | `POST` | `/api/replication/publication` | Create or update publication |
-| `POST` | `/api/replication/subscription` | Create or update subscription |
-| `GET` | `/api/replication/publication-config` | Full publication config including subscriptions |
-| `POST` | `/api/replication/schema-check` | Diff tables between source and destination |
+| `DELETE` | `/api/replication/publication/{name}` | Drop publication on source (`?database=`) |
+| `GET` | `/api/replication/publications` | List all publications |
+| `GET` | `/api/replication/publication-config` | Full pub config including subscriptions (`?name=&database=`) |
+| `POST` | `/api/replication/publication/{pub}/add-table` | Add table to publication |
+| `DELETE` | `/api/replication/publication/{pub}/table` | Remove table from publication |
+| `POST` | `/api/replication/publication/{pub}/refresh-subscriptions` | `ALTER SUBSCRIPTION … REFRESH PUBLICATION` |
+| `POST` | `/api/replication/subscription` | Create subscription |
+| `DELETE` | `/api/replication/subscription/{name}` | Drop subscription + slot (`?database=`) |
+| `GET` | `/api/replication/subscriptions` | List subscriptions |
+| `POST` | `/api/replication/subscription/{name}/pause` | `ALTER SUBSCRIPTION DISABLE` (`?database=`) |
+| `POST` | `/api/replication/subscription/{name}/resume` | `ALTER SUBSCRIPTION ENABLE` (`?database=`) |
+| `POST` | `/api/replication/subscription/{name}/stop` | Disable + detach + drop slot (`?database=`) |
+| `POST` | `/api/replication/subscription/{name}/set-workers` | Set `max_sync_workers_per_subscription` via `ALTER SYSTEM` (`?database=`) |
+| `POST` | `/api/replication/subscription/{name}/vacuum-truncate` | `TRUNCATE` + `VACUUM FULL` all dest tables (`?database=`) |
+| `GET` | `/api/replication/subscription/{name}/tables` | List tables tracked by subscription (`?database=`) |
+| `POST` | `/api/replication/reset/{name}` | Drop and recreate subscription from scratch |
+
+**Slots**
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/replication/slots` | List replication slots on source |
+| `DELETE` | `/api/replication/slot/{name}` | Drop replication slot on source |
+
+**Monitoring & Diagnostics**
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/replication/copy-progress` | Per-subscription copy progress with table states (parallel per-DB queries) |
+| `GET` | `/api/replication/progress` | Per-table sync status (legacy) |
+| `GET` | `/api/replication/capacity` | WAL senders, slots, sync workers utilisation from source |
+| `GET` | `/api/replication/worker-stats` | `pg_stat_subscription` — apply/sync worker health |
+| `GET` | `/api/replication/source-table-sizes` | Lock-free table sizes via `relpages * block_size` (`?database=`) |
+| `GET` | `/api/replication/debug-table` | Per-table diagnostics: locks, copy progress, schema diff, blockers |
+| `GET` | `/api/replication/debug-subscription` | Per-subscription diagnostics: apply worker, WAL lag, blockers, long-running tx |
+| `GET` | `/api/replication/conflicts` | Replication conflicts from `pg_stat_subscription_stats` |
+| `POST` | `/api/replication/skip-lsn` | `ALTER SUBSCRIPTION … SKIP (LSN '…')` |
+| `POST` | `/api/replication/publication-readd-table` | Drop + re-add table to publication (forces fresh copy) |
+
+**Schema**
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/replication/schema-check` | Diff tables between source and destination (multi-DB aware) |
 | `POST` | `/api/replication/schema-sync` | Create missing tables on destination |
-| `GET` | `/api/replication/progress` | Per-table sync status |
-| `GET` | `/api/replication/worker-stats` | `pg_stat_subscription` — worker health |
+| `POST` | `/api/replication/schema-drop-recreate` | Drop and recreate incompatible tables |
+| `GET` | `/api/replication/schema-indexes` | List indexes for a publication |
+| `POST` | `/api/replication/schema/create-indexes` | Create indexes on destination |
+| `POST` | `/api/replication/schema-fix-not-null` | Add `NOT NULL` constraints (`strategy: not_valid\|direct`) |
+| `POST` | `/api/replication/set-replica-identity-full` | `ALTER TABLE … REPLICA IDENTITY FULL` (batch) |
+| `POST` | `/api/replication/set-replica-identity-full-stream` | Same, streaming NDJSON — no timeout for large sets |
+
+**Sequences, Roles & Profiles**
+
+| Method | Path | Description |
+|---|---|---|
 | `GET` | `/api/replication/sequences` | Sequence drift between source and destination |
 | `POST` | `/api/replication/sequences/sync` | Align sequence values on destination |
-| `POST` | `/api/replication/reset/{name}` | Drop and recreate subscription from scratch |
 | `GET` | `/api/roles/diff` | Generate role/grant DDL statements (pg_dumpall compatible) |
 | `POST` | `/api/roles/apply` | Apply selected role/grant statements on destination |
 | `GET` | `/api/profiles` | List saved workspace profiles |
