@@ -561,35 +561,9 @@ async def copy_progress():
         if not _sync_worker_slot.match(r["slot_name"])
     }
 
-    # Detect active sync workers per subscription via pg_stat_subscription on dest.
-    # relid IS NULL  → apply worker row
-    # relid IS NOT NULL → table sync worker row (one per table being copied)
-    sync_worker_counts: dict[str, int] = {}  # sub_name -> active sync worker count
-    dest_pool_default2 = await get_dest_pool(state.dest_dsn)
-    async with dest_pool_default2.acquire() as _dc2:
-        dest_db_names_early = [r["datname"] for r in await _dc2.fetch("""
-            SELECT datname FROM pg_database
-            WHERE datistemplate = false
-              AND datname NOT IN ('postgres','template0','template1','cloudsqladmin')
-        """)]
-    for db_name in dest_db_names_early:
-        db_dsn = dsn_for_database(state.dest_dsn, db_name)
-        try:
-            dc = await _asyncpg.connect(db_dsn, timeout=5)
-            sub_rows = await dc.fetch("""
-                SELECT subname, COUNT(*) AS sync_count
-                FROM pg_stat_subscription
-                WHERE relid IS NOT NULL AND pid IS NOT NULL
-                GROUP BY subname
-            """)
-            await dc.close()
-            for sr in sub_rows:
-                name = sr["subname"]
-                sync_worker_counts[name] = sync_worker_counts.get(name, 0) + sr["sync_count"]
-        except Exception:
-            pass
+    import asyncio as _asyncio
 
-    # Get all destination databases
+    # Fetch all dest databases once
     dest_pool_default = await get_dest_pool(state.dest_dsn)
     async with dest_pool_default.acquire() as _dc:
         dest_db_names = [r["datname"] for r in await _dc.fetch("""
@@ -597,6 +571,29 @@ async def copy_progress():
             WHERE datistemplate = false AND datname NOT IN ('postgres', 'template0', 'template1', 'cloudsqladmin')
             ORDER BY datname
         """)]
+
+    # Query sync workers + main progress from ALL databases IN PARALLEL
+    async def _query_db(db_name: str):
+        db_dsn = dsn_for_database(state.dest_dsn, db_name)
+        try:
+            db_conn = await _asyncpg.connect(db_dsn, timeout=10)
+        except Exception:
+            return db_name, [], []
+        try:
+            sync_rows = await db_conn.fetch("""
+                SELECT subname, COUNT(*) AS sync_count
+                FROM pg_stat_subscription
+                WHERE relid IS NOT NULL AND pid IS NOT NULL
+                GROUP BY subname
+            """)
+            main_rows = await db_conn.fetch(MAIN_QUERY)
+            return db_name, list(sync_rows), list(main_rows)
+        except Exception:
+            return db_name, [], []
+        finally:
+            await db_conn.close()
+
+    sync_worker_counts: dict[str, int] = {}
 
     state_label = {'i':'initializing','d':'copying','f':'catching up','s':'synced','r':'ready','e':'error'}
     state_label_waiting      = {**state_label, 'd': 'waiting'}
@@ -647,23 +644,20 @@ async def copy_progress():
         ORDER BY s.subname, n.nspname, c.relname
     """
 
+    # Run all DB queries in parallel
+    db_results = await _asyncio.gather(*[_query_db(db) for db in dest_db_names])
+
+    # Collect sync worker counts
+    for _db_name, sync_rows, _main_rows in db_results:
+        for sr in sync_rows:
+            n = sr["subname"]
+            sync_worker_counts[n] = sync_worker_counts.get(n, 0) + int(sr["sync_count"])
+
     # Group rows by sub_name -> SubscriptionProgress
     subs_by_name: dict[str, SubscriptionProgress] = {}
     global_copying = False
 
-    for db_name in dest_db_names:
-        db_dsn = dsn_for_database(state.dest_dsn, db_name)
-        try:
-            db_conn = await _asyncpg.connect(db_dsn, timeout=10)
-        except Exception:
-            continue
-        try:
-            rows = await db_conn.fetch(MAIN_QUERY)
-        except Exception:
-            rows = []
-        finally:
-            await db_conn.close()
-
+    for _db_name, _sync_rows, rows in db_results:
         for r in rows:
             sub_name = r["subname"]
             slot_name = r["slot_name"] or sub_name
