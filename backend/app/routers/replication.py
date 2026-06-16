@@ -2289,7 +2289,7 @@ async def _diff_table_list(table_pairs: list[tuple[str, str]], database: str | N
             _col_query = """
                 SELECT a.attname AS column_name,
                        t.typname AS data_type,
-                       a.attnotnull AS not_null
+                       a.attnotnull::bool AS not_null
                 FROM pg_attribute a
                 JOIN pg_class c ON c.oid = a.attrelid
                 JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -2583,9 +2583,9 @@ async def schema_sync(body: dict):
                     SELECT
                         a.attname AS col,
                         pg_catalog.format_type(a.atttypid, a.atttypmod) AS col_type,
-                        a.attnotnull AS not_null,
+                        a.attnotnull::bool AS not_null,
                         pg_get_expr(d.adbin, d.adrelid) AS col_default,
-                        a.attidentity AS identity
+                        a.attidentity::text AS identity
                     FROM pg_attribute a
                     JOIN pg_class c ON c.oid = a.attrelid
                     JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -2803,9 +2803,6 @@ async def schema_drop_recreate(body: dict):
                       AND a.attnum > 0 AND NOT a.attisdropped
                     ORDER BY a.attnum
                 """, schema_name, table_name)
-                import logging as _log2
-                for _c in cols:
-                    _log2.getLogger("uvicorn.error").info(f"  col={_c['col']} not_null={_c['not_null']!r} identity={_c['identity']!r} type={type(_c['not_null'])}")
 
                 pk_cols = await src_conn.fetch("""
                     SELECT a.attname
@@ -2872,11 +2869,9 @@ async def schema_drop_recreate(body: dict):
                     ddl = (f'CREATE TABLE "{schema_name}"."{table_name}" (\n'
                            + ",\n".join(col_defs) + "\n);")
 
-                import logging as _logging
-                _logging.getLogger("uvicorn.error").info(f"DROP-RECREATE DDL for {schema_name}.{table_name}:\n{ddl}")
                 await dest_conn_dr.execute(ddl)
 
-                results.append(SchemaSyncResult(table=diff.table, action="created", detail=f"Dropped and recreated. DDL: {ddl[:300]}"))
+                results.append(SchemaSyncResult(table=diff.table, action="created", detail="Dropped and recreated"))
             except Exception as e:
                 results.append(SchemaSyncResult(table=diff.table, action="error", detail=str(e)))
     finally:
