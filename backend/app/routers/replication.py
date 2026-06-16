@@ -2733,8 +2733,8 @@ async def schema_sync(body: dict):
                     if is_partitioned and index_results
                     else f"Table created with {len(index_results)} index(es)."
                     if index_results
-                    else "Table created."
-                    if is_partition
+                    else "Table created (no additional indexes on source)."
+                    if is_partition or create_indexes_when == "before"
                     else "Table created. Indexes NOT created — use 'Create indexes' after replication completes."
                 ),
                 indexes=index_results,
