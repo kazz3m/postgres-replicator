@@ -221,6 +221,8 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
   const [checking, setChecking] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [dropping, setDropping] = useState(false)
+  const [showDropModal, setShowDropModal] = useState(false)
+  const [dropSteps, setDropSteps] = useState<{ table: string; status: 'pending' | 'running' | 'ok' | 'error'; detail?: string }[]>([])
   const [fixingNotNull, setFixingNotNull] = useState(false)
   const [notNullStrategy, setNotNullStrategy] = useState<'not_valid' | 'direct'>('not_valid')
   const [notNullResults, setNotNullResults] = useState<{ table: string; ok: boolean; changes: { column: string; action: string; ok: boolean; error?: string }[]; error?: string }[] | null>(null)
@@ -291,25 +293,41 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
     }
   }
 
+  function openDropModal() {
+    const steps = incompatible.map(d => ({ table: d.table, status: 'pending' as const }))
+    setDropSteps(steps)
+    setShowDropModal(true)
+  }
+
   async function runDropRecreate() {
-    if (!window.confirm(`Drop and recreate ${incompatible.length} incompatible table(s) on destination? Existing data will be lost.`))
-      return
+    const incompatibleTables = incompatible.map(d => d.table)
     setDropping(true); setError(''); setSyncResults(null)
-    try {
-      const incompatibleTables = incompatible.map(d => d.table)
-      const grouped = groupByDb(incompatibleTables)
-      const results = await Promise.all(
-        Object.entries(grouped).map(([db, tbls]) =>
-          replicationApi.schemaDropRecreate(tbls, db || undefined).then(r => r.data)
-        )
-      )
-      setSyncResults(results.flat())
-      await runCheck()
-    } catch (e: any) {
-      setError(extractError(e))
-    } finally {
-      setDropping(false)
+    // Run table by table, updating progress live
+    const grouped = groupByDb(incompatibleTables)
+    const tableToDb: Record<string, string> = {}
+    for (const [db, tbls] of Object.entries(grouped)) {
+      for (const t of tbls) tableToDb[t] = db
     }
+    const allResults: SchemaSyncResult[] = []
+    for (const table of incompatibleTables) {
+      setDropSteps(prev => prev.map(s => s.table === table ? { ...s, status: 'running' } : s))
+      try {
+        const db = tableToDb[table] ?? database ?? ''
+        const { data } = await replicationApi.schemaDropRecreate([table], db || undefined)
+        const r = data[0]
+        allResults.push(r)
+        setDropSteps(prev => prev.map(s => s.table === table
+          ? { ...s, status: r?.action === 'error' ? 'error' : 'ok', detail: r?.detail }
+          : s))
+      } catch (e: any) {
+        const msg = extractError(e)
+        setDropSteps(prev => prev.map(s => s.table === table ? { ...s, status: 'error', detail: msg } : s))
+        allResults.push({ table, action: 'error', detail: msg })
+      }
+    }
+    setSyncResults(allResults)
+    setDropping(false)
+    await runCheck()
   }
 
   async function runFixNotNull() {
@@ -352,7 +370,11 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
   const notNullMismatch = diffs?.filter(d => d.exists_on_dest && d.columns.some(c => !c.not_null_match)) ?? []
   const allOk = diffs != null && missing.length === 0 && incompatible.length === 0
 
+  const dropDone = dropSteps.length > 0 && dropSteps.every(s => s.status === 'ok' || s.status === 'error')
+  const dropRunning = dropping
+
   return (
+    <>
     <div className={clsx(
       'border rounded-lg overflow-hidden',
       allOk ? 'border-green-800 bg-green-950/20' : 'border-orange-800 bg-orange-950/20'
@@ -397,12 +419,11 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
               )}
               {incompatible.length > 0 && (
                 <button
-                  onClick={runDropRecreate}
+                  onClick={openDropModal}
                   disabled={syncing || dropping}
                   className="flex items-center gap-1.5 text-xs bg-red-800 hover:bg-red-700 disabled:opacity-50 px-3 py-1.5 rounded font-semibold"
                   title="Drop incompatible tables on destination and recreate from source schema"
                 >
-                  {dropping && <Spinner size={3} />}
                   Drop & recreate {incompatible.length} incompatible
                 </button>
               )}
@@ -478,9 +499,20 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
       )}
 
       {incompatible.length > 0 && (
-        <div className="px-4 py-2 border-b border-yellow-900 bg-yellow-950/20 text-xs text-yellow-400">
-          <AlertTriangle size={12} className="inline mr-1" />
-          {incompatible.length} table{incompatible.length !== 1 ? 's' : ''} exist on destination but have incompatible columns — manual intervention required.
+        <div className="px-4 py-2 border-b border-yellow-900 bg-yellow-950/20 text-xs text-yellow-400 space-y-0.5">
+          {incompatible.map(d => {
+            const reasons: string[] = []
+            if (d.columns.some(c => !c.match)) reasons.push(`${d.columns.filter(c => !c.match).length} column mismatch`)
+            if (d.indexes?.some(i => !i.exists_on_dest || !i.columns_match)) reasons.push(`index diff`)
+            if (d.constraints?.some(c => !c.exists_on_dest || !c.definition_match)) reasons.push(`constraint diff`)
+            return (
+              <div key={d.table}>
+                <AlertTriangle size={12} className="inline mr-1" />
+                <span className="font-mono">{d.table}</span>
+                <span className="text-yellow-600 ml-2">{reasons.join(' · ') || 'incompatible'}</span>
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -662,6 +694,83 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
         </div>
       )}
     </div>
+
+    {/* Drop & Recreate modal */}
+      {showDropModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-lg mx-4">
+            <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
+              <span className="font-semibold text-gray-200">Drop &amp; Recreate incompatible tables</span>
+              {!dropRunning && (
+                <button onClick={() => setShowDropModal(false)} className="text-gray-500 hover:text-gray-300 text-lg leading-none">×</button>
+              )}
+            </div>
+            <div className="px-5 py-4 space-y-3 text-sm">
+              {!dropRunning && !dropDone && (
+                <div className="text-yellow-400 text-xs bg-yellow-950/30 border border-yellow-900 rounded p-3">
+                  <AlertTriangle size={13} className="inline mr-1.5" />
+                  This will <strong>DROP</strong> the following tables on destination and recreate them from source schema. Existing data will be lost.
+                </div>
+              )}
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {dropSteps.map(step => (
+                  <div key={step.table} className="flex items-start gap-2.5 text-xs">
+                    <span className="mt-0.5 shrink-0">
+                      {step.status === 'pending' && <Circle size={13} className="text-gray-600" />}
+                      {step.status === 'running' && <Loader size={13} className="text-blue-400 animate-spin" />}
+                      {step.status === 'ok' && <CheckCircle size={13} className="text-green-400" />}
+                      {step.status === 'error' && <XCircle size={13} className="text-red-400" />}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <span className={clsx('font-mono', {
+                        'text-gray-500': step.status === 'pending',
+                        'text-blue-300': step.status === 'running',
+                        'text-green-300': step.status === 'ok',
+                        'text-red-300': step.status === 'error',
+                      })}>{step.table}</span>
+                      {step.detail && (
+                        <div className={clsx('text-xs mt-0.5 truncate', step.status === 'error' ? 'text-red-400' : 'text-gray-500')} title={step.detail}>
+                          {step.detail}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="px-5 pb-4 flex justify-end gap-2">
+              {!dropRunning && !dropDone && (
+                <>
+                  <button
+                    onClick={() => setShowDropModal(false)}
+                    className="text-xs px-3 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={runDropRecreate}
+                    className="text-xs px-3 py-1.5 rounded bg-red-800 hover:bg-red-700 font-semibold text-white"
+                  >
+                    Confirm — drop &amp; recreate {dropSteps.length} table{dropSteps.length !== 1 ? 's' : ''}
+                  </button>
+                </>
+              )}
+              {dropRunning && (
+                <span className="text-xs text-gray-400 flex items-center gap-2"><Spinner size={3} /> Working...</span>
+              )}
+              {dropDone && !dropRunning && (
+                <button
+                  onClick={() => setShowDropModal(false)}
+                  className="text-xs px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200"
+                >
+                  Close
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 
