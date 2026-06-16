@@ -978,10 +978,10 @@ export function StatusPage({ initialSnapshot }: Props) {
                         <button
                           onClick={() => handleVacuumOpen(sub.subname)}
                           disabled={actionLoading || !isSlotDropped(sub)}
-                          title={isSlotDropped(sub) ? 'VACUUM (TRUNCATE ONLY) all destination tables — reclaims dead tuple storage' : 'Available only after slot is dropped (replication stopped)'}
+                          title={isSlotDropped(sub) ? 'TRUNCATE all destination tables then VACUUM FULL — removes all data and reclaims disk space' : 'Available only after slot is dropped (replication stopped)'}
                           className="text-xs text-teal-400/70 hover:text-teal-300 border border-teal-900/50 hover:border-teal-700 px-2 py-1 rounded disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1"
                         >
-                          <Database size={10} /> Vacuum
+                          <Database size={10} /> Truncate
                         </button>
                         <button
                           onClick={() => setConfirmDropSub(sub.subname)}
@@ -1104,10 +1104,10 @@ export function StatusPage({ initialSnapshot }: Props) {
       {vacuumTarget && !vacuumResult && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 max-w-lg w-full mx-4">
-            <h3 className="text-lg font-bold text-teal-400 mb-1">Vacuum Destination Tables</h3>
+            <h3 className="text-lg font-bold text-teal-400 mb-1">Truncate Destination Tables</h3>
             <p className="text-gray-400 text-xs mb-3">
-              Runs <code className="bg-gray-800 px-1 rounded">VACUUM (TRUNCATE ONLY)</code> on all replicated tables.<br />
-              This reclaims dead tuple storage without a full table scan.
+              Runs <code className="bg-gray-800 px-1 rounded">TRUNCATE</code> then <code className="bg-gray-800 px-1 rounded">VACUUM FULL</code> on all replicated tables.<br />
+              <span className="text-red-400">This removes ALL data from destination tables.</span> Use before re-syncing from source.
             </p>
             <div className="bg-gray-800 rounded px-3 py-2 mb-4 text-xs">
               <span className="text-gray-500">Destination: </span>
@@ -1132,7 +1132,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                 className="px-4 py-2 bg-teal-700 hover:bg-teal-600 rounded text-sm font-semibold flex items-center gap-2 disabled:opacity-50"
               >
                 {vacuumLoading ? <Spinner size={3} /> : <Database size={13} />}
-                Run Vacuum
+                Run Truncate
               </button>
             </div>
           </div>
@@ -1142,7 +1142,7 @@ export function StatusPage({ initialSnapshot }: Props) {
       {vacuumResult && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 max-w-lg w-full mx-4">
-            <h3 className="text-lg font-bold text-teal-400 mb-3">Vacuum Complete</h3>
+            <h3 className="text-lg font-bold text-teal-400 mb-3">Truncate Complete</h3>
             <div className="flex gap-4 mb-4 text-sm">
               <span className="text-green-400">✓ {vacuumResult.applied} succeeded</span>
               {vacuumResult.failed > 0 && <span className="text-red-400">✗ {vacuumResult.failed} failed</span>}

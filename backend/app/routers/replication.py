@@ -1867,8 +1867,9 @@ async def stop_subscription(name: str, database: str | None = None):
 @router.post("/subscription/{name}/vacuum-truncate")
 async def vacuum_truncate_subscription(name: str, database: str | None = None):
     """
-    VACUUM (TRUNCATE ONLY) on all destination tables in the subscription.
-    Returns per-table results. Only allowed when the slot is absent (replication stopped).
+    TRUNCATE + VACUUM FULL on all destination tables in the subscription.
+    TRUNCATE removes all rows instantly, VACUUM FULL reclaims disk space.
+    Only safe when replication is fully stopped (slot dropped).
     """
     _require_connection()
     import asyncpg as _asyncpg
@@ -1902,7 +1903,8 @@ async def vacuum_truncate_subscription(name: str, database: str | None = None):
             table = row["table_name"]
             qualified = f'"{schema}"."{table}"'
             try:
-                await dest_conn.execute(f"VACUUM (TRUNCATE ONLY) {qualified}")
+                await dest_conn.execute(f"TRUNCATE {qualified}")
+                await dest_conn.execute(f"VACUUM FULL {qualified}")
                 results.append({"table": f"{schema}.{table}", "ok": True})
             except Exception as e:
                 results.append({"table": f"{schema}.{table}", "ok": False, "error": str(e)})
