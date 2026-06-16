@@ -209,12 +209,13 @@ function ApplyModal({ pubName, subName, steps, done, onClose, onConfirm }: Apply
 // ── Schema check panel ────────────────────────────────────────────────────────
 
 interface SchemaCheckPanelProps {
-  tables: string[]   // "schema.table" — already stripped of db prefix
-  database?: string  // source database name for multi-db setups
+  tables: string[]        // "schema.table" — already stripped of db prefix
+  database?: string       // primary database (single-db mode)
+  tablesByDb?: Record<string, string[]>  // db → ["schema.table", ...] for multi-db
   onAllOk: (ok: boolean) => void
 }
 
-function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) {
+function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheckPanelProps) {
   const [diffs, setDiffs] = useState<TableSchemaDiff[] | null>(null)
   const [checking, setChecking] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -231,9 +232,19 @@ function SchemaCheckPanel({ tables, database, onAllOk }: SchemaCheckPanelProps) 
     if (tables.length === 0) return
     setChecking(true); setError(''); setSyncResults(null)
     try {
-      const { data } = await replicationApi.schemaCheck(tables, database)
-      setDiffs(data)
-      const allOk = data.every(d => d.exists_on_dest && d.compatible)
+      let allDiffs: TableSchemaDiff[] = []
+      if (tablesByDb && Object.keys(tablesByDb).length > 1) {
+        // Multi-db: query each database separately and merge results
+        const results = await Promise.all(
+          Object.entries(tablesByDb).map(([db, tbls]) => replicationApi.schemaCheck(tbls, db))
+        )
+        allDiffs = results.flatMap(r => r.data)
+      } else {
+        const { data } = await replicationApi.schemaCheck(tables, database)
+        allDiffs = data
+      }
+      setDiffs(allDiffs)
+      const allOk = allDiffs.every(d => d.exists_on_dest && d.compatible)
       onAllOk(allOk)
     } catch (e: any) {
       setError(extractError(e))
@@ -743,6 +754,13 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
         <SchemaCheckPanel
           tables={tablesToCheck}
           database={replConfigs[pubName]?.database ?? [...selectedDbs][0]}
+          tablesByDb={[...selectedTables].reduce<Record<string, string[]>>((acc, k) => {
+            const [db, ...rest] = k.split('.')
+            const schemaTable = rest.join('.')
+            if (!acc[db]) acc[db] = []
+            acc[db].push(schemaTable)
+            return acc
+          }, {})}
           onAllOk={setSchemaOk}
         />
       )}
