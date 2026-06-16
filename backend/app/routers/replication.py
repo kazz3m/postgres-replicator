@@ -2390,7 +2390,6 @@ async def _get_table_indexes(src_conn, schema_name: str, table_name: str) -> lis
         WHERE n.nspname = $1
           AND c.relname = $2
           AND NOT ix.indisprimary
-          AND NOT ix.indisunique OR ix.indisunique  -- include all non-PK
           AND NOT EXISTS (
               SELECT 1 FROM pg_constraint con
               WHERE con.conindid = ix.indexrelid
@@ -2719,13 +2718,12 @@ async def schema_sync(body: dict):
             if should_create_indexes and not is_partition:
                 idx_list = await _get_table_indexes(src_pool_conn, schema_name, table_name)
                 for idx in idx_list:
-                    import logging as _log_idx
-                    _log_idx.getLogger("uvicorn.error").info(f"CREATE INDEX: {idx.index_def}")
                     try:
+                        await dest_pool_conn.execute("SET statement_timeout = '300s'")
                         await dest_pool_conn.execute(idx.index_def)
                         index_results.append(idx)
-                    except Exception as _idx_e:
-                        _log_idx.getLogger("uvicorn.error").warning(f"INDEX FAILED: {_idx_e}")
+                    except Exception:
+                        pass
 
             results.append(SchemaSyncResult(
                 table=diff.table,
