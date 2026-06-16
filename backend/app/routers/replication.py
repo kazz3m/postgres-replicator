@@ -2869,9 +2869,11 @@ async def schema_drop_recreate(body: dict):
                     ddl = (f'CREATE TABLE "{schema_name}"."{table_name}" (\n'
                            + ",\n".join(col_defs) + "\n);")
 
+                import logging as _logging
+                _logging.getLogger("uvicorn.error").info(f"DROP-RECREATE DDL for {schema_name}.{table_name}:\n{ddl}")
                 await dest_conn_dr.execute(ddl)
 
-                results.append(SchemaSyncResult(table=diff.table, action="created", detail="Dropped and recreated"))
+                results.append(SchemaSyncResult(table=diff.table, action="created", detail=f"Dropped and recreated. DDL: {ddl[:300]}"))
             except Exception as e:
                 results.append(SchemaSyncResult(table=diff.table, action="error", detail=str(e)))
     finally:
