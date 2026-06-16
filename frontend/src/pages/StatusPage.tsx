@@ -581,12 +581,16 @@ export function StatusPage({ initialSnapshot }: Props) {
               </div>
             )
           })()}
-          {copyData?.copying_active && (
-            <span className="flex items-center gap-1.5 text-xs text-blue-400 animate-pulse">
-              <span className="w-2 h-2 rounded-full bg-blue-400 inline-block" />
-              Initial copy in progress
-            </span>
-          )}
+          {(() => {
+            const activeCopying = (copyData?.subscriptions ?? []).flatMap(s => s.tables).filter(t => t.status === 'copying').length
+            if (activeCopying === 0) return null
+            return (
+              <span className="flex items-center gap-1.5 text-xs text-blue-400 animate-pulse">
+                <span className="w-2 h-2 rounded-full bg-blue-400 inline-block shrink-0" />
+                {activeCopying} table{activeCopying !== 1 ? 's' : ''} copying
+              </span>
+            )
+          })()}
         </div>
 
         {copyLoading && (
