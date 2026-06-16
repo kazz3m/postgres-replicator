@@ -554,6 +554,33 @@ export function StatusPage({ initialSnapshot }: Props) {
               </span>
             )
           })()}
+          {(() => {
+            void sourceSizesVersion
+            const subs = copyData?.subscriptions ?? []
+            let totalCopied = 0, totalSrc = 0
+            for (const sub of subs) {
+              for (const t of sub.tables) {
+                const src = getSourceSize(sub.database, t.schema_name, t.table_name)
+                if (src == null) continue
+                totalSrc += src
+                if (['f','s','r'].includes(t.sub_state)) totalCopied += src
+                else if (t.sub_state === 'd' && t.status === 'copying') totalCopied += Math.min(t.table_size_bytes, src)
+              }
+            }
+            if (totalSrc === 0) return null
+            const pct = Math.min(100, totalCopied / totalSrc * 100)
+            return (
+              <div className="flex items-center gap-1.5 text-xs text-gray-400" title="Aggregate copy progress across all subscriptions">
+                <span className="font-mono text-blue-300">{fmtBytes(totalCopied)}</span>
+                <span className="text-gray-600">/</span>
+                <span className="font-mono">{fmtBytes(totalSrc)}</span>
+                <span className="text-gray-500">({pct.toFixed(1)}%)</span>
+                <div className="w-20 bg-gray-700 rounded-full h-1">
+                  <div className="bg-blue-500 h-1 rounded-full" style={{ width: `${pct}%` }} />
+                </div>
+              </div>
+            )
+          })()}
           {copyData?.copying_active && (
             <span className="flex items-center gap-1.5 text-xs text-blue-400 animate-pulse">
               <span className="w-2 h-2 rounded-full bg-blue-400 inline-block" />
