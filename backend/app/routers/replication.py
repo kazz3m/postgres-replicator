@@ -2545,7 +2545,6 @@ async def schema_sync(body: dict):
             table_meta[(s, t)] = dict(row)
 
     def _relkind(v) -> str:
-        """Normalize pg relkind — asyncpg may return bytes on some platforms."""
         if isinstance(v, (bytes, bytearray)):
             return v.decode()
         return v or ""
@@ -2817,6 +2816,10 @@ async def schema_drop_recreate(body: dict):
 
                 def _qi(n: str) -> str:
                     return '"' + n.replace('"', '""') + '"'
+
+                def _relkind(v) -> str:
+                    if isinstance(v, (bytes, bytearray)): return v.decode()
+                    return v or ""
 
                 col_defs = []
                 for c in cols:
