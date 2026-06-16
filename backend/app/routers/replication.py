@@ -1160,6 +1160,60 @@ async def set_replica_identity_full(body: dict):
     return {"results": results, "applied": len(results) - len(failed), "failed": len(failed)}
 
 
+# ── Set REPLICA IDENTITY FULL streaming ──────────────────────────────────────
+
+@router.post("/set-replica-identity-full-stream")
+async def set_replica_identity_full_stream(body: dict):
+    """
+    Streaming version — yields NDJSON progress per table so the UI can show live results.
+    body: { "tables": ["schema.table", ...], "database": "dbname" }
+    """
+    from fastapi.responses import StreamingResponse
+    import asyncpg as _asyncpg
+    import json as _json
+
+    _require_connection()
+    tables: list[str] = body.get("tables", [])
+    database: str = body.get("database", "")
+    if not tables:
+        raise HTTPException(400, "No tables specified.")
+
+    src_dsn = dsn_for_database(state.source_dsn, database)
+
+    async def generate():
+        try:
+            conn = await _asyncpg.connect(src_dsn, timeout=15)
+        except Exception as e:
+            yield _json.dumps({"error": str(e)}) + "\n"
+            return
+        applied = 0
+        failed = 0
+        try:
+            for i, qualified in enumerate(tables):
+                if "." not in qualified:
+                    row = {"table": qualified, "ok": False, "error": "Invalid table name",
+                           "index": i, "total": len(tables), "applied": applied, "failed": failed + 1}
+                    failed += 1
+                    yield _json.dumps(row) + "\n"
+                    continue
+                schema, table = qualified.split(".", 1)
+                try:
+                    await conn.execute(f'ALTER TABLE "{schema}"."{table}" REPLICA IDENTITY FULL')
+                    applied += 1
+                    row = {"table": qualified, "ok": True,
+                           "index": i, "total": len(tables), "applied": applied, "failed": failed}
+                except Exception as e:
+                    failed += 1
+                    row = {"table": qualified, "ok": False, "error": str(e),
+                           "index": i, "total": len(tables), "applied": applied, "failed": failed}
+                yield _json.dumps(row) + "\n"
+        finally:
+            await conn.close()
+        yield _json.dumps({"done": True, "applied": applied, "failed": failed}) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+
 # ── Debug table ──────────────────────────────────────────────────────────────
 
 @router.get("/debug-table")

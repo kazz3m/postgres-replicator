@@ -342,6 +342,34 @@ export const replicationApi = {
     api.post<{ results: { table: string; ok: boolean; error?: string }[]; applied: number; failed: number }>(
       '/replication/set-replica-identity-full', { tables, database }
     ),
+  setReplicaIdentityFullStream: (tables: string[], database: string,
+    onProgress: (row: { table: string; ok: boolean; error?: string; index: number; total: number; applied: number; failed: number }) => void
+  ): Promise<{ applied: number; failed: number }> => {
+    return fetch('/api/replication/set-replica-identity-full-stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tables, database }),
+    }).then(async res => {
+      const reader = res.body!.getReader()
+      const dec = new TextDecoder()
+      let buf = ''
+      let applied = 0, failed = 0
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.trim()) continue
+          const row = JSON.parse(line)
+          if (row.done) { applied = row.applied; failed = row.failed }
+          else onProgress(row)
+        }
+      }
+      return { applied, failed }
+    })
+  },
   analyzeTables: (tables: string[]) =>
     api.post<{ results: { table: string; ok: boolean; error?: string }[] }>('/replication/analyze', { tables }),
   publicationConfig: (name: string, database?: string) =>

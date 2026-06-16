@@ -49,6 +49,7 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [riApplying, setRiApplying] = useState(false)
+  const [riProgress, setRiProgress] = useState<{ index: number; total: number; applied: number; failed: number } | null>(null)
   const [riResults, setRiResults] = useState<{ table: string; ok: boolean; error?: string }[] | null>(null)
   const [skipLsnModal, setSkipLsnModal] = useState(false)
   const [skipLsnValue, setSkipLsnValue] = useState('')
@@ -95,15 +96,19 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
   async function applyReplicaIdentityFull() {
     const tables = riIssues.filter(r => r.replica_identity !== 'full').map(r => String(r.qualified))
     if (!tables.length) return
-    setRiApplying(true); setRiResults(null)
+    setRiApplying(true); setRiResults(null); setRiProgress({ index: 0, total: tables.length, applied: 0, failed: 0 })
+    const accumulated: { table: string; ok: boolean; error?: string }[] = []
     try {
-      const res = await replicationApi.setReplicaIdentityFull(tables, database)
-      setRiResults(res.data.results)
-      if (res.data.failed === 0) load() // refresh diagnostics
+      await replicationApi.setReplicaIdentityFullStream(tables, database, row => {
+        accumulated.push({ table: row.table, ok: row.ok, error: row.error })
+        setRiProgress({ index: row.index + 1, total: row.total, applied: row.applied, failed: row.failed })
+        setRiResults([...accumulated])
+      })
+      load()
     } catch (e: unknown) {
       setRiResults([{ table: '—', ok: false, error: e instanceof Error ? e.message : String(e) }])
     } finally {
-      setRiApplying(false)
+      setRiApplying(false); setRiProgress(null)
     }
   }
 
@@ -656,15 +661,26 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                       Tables without a PRIMARY KEY cannot replicate UPDATE/DELETE unless REPLICA IDENTITY FULL is set.
                     </p>
                     {riIssues.some(r => r.replica_identity !== 'full') && (
+                      <div className="flex flex-col items-end gap-1 ml-4 shrink-0">
                       <button
                         onClick={applyReplicaIdentityFull}
                         disabled={riApplying}
-                        className="flex items-center gap-1.5 text-xs bg-blue-900/40 hover:bg-blue-800/60 border border-blue-700/60 text-blue-300 px-3 py-1 rounded disabled:opacity-50 transition-colors shrink-0 ml-4"
+                        className="flex items-center gap-1.5 text-xs bg-blue-900/40 hover:bg-blue-800/60 border border-blue-700/60 text-blue-300 px-3 py-1 rounded disabled:opacity-50 transition-colors"
                         title="ALTER TABLE ... REPLICA IDENTITY FULL on all problematic tables on source"
                       >
                         {riApplying ? <Spinner size={2} /> : <ShieldCheck size={11} />}
                         Set REPLICA IDENTITY FULL ({riIssues.filter(r => r.replica_identity !== 'full').length} tables)
                       </button>
+                      {riProgress && (
+                        <div className="text-[10px] text-blue-400 font-mono whitespace-nowrap">
+                          {riProgress.index}/{riProgress.total} · ✓ {riProgress.applied} ✗ {riProgress.failed}
+                          <div className="w-40 bg-gray-700 rounded-full h-0.5 mt-0.5">
+                            <div className="bg-blue-500 h-0.5 rounded-full transition-all"
+                              style={{ width: `${Math.round(riProgress.index / riProgress.total * 100)}%` }} />
+                          </div>
+                        </div>
+                      )}
+                      </div>
                     )}
                   </div>
 
