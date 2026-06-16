@@ -37,25 +37,26 @@ Common use cases: live migrations, reporting replicas, data warehousing, zero-do
 |---|---|
 | **Connection management** | Separate Admin DSN (superuser) and Replication DSN (replicator user); connection profiles saved on server |
 | **Pre-flight checks** | Validates `wal_level = logical`, `REPLICATION` attribute, `LOGIN`, `SELECT` on all published tables, `CREATE` on destination DB, `pg_create_subscription` role (PG 16+), `max_replication_slots` / `max_wal_senders` headroom, pg_hba.conf replication channel |
-| **Database analysis** | Three-level lazy tree (cluster → databases → schemas → tables) with sizes, row estimates, `REPLICA IDENTITY` badges; search, expand-all, per-schema select-all |
-| **Publication badges** | Tables already in a publication show a clickable badge; click opens that publication's config directly in Setup tab |
+| **Database analysis** | Three-level lazy tree (cluster → databases → schemas → tables) with sizes, row estimates, `REPLICA IDENTITY` badges; search, hide-empty-schemas toggle, per-schema publication badges showing table count (clickable → Setup tab) |
 | **Publications panel** | Per-database collapsible panel listing all found publications with their tables; "Manage" button opens any publication in Setup tab |
 | **Publication setup** | Create/update/drop publications for individual tables or entire schemas (PG 15+ schema-level publications); pub/sub names follow `{8chars}_{pub|sub}_{label}` pattern with 63-byte PG limit enforced |
 | **Multi-publication workspace** | Independently manage multiple publications per workspace; saved configs keyed by pub name with quick-switch buttons |
-| **Subscription setup** | Create/update/drop subscriptions with `copy_data` toggle; verifies target tables exist on destination before applying; live step-by-step progress modal; auto-cleans orphaned replication slot on retry |
-| **Schema synchronization** | Inline schema diff and auto-create missing tables on destination before applying replication; no manual `pg_dump` required; full support for **partitioned tables** (detects `relkind='p'` parents and child partitions, correct DDL order, indexes propagated from parent) |
+| **Subscription setup** | Create/update/drop subscriptions with `copy_data` toggle; multi-database schema check (queries each DB separately); live step-by-step progress modal with **retry from failed step** (skips already-completed steps); `CREATE SUBSCRIPTION` timeout 120 s |
+| **Schema synchronization** | Inline schema diff and auto-create missing tables on destination before applying replication; no manual `pg_dump` required; full support for **partitioned tables**; multi-database selections query each database independently |
 | **Roles & grants migration** | `pg_dumpall --globals-only` compatible: generates and applies `CREATE ROLE`, `ALTER ROLE`, membership grants, schema grants, table grants and default privileges; Cloud SQL aware (strips `SUPERUSER`/`NOSUPERUSER`) |
-| **Live monitoring** | Per-subscription progress in aligned columns: name, status badges, DB badge, copy progress (GB / GB · % · progress bar), WAL lag + mini bar, copy speed (10-sample rolling avg MB/s), ETA per subscription and total ETA in the header; `pg_stat_replication.state` badge (streaming / catchup); internal `pg_NNN_sync_NNN` worker slots automatically hidden; table sizes read from `pg_class.relpages` (no lock) — never blocks on long-running transactions |
-| **Source capacity widget** | WAL senders (`X/max`) and replication slots (`X/max · Y active`) shown in the status page header with colour-coded mini progress bars (green → yellow → red at 70 % / 90 %) |
+| **Live monitoring** | Per-subscription rows in aligned columns: name, status badges, DB badge, copy progress (GB / GB · % · bar), WAL lag + bar, copy speed (10-sample rolling avg), ETA; header shows aggregate copied/total, overall ETA, active copy count; `pg_stat_replication.state` badge; internal sync worker slots hidden; table sizes via `pg_class.relpages` (lock-free) |
+| **Table copy states** | Four states for `sub_state=d`: **copying** (blue, active `pg_stat_progress_copy`), **slot pending** (orange, `CREATE_REPLICATION_SLOT` blocked on source), **locked** (red, sync worker has ungranted lock on dest), **waiting** (yellow, queued for sync worker slot) |
+| **Source capacity widget** | WAL senders, replication slots and `max_sync_workers_per_subscription` shown in header with colour-coded mini progress bars; click workers value to change it via `ALTER SYSTEM SET` (Cloud SQL: shows GCP Console instructions) |
+| **Subscription diagnostics** | Debug modal: apply worker activity (`pg_stat_activity`), apply throughput (LSN delta), processes blocking apply worker on dest, long-running transactions (>30 s) across all databases, all logical replication workers |
 | **Conflict handling** | Detect disabled subscriptions, show replication origin LSN, skip conflicting transaction via `ALTER SUBSCRIPTION … SKIP` |
 | **Sequence sync** | Detect and synchronise sequence values between source and destination after replication completes |
 | **Index sync** | Create missing indexes on destination that exist on source |
 | **Workspace persistence** | Named workspaces (profiles) stored in Docker volume or local `data/` directory; remembers table selection, last used timestamp, all publication configs |
-| **Subscription lifecycle** | Pause (`DISABLE`) / Resume (`ENABLE`) / Stop (disable + drop slot) / Drop subscription / Drop publication — all with per-database routing so multi-database setups work correctly |
-| **Vacuum truncate** | `VACUUM (TRUNCATE ONLY)` all destination tables for a stopped subscription — available only when the replication slot is gone; shows destination host + table list in confirmation modal |
+| **Subscription lifecycle** | Pause / Resume / Stop / Reset / Drop sub / Drop pub — all with per-database routing; **Truncate** button (`TRUNCATE` + `VACUUM FULL` on dest tables) available when slot is dropped |
 | **Reset replication** | Drop and recreate subscription + slot from scratch with one click and confirmation dialog |
 | **Refresh publication** | `ALTER SUBSCRIPTION … REFRESH PUBLICATION` without full resync |
-| **Stats interval** | Configurable auto-refresh interval for status page |
+| **REPLICA IDENTITY streaming** | Set `REPLICA IDENTITY FULL` on hundreds of tables via NDJSON stream — live progress bar, no HTTP timeout |
+| **Stats interval** | Configurable auto-refresh interval for status page; copy-progress queries all destination databases in parallel |
 
 ---
 
@@ -174,11 +175,12 @@ pg_dump --schema-only -n public source_db | psql destination_db
 
 The **Replication Progress** panel (Status tab) shows a live view refreshed every N seconds (configurable):
 
-- **Header** — total aggregate copy speed (10-sample rolling average across all active subscriptions), total ETA in `Xd Xh Xm` format, "Initial copy in progress" indicator
-- **Source capacity pills** — WAL senders (`X/max`) and replication slots (`X/max · Y active`) with colour-coded mini progress bars (green < 70 %, yellow 70–90 %, red ≥ 90 %)
+- **Header** — aggregate copied / total bytes with progress bar; total copy speed (10-sample rolling avg); total ETA in `Xd Xh Xm` format; active copy count (`N tables copying`)
+- **Source capacity pills** — WAL senders, replication slots and sync workers limit shown with colour-coded mini progress bars (green < 70 %, yellow 70–90 %, red ≥ 90 %); click sync workers pill to change `max_sync_workers_per_subscription` via `ALTER SYSTEM SET`
 - **Per-subscription row** (table-aligned columns) — name, status badges (`active`/`inactive`, `streaming`/`catchup`), DB badge, tables synced counter, aggregate copy progress (`X GB / Y GB · Z%`), progress bar, per-subscription copy speed + ETA, WAL lag with mini bar, `N to analyze` button, debug button
-- **Per-table detail** (expandable) — table state badge, destination heap size, source heap size, rows copied, byte-level progress bar, last ANALYZE timestamp with one-click Analyze button
+- **Per-table detail** (expandable) — table state badge (`copying` / `slot pending` / `locked` / `waiting` / `synced` / `ready`), destination heap size, source heap size, rows copied, byte-level progress bar, last ANALYZE timestamp with one-click Analyze button
 - Internal PostgreSQL worker slots (`pg_NNN_sync_NNN_…`) are automatically filtered out and not shown
+- All status page queries that require per-database connections run **in parallel** for fast initial load
 
 ### Copy speed and ETA
 
@@ -188,14 +190,17 @@ Source table sizes are fetched **once per database** (not on every poll) to avoi
 
 ### Table states
 
-| State | Label | Meaning |
-|---|---|---|
-| `i` | initializing | Slot created, copy not started |
-| `d` | copying | Active COPY in progress |
-| `f` | catching up | COPY done, replaying WAL delta from copy window |
-| `s` | synced | WAL caught up, pending confirmation round-trip |
-| `r` | ready | Fully live — all changes replicated in real time |
-| `e` | error | Sync error — check subscriber logs |
+| State | `srsubstate` | Colour | Meaning |
+|---|---|---|---|
+| initializing | `i` | gray | Slot created, copy not started |
+| copying | `d` | blue | Active COPY process visible in `pg_stat_progress_copy` |
+| slot pending | `d` | orange | Sync worker wants to start but `CREATE_REPLICATION_SLOT` is blocked on source by another lock |
+| locked | `d` | red | Sync worker running but blocked on an ungranted lock on destination |
+| waiting | `d` | yellow | Slot assigned, no active COPY — queued behind `max_sync_workers_per_subscription` limit |
+| catching up | `f` | yellow | COPY done, replaying WAL delta from copy window |
+| synced | `s` | green | WAL caught up, pending confirmation round-trip |
+| ready | `r` | green | Fully live — all changes replicated in real time |
+| error | `e` | red | Sync error — check subscriber logs |
 
 ## Roles & Grants Migration
 
@@ -299,11 +304,42 @@ Each subscription in the **Subscriptions** table has the following actions:
 | **Reset** | Any | Drop + recreate subscription and slot from scratch — full resync |
 | **Drop sub** | Any | `DROP SUBSCRIPTION` on destination |
 | **Drop pub** | Any | `DROP PUBLICATION` on source |
-| **Vacuum** | Slot dropped | `VACUUM (TRUNCATE ONLY)` all destination tables — reclaims dead tuple storage without a full table scan |
+| **Truncate** | Slot dropped | `TRUNCATE` + `VACUUM FULL` all destination tables — removes all rows and reclaims disk space; use before re-syncing from source |
 
 All actions that modify a subscription route to the correct destination database automatically, even in multi-database setups.
 
 ---
+
+## Diagnosing Replication Lag
+
+The **Debug Subscription** modal (click `debug` on any subscription row) provides:
+
+| Section | What it shows |
+|---|---|
+| Replication slot (source) | WAL lag, active PID, confirmed flush LSN |
+| `pg_stat_replication` | State (`streaming`/`catchup`), sent/write/flush/replay LSN, lag intervals |
+| Apply worker activity | State, wait event (red if `Lock`), state age, current query |
+| Apply throughput | MB/s computed from `latest_end_lsn` delta between refreshes |
+| Apply worker blockers | Who holds locks preventing the apply worker from proceeding |
+| Long-running transactions | All transactions >30 s on destination cluster (any database) — frequent cause of lag |
+| All replication workers | Full `pg_stat_activity` for every logical replication worker |
+| Error counts | `apply_error_count` / `sync_error_count` from `pg_stat_subscription_stats` |
+
+### `out of memory` in WAL stream (`context "Tuples"`)
+
+Apply worker crashes with `ERROR: out of memory DETAIL: Failed on request of size N in memory context "Tuples"` when a single WAL transaction is too large to decode in memory. Common with tables that have `REPLICA IDENTITY FULL` and no primary key.
+
+**Fix 1 — increase `logical_decoding_work_mem` on source (no restart needed):**
+```sql
+ALTER SYSTEM SET logical_decoding_work_mem = '256MB';  -- default 64 MB
+SELECT pg_reload_conf();
+```
+
+**Fix 2 — upgrade PostgreSQL source to 14.14+:**  
+PG 14.14 contains a critical fix that reduces memory block size for tuple data in logical decoding, directly addressing OOM failures with large transactions.
+
+**Fix 3 — remove `REPLICA IDENTITY FULL` from insert-only tables:**  
+Tables that only receive `INSERT` don't need `FULL` — `DEFAULT` is sufficient and much smaller in WAL.
 
 ## Troubleshooting
 
