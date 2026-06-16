@@ -2831,11 +2831,40 @@ async def schema_drop_recreate(body: dict):
                         col_def += " NOT NULL"
                     col_defs.append(col_def)
 
-                if pk_cols:
-                    col_defs.append(f"  PRIMARY KEY ({', '.join(_qi(r['attname']) for r in pk_cols)})")
+                # Check if table is a partitioned parent or child partition on source
+                part_row = await src_conn.fetchrow("""
+                    SELECT c.relkind, c.relispartition,
+                           pg_get_partkeydef(c.oid) AS partkeydef,
+                           pg_get_expr(c.relpartbound, c.oid) AS partbound,
+                           pn.nspname AS parent_schema, pc.relname AS parent_table
+                    FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    LEFT JOIN pg_inherits inh ON inh.inhrelid = c.oid
+                    LEFT JOIN pg_class pc ON pc.oid = inh.inhparent
+                    LEFT JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+                    WHERE n.nspname = $1 AND c.relname = $2
+                """, schema_name, table_name)
 
-                ddl = (f'CREATE TABLE "{schema_name}"."{table_name}" (\n'
-                       + ",\n".join(col_defs) + "\n);")
+                rk = _relkind(part_row["relkind"]) if part_row else "r"
+                is_part_parent = rk == "p"
+                is_part_child  = bool(part_row and part_row["relispartition"])
+
+                if is_part_child:
+                    ps = part_row["parent_schema"]
+                    pt = part_row["parent_table"]
+                    pb = part_row["partbound"]
+                    ddl = (f'CREATE TABLE "{schema_name}"."{table_name}" '
+                           f'PARTITION OF "{ps}"."{pt}" {pb};')
+                elif is_part_parent:
+                    pkdef = part_row["partkeydef"]
+                    ddl = (f'CREATE TABLE "{schema_name}"."{table_name}" (\n'
+                           + ",\n".join(col_defs)
+                           + f"\n) PARTITION BY {pkdef};")
+                else:
+                    if pk_cols:
+                        col_defs.append(f"  PRIMARY KEY ({', '.join(_qi(r['attname']) for r in pk_cols)})")
+                    ddl = (f'CREATE TABLE "{schema_name}"."{table_name}" (\n'
+                           + ",\n".join(col_defs) + "\n);")
 
                 await dest_conn_dr.execute(ddl)
 
