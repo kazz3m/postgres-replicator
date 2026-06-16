@@ -2792,9 +2792,9 @@ async def schema_drop_recreate(body: dict):
                 cols = await src_conn.fetch("""
                     SELECT a.attname AS col,
                            pg_catalog.format_type(a.atttypid, a.atttypmod) AS col_type,
-                           a.attnotnull AS not_null,
+                           a.attnotnull::bool AS not_null,
                            pg_get_expr(d.adbin, d.adrelid) AS col_default,
-                           a.attidentity AS identity
+                           a.attidentity::text AS identity
                     FROM pg_attribute a
                     JOIN pg_class c ON c.oid = a.attrelid
                     JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -2803,6 +2803,9 @@ async def schema_drop_recreate(body: dict):
                       AND a.attnum > 0 AND NOT a.attisdropped
                     ORDER BY a.attnum
                 """, schema_name, table_name)
+                import logging as _log2
+                for _c in cols:
+                    _log2.getLogger("uvicorn.error").info(f"  col={_c['col']} not_null={_c['not_null']!r} identity={_c['identity']!r} type={type(_c['not_null'])}")
 
                 pk_cols = await src_conn.fetch("""
                     SELECT a.attname
