@@ -272,7 +272,10 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
   async function runSync() {
     setSyncing(true); setError(''); setSyncResults(null)
     try {
-      const grouped = groupByDb(tables)
+      // Only send missing tables — no need to re-check existing ones
+      const missingTables = (diffs ?? []).filter(d => !d.exists_on_dest).map(d => d.table)
+      const toSync = missingTables.length > 0 ? missingTables : tables
+      const grouped = groupByDb(toSync)
       const results = await Promise.all(
         Object.entries(grouped).map(([db, tbls]) =>
           replicationApi.schemaSyncByTables(tbls, createIndexes, db || undefined).then(r => r.data)
