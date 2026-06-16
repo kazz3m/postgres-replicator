@@ -2549,11 +2549,11 @@ async def _get_table_indexes(src_conn, schema_name: str, table_name: str) -> lis
     ]
 
 
-async def _add_table_constraints(src_conn, dest_conn, schema_name: str, table_name: str) -> list[str]:
+async def _add_table_constraints(src_conn, dest_conn, schema_name: str, table_name: str) -> list[dict]:
     """
     Fetch CHECK, UNIQUE, and FK constraints from source and ADD them on dest.
     PRIMARY KEY is already handled inside CREATE TABLE.
-    Returns list of constraint names successfully added.
+    Returns list of {name, ok, error} dicts.
     """
     rows = await src_conn.fetch("""
         SELECT con.conname,
@@ -2567,7 +2567,7 @@ async def _add_table_constraints(src_conn, dest_conn, schema_name: str, table_na
         ORDER BY con.contype, con.conname
     """, schema_name, table_name)
 
-    added = []
+    results = []
     for row in rows:
         cname = row["conname"]
         cdef  = row["definition"]
@@ -2576,11 +2576,11 @@ async def _add_table_constraints(src_conn, dest_conn, schema_name: str, table_na
                 f'ALTER TABLE "{schema_name}"."{table_name}" '
                 f'ADD CONSTRAINT "{cname}" {cdef}'
             )
-            added.append(cname)
-        except Exception:
-            # Silently skip if constraint already exists or FK target missing
-            pass
-    return added
+            results.append({"name": cname, "ok": True})
+        except Exception as e:
+            err = str(e).split("\n")[0]  # first line only
+            results.append({"name": cname, "ok": False, "error": err})
+    return results
 
 
 @router.get("/schema-indexes")
@@ -2901,21 +2901,30 @@ async def schema_sync(body: dict):
                         pass
 
             # Add CHECK, UNIQUE, FK constraints (PK already in CREATE TABLE)
+            con_results = []
             if not is_partition:
-                await _add_table_constraints(src_pool_conn, dest_pool_conn, schema_name, table_name)
+                con_results = await _add_table_constraints(src_pool_conn, dest_pool_conn, schema_name, table_name)
+            con_failed = [r for r in con_results if not r["ok"]]
+            con_ok     = [r for r in con_results if r["ok"]]
+
+            base_detail = (
+                f"Partitioned table created with {len(index_results)} index(es) (propagated to partitions)."
+                if is_partitioned and index_results
+                else f"Table created with {len(index_results)} index(es)."
+                if index_results
+                else "Table created (no additional indexes on source)."
+                if is_partition or create_indexes_when == "before"
+                else "Table created. Indexes NOT created — use 'Create indexes' after replication completes."
+            )
+            if con_ok:
+                base_detail += f" Constraints added: {', '.join(r['name'] for r in con_ok)}."
+            if con_failed:
+                base_detail += f" Constraints FAILED: " + "; ".join(f"{r['name']}: {r.get('error','?')}" for r in con_failed) + "."
 
             results.append(SchemaSyncResult(
                 table=diff.table,
                 action="created",
-                detail=(
-                    f"Partitioned table created with {len(index_results)} index(es) (propagated to partitions)."
-                    if is_partitioned and index_results
-                    else f"Table created with {len(index_results)} index(es)."
-                    if index_results
-                    else "Table created (no additional indexes on source)."
-                    if is_partition or create_indexes_when == "before"
-                    else "Table created. Indexes NOT created — use 'Create indexes' after replication completes."
-                ),
+                detail=base_detail,
                 indexes=index_results,
             ))
 
@@ -3051,10 +3060,18 @@ async def schema_drop_recreate(body: dict):
                 await dest_conn_dr.execute(ddl)
 
                 # Add CHECK, UNIQUE, FK constraints (PK already in CREATE TABLE)
+                con_results = []
                 if not is_part_child:
-                    await _add_table_constraints(src_conn, dest_conn_dr, schema_name, table_name)
+                    con_results = await _add_table_constraints(src_conn, dest_conn_dr, schema_name, table_name)
+                con_failed = [r for r in con_results if not r["ok"]]
+                con_ok     = [r for r in con_results if r["ok"]]
+                detail = "Dropped and recreated."
+                if con_ok:
+                    detail += f" Constraints added: {', '.join(r['name'] for r in con_ok)}."
+                if con_failed:
+                    detail += f" Constraints FAILED: " + "; ".join(f"{r['name']}: {r.get('error','?')}" for r in con_failed) + "."
 
-                results.append(SchemaSyncResult(table=diff.table, action="created", detail="Dropped and recreated"))
+                results.append(SchemaSyncResult(table=diff.table, action="created", detail=detail))
             except Exception as e:
                 results.append(SchemaSyncResult(table=diff.table, action="error", detail=str(e)))
     finally:
