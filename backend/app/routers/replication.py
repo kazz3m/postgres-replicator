@@ -2719,11 +2719,13 @@ async def schema_sync(body: dict):
             if should_create_indexes and not is_partition:
                 idx_list = await _get_table_indexes(src_pool_conn, schema_name, table_name)
                 for idx in idx_list:
+                    import logging as _log_idx
+                    _log_idx.getLogger("uvicorn.error").info(f"CREATE INDEX: {idx.index_def}")
                     try:
                         await dest_pool_conn.execute(idx.index_def)
                         index_results.append(idx)
-                    except Exception:
-                        pass
+                    except Exception as _idx_e:
+                        _log_idx.getLogger("uvicorn.error").warning(f"INDEX FAILED: {_idx_e}")
 
             results.append(SchemaSyncResult(
                 table=diff.table,
