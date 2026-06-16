@@ -733,15 +733,28 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
             {pgMajor >= 15 && <span className="text-gray-500 ml-2">(schema-level publication)</span>}
           </div>
         )}
-        {selectedTables.size > 0 && (
-          <div className="text-sm">
-            <span className="text-gray-400">Tables: </span>
-            <span className="text-blue-300 break-all">{Array.from(selectedTables).map(toSchemaTable).join(', ')}</span>
-          </div>
-        )}
+        {selectedTables.size > 0 && (() => {
+          const allTables = Array.from(selectedTables).map(toSchemaTable)
+          const preview = allTables.slice(0, 8).join(', ')
+          const rest = allTables.length - 8
+          return (
+            <details className="text-sm group">
+              <summary className="cursor-pointer list-none flex items-center gap-2 select-none">
+                <span className="text-gray-400">Tables:</span>
+                <span className="text-blue-300">{preview}{rest > 0 ? ` … +${rest} more` : ''}</span>
+                <span className="text-gray-600 text-xs group-open:hidden">▸ show all</span>
+                <span className="text-gray-600 text-xs hidden group-open:inline">▾ collapse</span>
+              </summary>
+              <div className="mt-2 text-blue-300 break-all leading-relaxed text-xs bg-gray-950/50 rounded p-2 border border-gray-800">
+                {allTables.join(', ')}
+              </div>
+            </details>
+          )
+        })()}
         {hasSelection && (
           <div className="text-sm text-gray-400">
             Total data: <span className="text-white font-semibold">{formatBytes(totalBytes)}</span>
+            <span className="text-gray-600 ml-2">· {selectedTables.size} table{selectedTables.size !== 1 ? 's' : ''}</span>
             {totalBytes > 10 * 1024 * 1024 * 1024 && (
               <span className="text-yellow-400 ml-2">⚠️ Large dataset — initial sync may take a long time</span>
             )}
