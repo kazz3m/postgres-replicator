@@ -2549,6 +2549,40 @@ async def _get_table_indexes(src_conn, schema_name: str, table_name: str) -> lis
     ]
 
 
+async def _add_table_constraints(src_conn, dest_conn, schema_name: str, table_name: str) -> list[str]:
+    """
+    Fetch CHECK, UNIQUE, and FK constraints from source and ADD them on dest.
+    PRIMARY KEY is already handled inside CREATE TABLE.
+    Returns list of constraint names successfully added.
+    """
+    rows = await src_conn.fetch("""
+        SELECT con.conname,
+               con.contype,
+               pg_get_constraintdef(con.oid) AS definition
+        FROM pg_constraint con
+        JOIN pg_class c ON c.oid = con.conrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1 AND c.relname = $2
+          AND con.contype IN ('c', 'u', 'f')
+        ORDER BY con.contype, con.conname
+    """, schema_name, table_name)
+
+    added = []
+    for row in rows:
+        cname = row["conname"]
+        cdef  = row["definition"]
+        try:
+            await dest_conn.execute(
+                f'ALTER TABLE "{schema_name}"."{table_name}" '
+                f'ADD CONSTRAINT "{cname}" {cdef}'
+            )
+            added.append(cname)
+        except Exception:
+            # Silently skip if constraint already exists or FK target missing
+            pass
+    return added
+
+
 @router.get("/schema-indexes")
 async def list_schema_indexes(publication: str):
     """List all non-PK indexes for tables in a publication (so user can create them selectively)."""
@@ -2866,6 +2900,10 @@ async def schema_sync(body: dict):
                     except Exception:
                         pass
 
+            # Add CHECK, UNIQUE, FK constraints (PK already in CREATE TABLE)
+            if not is_partition:
+                await _add_table_constraints(src_pool_conn, dest_pool_conn, schema_name, table_name)
+
             results.append(SchemaSyncResult(
                 table=diff.table,
                 action="created",
@@ -3011,6 +3049,10 @@ async def schema_drop_recreate(body: dict):
                            + ",\n".join(col_defs) + "\n);")
 
                 await dest_conn_dr.execute(ddl)
+
+                # Add CHECK, UNIQUE, FK constraints (PK already in CREATE TABLE)
+                if not is_part_child:
+                    await _add_table_constraints(src_conn, dest_conn_dr, schema_name, table_name)
 
                 results.append(SchemaSyncResult(table=diff.table, action="created", detail="Dropped and recreated"))
             except Exception as e:
