@@ -254,11 +254,31 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
     }
   }
 
+  // Helper: group a flat list of "schema.table" by database using tablesByDb reverse map
+  function groupByDb(flatTables: string[]): Record<string, string[]> {
+    if (!tablesByDb || Object.keys(tablesByDb).length <= 1) return { [database ?? '']: flatTables }
+    const result: Record<string, string[]> = {}
+    for (const [db, tbls] of Object.entries(tablesByDb)) {
+      const matched = flatTables.filter(t => tbls.includes(t))
+      if (matched.length > 0) result[db] = matched
+    }
+    // fallback: tables not matched go to primary database
+    const matched = new Set(Object.values(result).flat())
+    const unmatched = flatTables.filter(t => !matched.has(t))
+    if (unmatched.length > 0) result[database ?? ''] = [...(result[database ?? ''] ?? []), ...unmatched]
+    return result
+  }
+
   async function runSync() {
     setSyncing(true); setError(''); setSyncResults(null)
     try {
-      const { data } = await replicationApi.schemaSyncByTables(tables, createIndexes, database)
-      setSyncResults(data)
+      const grouped = groupByDb(tables)
+      const results = await Promise.all(
+        Object.entries(grouped).map(([db, tbls]) =>
+          replicationApi.schemaSyncByTables(tbls, createIndexes, db || undefined).then(r => r.data)
+        )
+      )
+      setSyncResults(results.flat())
       await runCheck()
     } catch (e: any) {
       setError(extractError(e))
@@ -272,10 +292,14 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
       return
     setDropping(true); setError(''); setSyncResults(null)
     try {
-      const { data } = await replicationApi.schemaDropRecreate(
-        incompatible.map(d => d.table), database
+      const incompatibleTables = incompatible.map(d => d.table)
+      const grouped = groupByDb(incompatibleTables)
+      const results = await Promise.all(
+        Object.entries(grouped).map(([db, tbls]) =>
+          replicationApi.schemaDropRecreate(tbls, db || undefined).then(r => r.data)
+        )
       )
-      setSyncResults(data)
+      setSyncResults(results.flat())
       await runCheck()
     } catch (e: any) {
       setError(extractError(e))
@@ -291,8 +315,13 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
     if (!tablesWithNotNullMismatch.length) return
     setFixingNotNull(true); setError(''); setNotNullResults(null)
     try {
-      const { data } = await replicationApi.schemaFixNotNull(tablesWithNotNullMismatch, database, notNullStrategy)
-      setNotNullResults(data)
+      const grouped = groupByDb(tablesWithNotNullMismatch)
+      const results = await Promise.all(
+        Object.entries(grouped).map(([db, tbls]) =>
+          replicationApi.schemaFixNotNull(tbls, db || undefined, notNullStrategy).then(r => r.data)
+        )
+      )
+      setNotNullResults(results.flat())
       await runCheck()
     } catch (e: any) {
       setError(extractError(e))
