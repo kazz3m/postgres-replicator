@@ -84,10 +84,45 @@ export interface ColumnDiff {
   not_null_match: boolean
 }
 
+export interface IndexDiff {
+  index_name: string
+  columns: string[]
+  is_unique: boolean
+  exists_on_dest: boolean
+  dest_columns: string[] | null
+  columns_match: boolean
+}
+
+export interface SequenceDiff {
+  sequence_name: string
+  column_name: string
+  exists_on_dest: boolean
+}
+
+export interface TriggerDiff {
+  trigger_name: string
+  event: string
+  timing: string
+  exists_on_dest: boolean
+}
+
+export interface ConstraintDiff {
+  constraint_name: string
+  constraint_type: string
+  definition: string
+  exists_on_dest: boolean
+  dest_definition: string | null
+  definition_match: boolean
+}
+
 export interface TableSchemaDiff {
   table: string
   exists_on_dest: boolean
   columns: ColumnDiff[]
+  indexes: IndexDiff[]
+  sequences: SequenceDiff[]
+  triggers: TriggerDiff[]
+  constraints: ConstraintDiff[]
   compatible: boolean
 }
 

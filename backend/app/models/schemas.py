@@ -142,10 +142,45 @@ class ColumnDiff(BaseModel):
     not_null_match: bool = True            # False when NOT NULL differs
 
 
+class IndexDiff(BaseModel):
+    index_name: str
+    columns: List[str]          # column names in key order
+    is_unique: bool
+    exists_on_dest: bool
+    dest_columns: Optional[List[str]] = None  # None if index missing on dest
+    columns_match: bool = True
+
+
+class SequenceDiff(BaseModel):
+    sequence_name: str          # just the sequence name (without schema)
+    column_name: str
+    exists_on_dest: bool
+
+
+class TriggerDiff(BaseModel):
+    trigger_name: str
+    event: str                  # INSERT/UPDATE/DELETE/TRUNCATE
+    timing: str                 # BEFORE/AFTER/INSTEAD OF
+    exists_on_dest: bool
+
+
+class ConstraintDiff(BaseModel):
+    constraint_name: str
+    constraint_type: str        # CHECK / UNIQUE / FOREIGN KEY / PRIMARY KEY
+    definition: str             # pg_get_constraintdef()
+    exists_on_dest: bool
+    dest_definition: Optional[str] = None
+    definition_match: bool = True
+
+
 class TableSchemaDiff(BaseModel):
     table: str                  # schema.table
     exists_on_dest: bool
     columns: List[ColumnDiff]
+    indexes: List[IndexDiff] = []
+    sequences: List[SequenceDiff] = []
+    triggers: List[TriggerDiff] = []
+    constraints: List[ConstraintDiff] = []
     compatible: bool            # True only when all columns match
 
 

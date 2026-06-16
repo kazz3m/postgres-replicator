@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { replicationApi, SchemaInfo, TableSchemaDiff, SchemaSyncResult } from '../api/client'
+import { useQueryClient } from '@tanstack/react-query'
+import { replicationApi, SchemaInfo, TableInfo, TableSchemaDiff, IndexDiff, SequenceDiff, TriggerDiff, ConstraintDiff, SchemaSyncResult } from '../api/client'
 import { ReplicationConfig } from '../utils/profiles'
 import { Spinner } from '../components/Spinner'
 import { ConfirmModal } from '../components/ConfirmModal'
@@ -502,36 +503,157 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
                     variant={status === 'ok' ? 'green' : status === 'missing' ? 'red' : 'yellow'}
                   />
                 </div>
-                {isExp && diff.columns.length > 0 && (
-                  <div className="px-4 pb-2 pl-10 bg-gray-950/30">
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="text-gray-600">
-                          <th className="text-left py-0.5 pr-4">Column</th>
-                          <th className="text-left py-0.5 pr-4">Source type</th>
-                          <th className="text-left py-0.5 pr-4">Dest type</th>
-                          <th className="text-left py-0.5 pr-2">Src NN</th>
-                          <th className="text-left py-0.5">Dst NN</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {diff.columns.map(col => (
-                          <tr key={col.column_name} className={col.match ? 'text-gray-500' : col.not_null_match === false ? 'text-blue-400' : 'text-yellow-400'}>
-                            <td className="font-mono pr-4 py-0.5">{col.column_name}</td>
-                            <td className="font-mono pr-4 py-0.5">{col.source_type}</td>
-                            <td className="font-mono pr-4 py-0.5">
-                              {col.dest_type ?? <span className="text-red-400">missing</span>}
-                            </td>
-                            <td className="pr-2 py-0.5 text-center">{col.source_not_null ? <span className="text-gray-300">NN</span> : <span className="text-gray-700">–</span>}</td>
-                            <td className="py-0.5 text-center">
-                              {col.dest_type == null ? '–' : col.dest_not_null
-                                ? <span className={col.source_not_null ? 'text-gray-300' : 'text-blue-400'}>NN</span>
-                                : <span className={col.source_not_null ? 'text-blue-400' : 'text-gray-700'}>–</span>}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                {isExp && (
+                  <div className="px-4 pb-3 pl-10 bg-gray-950/30 space-y-3">
+                    {diff.columns.length > 0 && (
+                      <div>
+                        <div className="text-xs text-gray-600 uppercase tracking-wide pt-2 pb-1">Columns</div>
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-gray-600">
+                              <th className="text-left py-0.5 pr-4">Column</th>
+                              <th className="text-left py-0.5 pr-4">Source type</th>
+                              <th className="text-left py-0.5 pr-4">Dest type</th>
+                              <th className="text-left py-0.5 pr-2">Src NN</th>
+                              <th className="text-left py-0.5">Dst NN</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {diff.columns.map(col => (
+                              <tr key={col.column_name} className={col.match ? 'text-gray-500' : col.not_null_match === false ? 'text-blue-400' : 'text-yellow-400'}>
+                                <td className="font-mono pr-4 py-0.5">{col.column_name}</td>
+                                <td className="font-mono pr-4 py-0.5">{col.source_type}</td>
+                                <td className="font-mono pr-4 py-0.5">
+                                  {col.dest_type ?? <span className="text-red-400">missing</span>}
+                                </td>
+                                <td className="pr-2 py-0.5 text-center">{col.source_not_null ? <span className="text-gray-300">NN</span> : <span className="text-gray-700">–</span>}</td>
+                                <td className="py-0.5 text-center">
+                                  {col.dest_type == null ? '–' : col.dest_not_null
+                                    ? <span className={col.source_not_null ? 'text-gray-300' : 'text-blue-400'}>NN</span>
+                                    : <span className={col.source_not_null ? 'text-blue-400' : 'text-gray-700'}>–</span>}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    {diff.indexes?.length > 0 && (
+                      <div>
+                        <div className="text-xs text-gray-600 uppercase tracking-wide pb-1">Indexes</div>
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-gray-600">
+                              <th className="text-left py-0.5 pr-4">Index</th>
+                              <th className="text-left py-0.5 pr-4">Columns</th>
+                              <th className="text-left py-0.5 pr-2">Unique</th>
+                              <th className="text-left py-0.5">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {diff.indexes.map((idx: IndexDiff) => {
+                              const idxOk = idx.exists_on_dest && idx.columns_match
+                              return (
+                                <tr key={idx.index_name} className={idxOk ? 'text-gray-500' : 'text-yellow-400'}>
+                                  <td className="font-mono pr-4 py-0.5">{idx.index_name}</td>
+                                  <td className="font-mono pr-4 py-0.5 text-gray-400">{idx.columns.join(', ')}</td>
+                                  <td className="pr-2 py-0.5 text-center">{idx.is_unique ? <span className="text-gray-400">U</span> : <span className="text-gray-700">–</span>}</td>
+                                  <td className="py-0.5">
+                                    {!idx.exists_on_dest
+                                      ? <span className="text-red-400">missing</span>
+                                      : !idx.columns_match
+                                        ? <span className="text-yellow-400">columns differ: {idx.dest_columns?.join(', ')}</span>
+                                        : <span className="text-green-600">ok</span>}
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    {diff.sequences?.length > 0 && (
+                      <div>
+                        <div className="text-xs text-gray-600 uppercase tracking-wide pb-1">Sequences</div>
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-gray-600">
+                              <th className="text-left py-0.5 pr-4">Sequence</th>
+                              <th className="text-left py-0.5 pr-4">Column</th>
+                              <th className="text-left py-0.5">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {diff.sequences.map((seq: SequenceDiff) => (
+                              <tr key={seq.sequence_name} className={seq.exists_on_dest ? 'text-gray-500' : 'text-red-400'}>
+                                <td className="font-mono pr-4 py-0.5">{seq.sequence_name}</td>
+                                <td className="font-mono pr-4 py-0.5 text-gray-400">{seq.column_name}</td>
+                                <td className="py-0.5">{seq.exists_on_dest ? <span className="text-green-600">ok</span> : <span className="text-red-400">missing</span>}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    {diff.triggers?.length > 0 && (
+                      <div>
+                        <div className="text-xs text-gray-600 uppercase tracking-wide pb-1">Triggers</div>
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-gray-600">
+                              <th className="text-left py-0.5 pr-4">Trigger</th>
+                              <th className="text-left py-0.5 pr-4">Timing</th>
+                              <th className="text-left py-0.5 pr-4">Event</th>
+                              <th className="text-left py-0.5">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {diff.triggers.map((trig: TriggerDiff) => (
+                              <tr key={trig.trigger_name} className={trig.exists_on_dest ? 'text-gray-500' : 'text-yellow-400'}>
+                                <td className="font-mono pr-4 py-0.5">{trig.trigger_name}</td>
+                                <td className="pr-4 py-0.5 text-gray-400">{trig.timing}</td>
+                                <td className="pr-4 py-0.5 text-gray-400">{trig.event}</td>
+                                <td className="py-0.5">{trig.exists_on_dest ? <span className="text-green-600">ok</span> : <span className="text-yellow-400">missing on dest</span>}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    {diff.constraints?.filter((c: ConstraintDiff) => c.constraint_type !== 'PRIMARY KEY').length > 0 && (
+                      <div>
+                        <div className="text-xs text-gray-600 uppercase tracking-wide pb-1">Constraints &amp; FK</div>
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-gray-600">
+                              <th className="text-left py-0.5 pr-4">Name</th>
+                              <th className="text-left py-0.5 pr-4">Type</th>
+                              <th className="text-left py-0.5 pr-4">Definition</th>
+                              <th className="text-left py-0.5">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {diff.constraints.filter((c: ConstraintDiff) => c.constraint_type !== 'PRIMARY KEY').map((con: ConstraintDiff) => {
+                              const conOk = con.exists_on_dest && con.definition_match
+                              return (
+                                <tr key={con.constraint_name} className={conOk ? 'text-gray-500' : 'text-yellow-400'}>
+                                  <td className="font-mono pr-4 py-0.5">{con.constraint_name}</td>
+                                  <td className="pr-4 py-0.5 text-gray-400 text-xs">{con.constraint_type}</td>
+                                  <td className="font-mono pr-4 py-0.5 text-gray-400 max-w-xs truncate" title={con.definition}>{con.definition}</td>
+                                  <td className="py-0.5">
+                                    {!con.exists_on_dest
+                                      ? <span className="text-red-400">missing</span>
+                                      : !con.definition_match
+                                        ? <span className="text-yellow-400">differs</span>
+                                        : <span className="text-green-600">ok</span>}
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -546,6 +668,7 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDsn, pgMajor, schemaData, replConfigs = {}, activeSetupPub, onReplConfigChange, onReplConfigDelete }: Props) {
+  const qc = useQueryClient()
   // Derive the active config: activeSetupPub hint → first saved → defaults
   const activeConfig: ReplicationConfig = (activeSetupPub && replConfigs[activeSetupPub])
     ? replConfigs[activeSetupPub]
@@ -596,13 +719,59 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
 
   const hasSelection = selectedTables.size > 0 || selectedSchemas.size > 0
 
-  const totalBytes = schemaData.reduce((sum, schema) => {
-    if ([...selectedSchemas].some(k => toSchema(k) === schema.schema_name))
-      return sum + schema.total_size_bytes
-    return sum + schema.tables.reduce((s, t) =>
-      [...selectedTables].some(k => toSchemaTable(k) === `${t.schema_name}.${t.table_name}`)
-        ? s + t.size_bytes : s, 0)
-  }, 0)
+  // Build size lookup from React Query cache (populated by AnalysisPage's per-db schema-tables queries)
+  // Fall back to schemaData (single-db) for tables not found in cache.
+  const totalBytes = (() => {
+    // Build a map: "db.schema.table" → size_bytes from cache
+    const cacheMap = new Map<string, number>()
+    const allDbs = new Set([
+      ...[...selectedTables].map(k => k.split('.')[0]),
+      ...[...selectedSchemas].map(k => k.split('.')[0]),
+    ])
+    for (const db of allDbs) {
+      // Enumerate all cached schema-tables queries for this db
+      const allCached = qc.getQueriesData<TableInfo[]>({ queryKey: ['schema-tables', db] })
+      for (const [, tables] of allCached) {
+        if (!tables) continue
+        for (const t of tables) {
+          cacheMap.set(`${db}.${t.schema_name}.${t.table_name}`, t.size_bytes)
+        }
+      }
+    }
+
+    let total = 0
+    for (const key of selectedTables) {
+      const cached = cacheMap.get(key)
+      if (cached !== undefined) {
+        total += cached
+      } else {
+        // Fall back to schemaData (covers single-db case where AnalysisPage wasn't expanded)
+        const st = toSchemaTable(key)  // "schema.table"
+        for (const schema of schemaData) {
+          const t = schema.tables.find(t => `${t.schema_name}.${t.table_name}` === st)
+          if (t) { total += t.size_bytes; break }
+        }
+      }
+    }
+    for (const key of selectedSchemas) {
+      const [db, ...schemaParts] = key.split('.')
+      const schemaName = schemaParts.join('.')
+      // Try cache: sum all tables in this schema
+      const allCached = qc.getQueriesData<TableInfo[]>({ queryKey: ['schema-tables', db, schemaName] })
+      let schemaTotal = 0; let foundInCache = false
+      for (const [, tables] of allCached) {
+        if (tables) { foundInCache = true; tables.forEach(t => { schemaTotal += t.size_bytes }) }
+      }
+      if (foundInCache) {
+        total += schemaTotal
+      } else {
+        // Fall back to schemaData
+        const sd = schemaData.find(s => s.schema_name === schemaName)
+        if (sd) total += sd.total_size_bytes
+      }
+    }
+    return total
+  })()
 
   const selectedDbs = new Set([
     ...[...selectedTables].map(k => k.split('.')[0]),

@@ -4,7 +4,7 @@ from typing import List, Optional
 from ..models.schemas import (
     PublicationConfig, SubscriptionConfig, ReplicationStatus,
     ReplicationSlotInfo, SubscriptionStatus, TableReplicationProgress,
-    SequenceInfo, TableSchemaDiff, ColumnDiff, SchemaSyncResult,
+    SequenceInfo, TableSchemaDiff, ColumnDiff, IndexDiff, SequenceDiff, TriggerDiff, ConstraintDiff, SchemaSyncResult,
     IndexInfo, IndexCreateResult, TableCopyProgress, CopyProgressResponse,
     SubscriptionProgress,
 )
@@ -2330,10 +2330,151 @@ async def _diff_table_list(table_pairs: list[tuple[str, str]], database: str | N
                     not_null_match=not_null_match,
                 ))
 
+            # ── Indexes ──────────────────────────────────────────────────
+            _idx_query = """
+                SELECT ix.relname AS index_name,
+                       ix.relname AS index_name,
+                       ix.relhastriggers,
+                       indisunique AS is_unique,
+                       array_agg(a.attname ORDER BY k.ordinality) AS columns
+                FROM pg_index i
+                JOIN pg_class c ON c.oid = i.indrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_class ix ON ix.oid = i.indexrelid
+                JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality) ON k.attnum > 0
+                JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+                WHERE n.nspname = $1 AND c.relname = $2
+                  AND NOT i.indisprimary
+                GROUP BY ix.relname, i.indisunique, ix.relhastriggers
+                ORDER BY ix.relname
+            """
+            src_indexes = await src_conn.fetch(_idx_query, schema_name, table_name)
+            dest_indexes = await dest_conn.fetch(_idx_query, schema_name, table_name) if table_exists else []
+            dest_idx_map = {r["index_name"]: list(r["columns"]) for r in dest_indexes}
+
+            index_diffs = []
+            for idx in src_indexes:
+                iname = idx["index_name"]
+                src_cols_list = list(idx["columns"])
+                dest_cols_list = dest_idx_map.get(iname)
+                cols_match = dest_cols_list == src_cols_list if dest_cols_list is not None else True
+                if not cols_match:
+                    compatible = False
+                index_diffs.append(IndexDiff(
+                    index_name=iname,
+                    columns=src_cols_list,
+                    is_unique=bool(idx["is_unique"]),
+                    exists_on_dest=iname in dest_idx_map,
+                    dest_columns=dest_cols_list,
+                    columns_match=cols_match,
+                ))
+                if iname not in dest_idx_map:
+                    compatible = False
+
+            # ── Sequences ────────────────────────────────────────────────
+            _seq_query = """
+                SELECT s.relname AS sequence_name, a.attname AS column_name
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+                JOIN pg_depend d ON d.refobjid = c.oid AND d.refobjsubid = a.attnum
+                JOIN pg_class s ON s.oid = d.objid AND s.relkind = 'S'
+                WHERE n.nspname = $1 AND c.relname = $2
+                ORDER BY s.relname
+            """
+            src_seqs = await src_conn.fetch(_seq_query, schema_name, table_name)
+            dest_seqs = await dest_conn.fetch(_seq_query, schema_name, table_name) if table_exists else []
+            dest_seq_names = {r["sequence_name"] for r in dest_seqs}
+
+            sequence_diffs = []
+            for seq in src_seqs:
+                sname = seq["sequence_name"]
+                sequence_diffs.append(SequenceDiff(
+                    sequence_name=sname,
+                    column_name=seq["column_name"],
+                    exists_on_dest=sname in dest_seq_names,
+                ))
+
+            # ── Triggers ─────────────────────────────────────────────────
+            _trig_query = """
+                SELECT t.tgname AS trigger_name,
+                       array_to_string(ARRAY[
+                           CASE WHEN (t.tgtype & 4) != 0 THEN 'INSERT' END,
+                           CASE WHEN (t.tgtype & 8) != 0 THEN 'DELETE' END,
+                           CASE WHEN (t.tgtype & 16) != 0 THEN 'UPDATE' END,
+                           CASE WHEN (t.tgtype & 32) != 0 THEN 'TRUNCATE' END
+                       ], ' OR ') AS event,
+                       CASE WHEN (t.tgtype & 2) != 0 THEN 'BEFORE'
+                            WHEN (t.tgtype & 64) != 0 THEN 'INSTEAD OF'
+                            ELSE 'AFTER' END AS timing
+                FROM pg_trigger t
+                JOIN pg_class c ON c.oid = t.tgrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = $1 AND c.relname = $2
+                  AND NOT t.tgisinternal
+                ORDER BY t.tgname
+            """
+            src_trigs = await src_conn.fetch(_trig_query, schema_name, table_name)
+            dest_trigs = await dest_conn.fetch(_trig_query, schema_name, table_name) if table_exists else []
+            dest_trig_names = {r["trigger_name"] for r in dest_trigs}
+
+            trigger_diffs = []
+            for trig in src_trigs:
+                trigger_diffs.append(TriggerDiff(
+                    trigger_name=trig["trigger_name"],
+                    event=trig["event"] or "",
+                    timing=trig["timing"],
+                    exists_on_dest=trig["trigger_name"] in dest_trig_names,
+                ))
+
+            # ── Constraints (CHECK, UNIQUE, FK) ──────────────────────────
+            _con_query = """
+                SELECT con.conname AS constraint_name,
+                       CASE con.contype
+                           WHEN 'c' THEN 'CHECK'
+                           WHEN 'u' THEN 'UNIQUE'
+                           WHEN 'f' THEN 'FOREIGN KEY'
+                           WHEN 'p' THEN 'PRIMARY KEY'
+                       END AS constraint_type,
+                       pg_get_constraintdef(con.oid) AS definition
+                FROM pg_constraint con
+                JOIN pg_class c ON c.oid = con.conrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = $1 AND c.relname = $2
+                  AND con.contype IN ('c','u','f','p')
+                ORDER BY con.conname
+            """
+            src_cons = await src_conn.fetch(_con_query, schema_name, table_name)
+            dest_cons = await dest_conn.fetch(_con_query, schema_name, table_name) if table_exists else []
+            dest_con_map = {r["constraint_name"]: r["definition"] for r in dest_cons}
+
+            constraint_diffs = []
+            for con in src_cons:
+                cname = con["constraint_name"]
+                src_def = con["definition"]
+                dest_def = dest_con_map.get(cname)
+                def_match = (dest_def == src_def) if dest_def is not None else True
+                if not def_match:
+                    compatible = False
+                if cname not in dest_con_map and con["constraint_type"] not in ("PRIMARY KEY",):
+                    compatible = False
+                constraint_diffs.append(ConstraintDiff(
+                    constraint_name=cname,
+                    constraint_type=con["constraint_type"],
+                    definition=src_def,
+                    exists_on_dest=cname in dest_con_map,
+                    dest_definition=dest_def,
+                    definition_match=def_match,
+                ))
+
             results.append(TableSchemaDiff(
                 table=fqn,
                 exists_on_dest=bool(table_exists),
                 columns=col_diffs,
+                indexes=index_diffs,
+                sequences=sequence_diffs,
+                triggers=trigger_diffs,
+                constraints=constraint_diffs,
                 compatible=compatible,
             ))
     finally:
