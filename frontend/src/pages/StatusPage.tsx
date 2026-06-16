@@ -606,14 +606,7 @@ export function StatusPage({ initialSnapshot }: Props) {
         {/* Per-subscription rows */}
         <table className="w-full text-xs table-fixed" style={{ tableLayout: 'fixed' }}>
           <colgroup>
-            <col style={{ width: 24 }} />        {/* icon */}
-            <col style={{ width: '16%' }} />     {/* name */}
-            <col style={{ width: '20%' }} />     {/* badges */}
-            <col style={{ width: '26%' }} />     {/* progress */}
-            <col style={{ width: '18%' }} />     {/* WAL lag + speed */}
-            <col style={{ width: 96 }} />        {/* analyze */}
-            <col style={{ width: 70 }} />        {/* debug */}
-            <col style={{ width: 88 }} />        {/* expand */}
+            <col style={{ width: 24 }} /><col style={{ width: '16%' }} /><col style={{ width: '20%' }} /><col style={{ width: '26%' }} /><col style={{ width: '18%' }} /><col style={{ width: 96 }} /><col style={{ width: 70 }} /><col style={{ width: 88 }} />
           </colgroup>
           <tbody>
         {copyData?.subscriptions?.map(sub => {
