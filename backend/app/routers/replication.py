@@ -3194,4 +3194,59 @@ async def schema_fix_not_null(body: dict):
         await src_conn.close()
         await dest_conn.close()
 
+
+@router.post("/schema-copy-functions")
+async def schema_copy_functions(body: dict):
+    """
+    body: { "function_names": ["check_epoch_type", ...], "database": "dbname" }
+    Looks up each function by name on source (all schemas, all overloads),
+    gets its full DDL via pg_get_functiondef(), creates it on dest with
+    CREATE OR REPLACE FUNCTION.
+    Returns list of { name, ok, error, ddl }.
+    """
+    _require_connection()
+    func_names: list[str] = body.get("function_names", [])
+    database: str | None = body.get("database")
+    if not func_names:
+        raise HTTPException(400, "function_names required")
+
+    import asyncpg as _asyncpg
+    src_dsn  = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    dest_dsn = dsn_for_database(state.dest_dsn,   database) if database else state.dest_dsn
+    src_conn  = await _asyncpg.connect(src_dsn,  timeout=15)
+    dest_conn = await _asyncpg.connect(dest_dsn, timeout=15)
+
+    results = []
+    try:
+        for fname in func_names:
+            rows = await src_conn.fetch("""
+                SELECT n.nspname AS schema_name,
+                       p.proname AS func_name,
+                       pg_get_functiondef(p.oid) AS func_def
+                FROM pg_proc p
+                JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE p.proname = $1
+                  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+                ORDER BY n.nspname, p.proname
+            """, fname)
+
+            if not rows:
+                results.append({"name": fname, "ok": False, "error": "Function not found on source", "ddl": None})
+                continue
+
+            for row in rows:
+                qname = f"{row['schema_name']}.{row['func_name']}"
+                ddl = row["func_def"]
+                try:
+                    await dest_conn.execute(ddl)
+                    results.append({"name": qname, "ok": True, "ddl": ddl})
+                except Exception as e:
+                    err = str(e).split("\n")[0]
+                    results.append({"name": qname, "ok": False, "error": err, "ddl": ddl})
+    finally:
+        await src_conn.close()
+        await dest_conn.close()
+
+    return results
+
     return fix_results

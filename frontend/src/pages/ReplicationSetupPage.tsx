@@ -230,6 +230,8 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
   const [createIndexes, setCreateIndexes] = useState<'before' | 'after'>('before')
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [copyingFunctions, setCopyingFunctions] = useState(false)
+  const [copyFunctionResults, setCopyFunctionResults] = useState<{ name: string; ok: boolean; error?: string }[] | null>(null)
 
   async function runCheck() {
     if (tables.length === 0) return
@@ -352,6 +354,35 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
     }
   }
 
+  // Parse "function X(args) does not exist" from constraint failure detail strings
+  function extractMissingFunctions(results: SchemaSyncResult[] | null): string[] {
+    if (!results) return []
+    const names = new Set<string>()
+    for (const r of results) {
+      if (!r.detail) continue
+      // Match: "function check_epoch_type(text) does not exist"
+      const matches = r.detail.matchAll(/function (\w+)\([^)]*\) does not exist/g)
+      for (const m of matches) names.add(m[1])
+    }
+    return [...names]
+  }
+
+  async function runCopyFunctions(funcNames: string[]) {
+    setCopyingFunctions(true); setCopyFunctionResults(null); setError('')
+    try {
+      // Use the primary database for this panel
+      const db = database ?? Object.keys(tablesByDb ?? {})[0] ?? undefined
+      const { data } = await replicationApi.copyFunctions(funcNames, db)
+      setCopyFunctionResults(data)
+      // Re-run drop-recreate attempt for tables that still have failed constraints
+      await runCheck()
+    } catch (e: any) {
+      setError(extractError(e))
+    } finally {
+      setCopyingFunctions(false)
+    }
+  }
+
   // Auto-check whenever table list changes
   useEffect(() => {
     if (tables.length > 0) runCheck()
@@ -465,23 +496,50 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
         </div>
       )}
 
-      {syncResults && (
-        <div className="px-4 py-2 border-b border-gray-700 flex flex-wrap gap-2 text-xs">
-          {syncResults.map(r => (
-            <span key={r.table} className={clsx('flex items-center gap-1', {
-              'text-green-400': r.action === 'created',
-              'text-red-400': r.action === 'error',
-              'text-gray-400': r.action === 'already_exists',
-              'text-yellow-400': r.action === 'incompatible',
-            })}>
-              {r.action === 'created' ? '✓' : r.action === 'error' ? '✗' : '·'} {r.table}
-              {r.action === 'error' && r.detail && (
-                <span className="ml-2 text-red-300 font-normal font-mono">{r.detail}</span>
-              )}
-            </span>
-          ))}
-        </div>
-      )}
+      {syncResults && (() => {
+        const missingFuncs = extractMissingFunctions(syncResults)
+        return (
+          <div className="border-b border-gray-700">
+            <div className="px-4 py-2 flex flex-wrap gap-2 text-xs">
+              {syncResults.map(r => (
+                <div key={r.table} className={clsx('flex flex-col gap-0.5', {
+                  'text-green-400': r.action === 'created' && !r.detail?.includes('FAILED'),
+                  'text-yellow-400': r.action === 'created' && r.detail?.includes('FAILED'),
+                  'text-red-400': r.action === 'error',
+                  'text-gray-400': r.action === 'already_exists',
+                })}>
+                  <span>{r.action === 'created' ? (r.detail?.includes('FAILED') ? '⚠' : '✓') : r.action === 'error' ? '✗' : '·'} {r.table}</span>
+                  {r.detail && <span className="ml-4 text-gray-500 font-mono break-all">{r.detail}</span>}
+                </div>
+              ))}
+            </div>
+            {missingFuncs.length > 0 && (
+              <div className="px-4 pb-2 flex items-center gap-3 text-xs">
+                <span className="text-yellow-400">
+                  Missing functions on dest: <span className="font-mono">{missingFuncs.join(', ')}</span>
+                </span>
+                <button
+                  onClick={() => runCopyFunctions(missingFuncs)}
+                  disabled={copyingFunctions}
+                  className="flex items-center gap-1.5 bg-blue-800 hover:bg-blue-700 disabled:opacity-50 px-2.5 py-1 rounded font-semibold whitespace-nowrap"
+                >
+                  {copyingFunctions && <Spinner size={3} />}
+                  Copy {missingFuncs.length} function{missingFuncs.length !== 1 ? 's' : ''} from source
+                </button>
+              </div>
+            )}
+            {copyFunctionResults && (
+              <div className="px-4 pb-2 flex flex-wrap gap-2 text-xs">
+                {copyFunctionResults.map(r => (
+                  <span key={r.name} className={r.ok ? 'text-green-400' : 'text-red-400'}>
+                    {r.ok ? '✓' : '✗'} {r.name}{r.error ? `: ${r.error}` : ''}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })()}
 
       {notNullResults && (
         <div className="px-4 py-2 border-b border-blue-900 bg-blue-950/20 text-xs space-y-0.5">
