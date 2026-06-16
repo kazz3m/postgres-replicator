@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
-import { replicationApi, SchemaInfo, TableInfo, TableSchemaDiff, IndexDiff, SequenceDiff, TriggerDiff, ConstraintDiff, SchemaSyncResult } from '../api/client'
+import { useQueries } from '@tanstack/react-query'
+import { replicationApi, SchemaInfo, TableSchemaDiff, IndexDiff, SequenceDiff, TriggerDiff, ConstraintDiff, SchemaSyncResult } from '../api/client'
 import { ReplicationConfig } from '../utils/profiles'
 import { Spinner } from '../components/Spinner'
 import { ConfirmModal } from '../components/ConfirmModal'
@@ -668,7 +668,6 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDsn, pgMajor, schemaData, replConfigs = {}, activeSetupPub, onReplConfigChange, onReplConfigDelete }: Props) {
-  const qc = useQueryClient()
   // Derive the active config: activeSetupPub hint → first saved → defaults
   const activeConfig: ReplicationConfig = (activeSetupPub && replConfigs[activeSetupPub])
     ? replConfigs[activeSetupPub]
@@ -719,34 +718,42 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
 
   const hasSelection = selectedTables.size > 0 || selectedSchemas.size > 0
 
-  // Build size lookup from React Query cache (populated by AnalysisPage's per-db schema-tables queries)
-  // Fall back to schemaData (single-db) for tables not found in cache.
+  const selectedDbs = new Set([
+    ...[...selectedTables].map(k => k.split('.')[0]),
+    ...[...selectedSchemas].map(k => k.split('.')[0]),
+  ])
+  const multiDb = selectedDbs.size > 1
+
+  // Fetch table sizes from source once per selected DB to compute correct totalBytes.
+  const dbList = [...selectedDbs].filter(Boolean)
+  const sizeQueries = useQueries({
+    queries: dbList.map(db => ({
+      queryKey: ['source-table-sizes', db],
+      queryFn: () => replicationApi.sourceTableSizes(db).then(r => r.data),
+      staleTime: 60_000,
+      enabled: hasSelection,
+    })),
+  })
+
   const totalBytes = (() => {
-    // Build a map: "db.schema.table" → size_bytes from cache
-    const cacheMap = new Map<string, number>()
-    const allDbs = new Set([
-      ...[...selectedTables].map(k => k.split('.')[0]),
-      ...[...selectedSchemas].map(k => k.split('.')[0]),
-    ])
-    for (const db of allDbs) {
-      // Enumerate all cached schema-tables queries for this db
-      const allCached = qc.getQueriesData<TableInfo[]>({ queryKey: ['schema-tables', db] })
-      for (const [, tables] of allCached) {
-        if (!tables) continue
-        for (const t of tables) {
-          cacheMap.set(`${db}.${t.schema_name}.${t.table_name}`, t.size_bytes)
-        }
-      }
+    // Build a flat map: "schema.table" → size_bytes per db
+    const dbSizeMaps = new Map<string, Record<string, number>>()
+    for (let i = 0; i < dbList.length; i++) {
+      const d = sizeQueries[i]?.data
+      if (d) dbSizeMaps.set(dbList[i], Object.fromEntries(
+        Object.entries(d).map(([k, v]) => [k, v.size_bytes])
+      ))
     }
 
     let total = 0
     for (const key of selectedTables) {
-      const cached = cacheMap.get(key)
-      if (cached !== undefined) {
-        total += cached
+      const [db, ...rest] = key.split('.')
+      const st = rest.join('.')  // "schema.table"
+      const sizeMap = dbSizeMaps.get(db)
+      if (sizeMap) {
+        total += sizeMap[st] ?? 0
       } else {
-        // Fall back to schemaData (covers single-db case where AnalysisPage wasn't expanded)
-        const st = toSchemaTable(key)  // "schema.table"
+        // Fall back to schemaData while sizes are loading
         for (const schema of schemaData) {
           const t = schema.tables.find(t => `${t.schema_name}.${t.table_name}` === st)
           if (t) { total += t.size_bytes; break }
@@ -756,28 +763,19 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
     for (const key of selectedSchemas) {
       const [db, ...schemaParts] = key.split('.')
       const schemaName = schemaParts.join('.')
-      // Try cache: sum all tables in this schema
-      const allCached = qc.getQueriesData<TableInfo[]>({ queryKey: ['schema-tables', db, schemaName] })
-      let schemaTotal = 0; let foundInCache = false
-      for (const [, tables] of allCached) {
-        if (tables) { foundInCache = true; tables.forEach(t => { schemaTotal += t.size_bytes }) }
-      }
-      if (foundInCache) {
-        total += schemaTotal
+      const sizeMap = dbSizeMaps.get(db)
+      if (sizeMap) {
+        // Sum all tables in this schema from the sizes map
+        for (const [st, bytes] of Object.entries(sizeMap)) {
+          if (st.startsWith(`${schemaName}.`)) total += bytes
+        }
       } else {
-        // Fall back to schemaData
         const sd = schemaData.find(s => s.schema_name === schemaName)
         if (sd) total += sd.total_size_bytes
       }
     }
     return total
   })()
-
-  const selectedDbs = new Set([
-    ...[...selectedTables].map(k => k.split('.')[0]),
-    ...[...selectedSchemas].map(k => k.split('.')[0]),
-  ])
-  const multiDb = selectedDbs.size > 1
 
   // Tables for schema check — strip db prefix, deduplicate
   // For schema-level selections we can't know exact tables until pub exists,
