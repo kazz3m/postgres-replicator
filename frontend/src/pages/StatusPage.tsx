@@ -428,10 +428,10 @@ export function StatusPage({ initialSnapshot }: Props) {
 
   function refetchAll() { refetchProgress(); refetchCopy(); refetchSlots(); refetchSubs() }
 
-  async function handleAnalyze(tables: string[]) {
+  async function handleAnalyze(tables: string[], database?: string) {
     setAnalyzingTables(true)
     try {
-      await replicationApi.analyzeTables(tables)
+      await replicationApi.analyzeTables(tables, database)
       refetchCopy()
     } finally {
       setAnalyzingTables(false)
@@ -724,7 +724,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                 <td className="px-1.5 py-2 text-xs">
                   {unanalyzed.length > 0 && (
                     <button
-                      onClick={() => handleAnalyze(unanalyzed)}
+                      onClick={() => handleAnalyze(unanalyzed, sub.database ?? undefined)}
                       disabled={analyzingTables}
                       className="flex items-center gap-0.5 bg-amber-900/40 hover:bg-amber-800/60 border border-amber-700/60 text-amber-300 px-1.5 py-0.5 rounded disabled:opacity-50 transition-colors whitespace-nowrap"
                     >

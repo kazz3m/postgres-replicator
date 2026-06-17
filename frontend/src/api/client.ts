@@ -409,8 +409,8 @@ export const replicationApi = {
       return { applied, failed }
     })
   },
-  analyzeTables: (tables: string[]) =>
-    api.post<{ results: { table: string; ok: boolean; error?: string }[] }>('/replication/analyze', { tables }),
+  analyzeTables: (tables: string[], database?: string) =>
+    api.post<{ results: { table: string; ok: boolean; error?: string }[] }>('/replication/analyze', { tables, database }),
   publicationConfig: (name: string, database?: string) =>
     api.get<PublicationServerConfig>(`/replication/publication-config?name=${encodeURIComponent(name)}${database ? `&database=${encodeURIComponent(database)}` : ''}`),
   listIndexes: (publication: string) =>

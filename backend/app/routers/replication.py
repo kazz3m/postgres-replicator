@@ -1565,14 +1565,17 @@ async def source_table_sizes(database: str):
 
 @router.post("/analyze")
 async def analyze_tables(body: dict):
-    """Run ANALYZE on specified tables on destination. tables: ["schema.table", ...]"""
+    """Run ANALYZE on specified tables on destination. tables: ["schema.table", ...], database: "dbname" """
     _require_connection()
+    import asyncpg as _asyncpg
     tables: list = body.get("tables", [])
+    database: str | None = body.get("database")
     if not tables:
         raise HTTPException(400, "No tables specified.")
-    dest_pool = await get_dest_pool(state.dest_dsn)
+    dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
+    conn = await _asyncpg.connect(dest_dsn, timeout=15)
     results = []
-    async with dest_pool.acquire() as conn:
+    try:
         for t in tables:
             try:
                 parts = t.split(".", 1)
@@ -1583,6 +1586,8 @@ async def analyze_tables(body: dict):
                 results.append({"table": t, "ok": True})
             except Exception as e:
                 results.append({"table": t, "ok": False, "error": str(e)})
+    finally:
+        await conn.close()
     return {"results": results}
 
 
