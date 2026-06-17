@@ -1598,10 +1598,6 @@ async def analyze_tables(body: dict):
                         raise ValueError(f"Expected schema.table, got: {t}")
                     schema, table = parts
                     if statistics_target is not None:
-                        await conn.execute(
-                            f'ALTER TABLE "{schema}"."{table}" '
-                            f'ALTER COLUMN {{}} SET STATISTICS {statistics_target}',
-                        )
                         # Set statistics_target on ALL columns
                         col_names = await conn.fetch(
                             "SELECT attname FROM pg_attribute "
