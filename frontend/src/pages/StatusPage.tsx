@@ -11,7 +11,7 @@ import { SequenceSyncPanel } from '../components/SequenceSyncPanel'
 import { SchemaSyncPanel } from '../components/SchemaSyncPanel'
 import { IndexSyncPanel } from '../components/IndexSyncPanel'
 import { RolesSyncPanel } from '../components/RolesSyncPanel'
-import { RefreshCw, AlertTriangle, Square, Layers, Database, ChevronDown, ChevronRight, FlaskConical, Bug } from 'lucide-react'
+import { RefreshCw, AlertTriangle, Square, Layers, Database, ChevronDown, ChevronRight, FlaskConical, Bug, CheckCircle, XCircle, Circle, Loader } from 'lucide-react'
 import clsx from 'clsx'
 import type { WorkspaceSnapshot } from './WorkspacePicker'
 
@@ -120,8 +120,15 @@ export function StatusPage({ initialSnapshot }: Props) {
       return next
     })
   }
-  // ANALYZE state
-  const [analyzingTables, setAnalyzingTables] = useState(false)
+  // ANALYZE modal state
+  const [analyzeModal, setAnalyzeModal] = useState<{
+    tables: string[]; database?: string; allTables?: string[]
+  } | null>(null)
+  const [analyzeSteps, setAnalyzeSteps] = useState<{ table: string; status: 'pending' | 'running' | 'ok' | 'error'; error?: string }[]>([])
+  const [analyzeRunning, setAnalyzeRunning] = useState(false)
+  const [analyzeDone, setAnalyzeDone] = useState(false)
+  const [statisticsTarget, setStatisticsTarget] = useState<number | ''>('')
+  const analyzeSubRef = useRef<string | undefined>(undefined)
   // Table sort — shared across all subscriptions (same column/dir preference)
   type SortCol = 'table' | 'status'
   const [sortCol, setSortCol] = useState<SortCol>('table')
@@ -428,13 +435,54 @@ export function StatusPage({ initialSnapshot }: Props) {
 
   function refetchAll() { refetchProgress(); refetchCopy(); refetchSlots(); refetchSubs() }
 
-  async function handleAnalyze(tables: string[], database?: string) {
-    setAnalyzingTables(true)
+  function openAnalyzeModal(tables: string[], database?: string, allTables?: string[]) {
+    setAnalyzeModal({ tables, database, allTables })
+    setAnalyzeSteps(tables.map(t => ({ table: t, status: 'pending' })))
+    setAnalyzeRunning(false)
+    setAnalyzeDone(false)
+  }
+
+  async function runAnalyze(tables: string[], database?: string) {
+    setAnalyzeRunning(true)
+    setAnalyzeDone(false)
+    setAnalyzeSteps(tables.map(t => ({ table: t, status: 'pending' })))
+    let currentTable = ''
     try {
-      await replicationApi.analyzeTables(tables, database)
-      refetchCopy()
+      await replicationApi.analyzeTablesStream(
+        tables, database,
+        statisticsTarget !== '' ? statisticsTarget : undefined,
+        (ev) => {
+          if ('done' in ev && ev.done === true) {
+            setAnalyzeDone(true)
+            return
+          }
+          const e = ev as { table: string; ok: boolean; error?: string; done: number; total: number }
+          currentTable = e.table
+          setAnalyzeSteps(prev => prev.map(s =>
+            s.table === e.table
+              ? { ...s, status: e.ok ? 'ok' : 'error', error: e.error }
+              : s.table === currentTable && s.status === 'pending'
+                ? { ...s, status: 'running' }
+                : s
+          ))
+          // mark next pending as running
+          setAnalyzeSteps(prev => {
+            const idx = prev.findIndex(s => s.table === e.table)
+            if (idx + 1 < prev.length && prev[idx + 1].status === 'pending') {
+              return prev.map((s, i) => i === idx + 1 ? { ...s, status: 'running' } : s)
+            }
+            return prev
+          })
+        }
+      )
+    } catch (e: any) {
+      // mark remaining as error
+      setAnalyzeSteps(prev => prev.map(s => s.status === 'pending' || s.status === 'running'
+        ? { ...s, status: 'error', error: e?.message ?? 'Failed' } : s))
     } finally {
-      setAnalyzingTables(false)
+      setAnalyzeRunning(false)
+      setAnalyzeDone(true)
+      refetchCopy()
     }
   }
 
@@ -722,16 +770,24 @@ export function StatusPage({ initialSnapshot }: Props) {
 
                 {/* col 6: analyze */}
                 <td className="px-1.5 py-2 text-xs">
-                  {unanalyzed.length > 0 && (
+                  <div className="flex items-center gap-1">
+                    {unanalyzed.length > 0 && (
+                      <button
+                        onClick={() => openAnalyzeModal(unanalyzed, sub.database ?? undefined, sub.tables.map(t => `${t.schema_name}.${t.table_name}`))}
+                        className="flex items-center gap-0.5 bg-amber-900/40 hover:bg-amber-800/60 border border-amber-700/60 text-amber-300 px-1.5 py-0.5 rounded transition-colors whitespace-nowrap"
+                      >
+                        <FlaskConical size={10} />
+                        {unanalyzed.length} to analyze
+                      </button>
+                    )}
                     <button
-                      onClick={() => handleAnalyze(unanalyzed, sub.database ?? undefined)}
-                      disabled={analyzingTables}
-                      className="flex items-center gap-0.5 bg-amber-900/40 hover:bg-amber-800/60 border border-amber-700/60 text-amber-300 px-1.5 py-0.5 rounded disabled:opacity-50 transition-colors whitespace-nowrap"
+                      onClick={() => openAnalyzeModal(sub.tables.map(t => `${t.schema_name}.${t.table_name}`), sub.database ?? undefined)}
+                      className="flex items-center gap-0.5 text-gray-600 hover:text-amber-400 border border-gray-700 hover:border-amber-700 px-1 py-0.5 rounded transition-colors"
+                      title="Reanalyze all tables"
                     >
-                      {analyzingTables ? <Spinner size={2} /> : <FlaskConical size={10} />}
-                      {unanalyzed.length} to analyze
+                      <RefreshCw size={10} />
                     </button>
-                  )}
+                  </div>
                 </td>
 
                 {/* col 7: debug */}
@@ -876,9 +932,8 @@ export function StatusPage({ initialSnapshot }: Props) {
                               <div className="flex items-center gap-1.5">
                                 <span className="text-yellow-500">⚠ never</span>
                                 <button
-                                  onClick={() => handleAnalyze([`${row.schema_name}.${row.table_name}`])}
-                                  disabled={analyzingTables}
-                                  className="bg-amber-900/40 hover:bg-amber-800/60 border border-amber-700/60 text-amber-300 px-1.5 py-0.5 rounded disabled:opacity-50"
+                                  onClick={() => openAnalyzeModal([`${row.schema_name}.${row.table_name}`], sub.database ?? undefined)}
+                                  className="bg-amber-900/40 hover:bg-amber-800/60 border border-amber-700/60 text-amber-300 px-1.5 py-0.5 rounded"
                                 >Analyze</button>
                               </div>
                             )}
@@ -1185,6 +1240,113 @@ export function StatusPage({ initialSnapshot }: Props) {
                 onClick={() => { setVacuumTarget(null); setVacuumResult(null) }}
                 className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
               >Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Analyze Modal */}
+      {analyzeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-lg mx-4 flex flex-col max-h-[80vh]">
+            <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between shrink-0">
+              <span className="font-semibold text-gray-200 flex items-center gap-2">
+                <FlaskConical size={14} className="text-amber-400" />
+                ANALYZE {analyzeModal.tables.length} table{analyzeModal.tables.length !== 1 ? 's' : ''}
+              </span>
+              {!analyzeRunning && (
+                <button onClick={() => setAnalyzeModal(null)} className="text-gray-500 hover:text-gray-300 text-lg leading-none">×</button>
+              )}
+            </div>
+
+            {/* Options — only before running */}
+            {!analyzeRunning && !analyzeDone && (
+              <div className="px-5 py-3 border-b border-gray-800 shrink-0">
+                <label className="flex items-center gap-3 text-xs text-gray-400">
+                  <span className="whitespace-nowrap">Statistics target</span>
+                  <input
+                    type="number"
+                    min={1} max={10000}
+                    placeholder="default (100)"
+                    value={statisticsTarget}
+                    onChange={e => setStatisticsTarget(e.target.value === '' ? '' : Number(e.target.value))}
+                    className="w-32 bg-gray-800 border border-gray-600 rounded px-2 py-1 focus:outline-none focus:border-blue-500 text-gray-200"
+                  />
+                  <span className="text-gray-600">1–10000, default=100</span>
+                </label>
+                {analyzeModal.allTables && analyzeModal.allTables.length > analyzeModal.tables.length && (
+                  <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+                    <input
+                      type="checkbox"
+                      id="analyze-all"
+                      onChange={e => {
+                        const next = e.target.checked ? analyzeModal.allTables! : analyzeModal.tables
+                        setAnalyzeModal(m => m ? { ...m, tables: next } : m)
+                        setAnalyzeSteps(next.map(t => ({ table: t, status: 'pending' })))
+                      }}
+                      className="accent-amber-500"
+                    />
+                    <label htmlFor="analyze-all">Include already-analyzed tables ({analyzeModal.allTables.length} total)</label>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Progress list */}
+            <div className="flex-1 overflow-y-auto px-5 py-3 space-y-1">
+              {analyzeRunning || analyzeDone ? analyzeSteps.map(step => (
+                <div key={step.table} className="flex items-center gap-2 text-xs">
+                  <span className="shrink-0">
+                    {step.status === 'pending' && <Circle size={11} className="text-gray-700" />}
+                    {step.status === 'running' && <Loader size={11} className="text-blue-400 animate-spin" />}
+                    {step.status === 'ok' && <CheckCircle size={11} className="text-green-400" />}
+                    {step.status === 'error' && <XCircle size={11} className="text-red-400" />}
+                  </span>
+                  <span className={clsx('font-mono flex-1 truncate', {
+                    'text-gray-600': step.status === 'pending',
+                    'text-blue-300': step.status === 'running',
+                    'text-gray-400': step.status === 'ok',
+                    'text-red-400': step.status === 'error',
+                  })}>{step.table}</span>
+                  {step.error && <span className="text-red-500 text-xs truncate max-w-xs" title={step.error}>{step.error}</span>}
+                </div>
+              )) : (
+                <div className="text-xs text-gray-500 py-2 max-h-48 overflow-y-auto space-y-0.5">
+                  {analyzeModal.tables.map(t => <div key={t} className="font-mono text-gray-600">{t}</div>)}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-5 pb-4 pt-3 border-t border-gray-800 flex items-center justify-between shrink-0">
+              {analyzeRunning && (
+                <span className="text-xs text-gray-400 flex items-center gap-2">
+                  <Spinner size={3} />
+                  {analyzeSteps.filter(s => s.status === 'ok' || s.status === 'error').length} / {analyzeSteps.length}
+                </span>
+              )}
+              {!analyzeRunning && analyzeDone && (
+                <span className="text-xs text-green-400">
+                  Done — {analyzeSteps.filter(s => s.status === 'ok').length} ok, {analyzeSteps.filter(s => s.status === 'error').length} errors
+                </span>
+              )}
+              {!analyzeRunning && !analyzeDone && <span />}
+              <div className="flex gap-2">
+                {!analyzeRunning && !analyzeDone && (
+                  <>
+                    <button onClick={() => setAnalyzeModal(null)} className="text-xs px-3 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">Cancel</button>
+                    <button
+                      onClick={() => runAnalyze(analyzeModal.tables, analyzeModal.database)}
+                      className="text-xs px-3 py-1.5 rounded bg-amber-700 hover:bg-amber-600 font-semibold text-white flex items-center gap-1.5"
+                    >
+                      <FlaskConical size={11} /> Run ANALYZE
+                    </button>
+                  </>
+                )}
+                {!analyzeRunning && analyzeDone && (
+                  <button onClick={() => setAnalyzeModal(null)} className="text-xs px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">Close</button>
+                )}
+              </div>
             </div>
           </div>
         </div>

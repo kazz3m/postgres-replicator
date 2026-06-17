@@ -1565,30 +1565,63 @@ async def source_table_sizes(database: str):
 
 @router.post("/analyze")
 async def analyze_tables(body: dict):
-    """Run ANALYZE on specified tables on destination. tables: ["schema.table", ...], database: "dbname" """
+    """
+    Run ANALYZE on specified tables on destination, streaming NDJSON progress.
+    body: { "tables": ["schema.table", ...], "database": "dbname",
+            "statistics_target": 100 }   # optional, 1-10000
+    Each line: {"table": "schema.table", "ok": true, "done": N, "total": N}
+    Last line:  {"done": true}
+    """
     _require_connection()
     import asyncpg as _asyncpg
+    import json as _json
+    from fastapi.responses import StreamingResponse
+
     tables: list = body.get("tables", [])
     database: str | None = body.get("database")
+    statistics_target: int | None = body.get("statistics_target")
     if not tables:
         raise HTTPException(400, "No tables specified.")
+    if statistics_target is not None and not (1 <= statistics_target <= 10000):
+        raise HTTPException(400, "statistics_target must be 1–10000")
+
     dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
-    conn = await _asyncpg.connect(dest_dsn, timeout=15)
-    results = []
-    try:
-        for t in tables:
-            try:
-                parts = t.split(".", 1)
-                if len(parts) != 2:
-                    raise ValueError(f"Expected schema.table, got: {t}")
-                schema, table = parts
-                await conn.execute(f'ANALYZE "{schema}"."{table}"')
-                results.append({"table": t, "ok": True})
-            except Exception as e:
-                results.append({"table": t, "ok": False, "error": str(e)})
-    finally:
-        await conn.close()
-    return {"results": results}
+
+    async def generate():
+        conn = await _asyncpg.connect(dest_dsn, timeout=15)
+        total = len(tables)
+        try:
+            for i, t in enumerate(tables, 1):
+                try:
+                    parts = t.split(".", 1)
+                    if len(parts) != 2:
+                        raise ValueError(f"Expected schema.table, got: {t}")
+                    schema, table = parts
+                    if statistics_target is not None:
+                        await conn.execute(
+                            f'ALTER TABLE "{schema}"."{table}" '
+                            f'ALTER COLUMN {{}} SET STATISTICS {statistics_target}',
+                        )
+                        # Set statistics_target on ALL columns
+                        col_names = await conn.fetch(
+                            "SELECT attname FROM pg_attribute "
+                            "WHERE attrelid = $1::regclass AND attnum > 0 AND NOT attisdropped",
+                            f'"{schema}"."{table}"'
+                        )
+                        for col_row in col_names:
+                            await conn.execute(
+                                f'ALTER TABLE "{schema}"."{table}" '
+                                f'ALTER COLUMN "{col_row["attname"]}" SET STATISTICS {statistics_target}'
+                            )
+                    await conn.execute(f'ANALYZE "{schema}"."{table}"')
+                    yield _json.dumps({"table": t, "ok": True, "done": i, "total": total}) + "\n"
+                except Exception as e:
+                    yield _json.dumps({"table": t, "ok": False, "error": str(e).split("\n")[0], "done": i, "total": total}) + "\n"
+        finally:
+            await conn.close()
+        yield _json.dumps({"done": True, "total": total}) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 # ── Reset ─────────────────────────────────────────────────────────────────────

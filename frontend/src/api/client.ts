@@ -409,8 +409,32 @@ export const replicationApi = {
       return { applied, failed }
     })
   },
-  analyzeTables: (tables: string[], database?: string) =>
-    api.post<{ results: { table: string; ok: boolean; error?: string }[] }>('/replication/analyze', { tables, database }),
+  analyzeTablesStream: async (
+    tables: string[],
+    database: string | undefined,
+    statisticsTarget: number | undefined,
+    onProgress: (ev: { table?: string; ok?: boolean; error?: string; done: number; total: number } | { done: true; total: number }) => void,
+  ): Promise<void> => {
+    const res = await fetch(`${api.defaults.baseURL}/replication/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tables, database, statistics_target: statisticsTarget }),
+    })
+    if (!res.ok || !res.body) throw new Error(await res.text())
+    const reader = res.body.getReader()
+    const dec = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) {
+        if (line.trim()) onProgress(JSON.parse(line))
+      }
+    }
+  },
   publicationConfig: (name: string, database?: string) =>
     api.get<PublicationServerConfig>(`/replication/publication-config?name=${encodeURIComponent(name)}${database ? `&database=${encodeURIComponent(database)}` : ''}`),
   listIndexes: (publication: string) =>
