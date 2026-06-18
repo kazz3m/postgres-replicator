@@ -337,7 +337,9 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                   <Section title="Skip transaction (LSN)">
                     <p className="text-xs text-gray-500 mb-2">
                       Use when apply worker is stuck on an error (e.g. "could not map filenode to relation OID", duplicate key, missing row).
-                      Skips one transaction at the given LSN. The recommended LSN to skip is <strong className="text-gray-300">Received LSN</strong> from the apply worker above — that is the LSN the destination has received and is currently failing to apply.
+                      Skips one transaction at the given LSN. Per PG16 docs: the LSN must be the <strong className="text-gray-300">finish LSN</strong> of the failing transaction on source — the LSN at which it was committed or prepared.
+                      Find it in destination PostgreSQL logs: <code className="text-gray-400">CONTEXT: … finished at X/XXXXXXXX</code>.
+                      The pre-fill below (<strong className="text-gray-300">Received LSN</strong> from the apply worker) is a good starting point but may not be exact — verify against the logs.
                     </p>
                     {skipLsnResult && (
                       <div className={clsx('mb-2 flex items-center gap-1.5 text-xs p-2 rounded border',
@@ -928,6 +930,7 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
               <p>This will <strong className="text-white">skip one transaction</strong> at the specified LSN. The apply worker will resume from the next transaction.</p>
               <p className="text-yellow-300">⚠ Data in the skipped transaction will <strong>not</strong> be applied on destination. Use only when the transaction is known to be irrelevant (e.g. changes to a dropped table, test data) or when you accept the data divergence.</p>
               <p>Common cause: <code className="text-gray-200">could not map filenode to relation OID</code> — the table was dropped on source after the WAL was written.</p>
+              <p className="text-gray-400">Per PG16 docs: the LSN must be the <strong className="text-gray-200">finish LSN</strong> (commit/prepare LSN on source). Find it in destination logs: <code className="text-gray-300">CONTEXT: … finished at X/XXXXXXXX</code></p>
             </div>
 
             <div className="mb-4">
