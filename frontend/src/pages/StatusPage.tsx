@@ -1215,7 +1215,8 @@ export function StatusPage({ initialSnapshot }: Props) {
                     <button
                       onClick={() => {
                         setConnectPubModal(pub)
-                        setConnectForm({ subName: '', slotName: '', copyData: true })
+                        const suggested = pub.pub_name.replace(/pub/gi, m => m === m.toUpperCase() ? 'SUB' : m[0] === m[0].toUpperCase() ? 'Sub' : 'sub')
+                        setConnectForm({ subName: suggested, slotName: suggested, copyData: true })
                         setConnectError('')
                       }}
                       className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded bg-blue-900/50 border border-blue-700 text-blue-300 hover:bg-blue-800/50"
