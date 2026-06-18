@@ -564,6 +564,7 @@ async def list_subscriptions():
 
     conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
     try:
+        await conn.execute("SET statement_timeout = '10s'")
         max_sync_workers = await conn.fetchval(
             "SELECT current_setting('max_sync_workers_per_subscription')::int"
         )
