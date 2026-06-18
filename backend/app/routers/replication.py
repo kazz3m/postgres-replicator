@@ -182,22 +182,32 @@ async def list_unused_publications():
     _require_connection()
     import asyncpg as _asyncpg
 
-    # Collect used publication names from dest (cluster-wide, pg_subscription is global)
-    dest_conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
+    # Collect used publication names from ALL dest databases.
+    # pg_subscription is NOT a global catalog — it is per-database, so we must
+    # connect to each database individually.
+    dest_default_conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
     try:
-        try:
-            dest_subs = await dest_conn.fetch(
-                "SELECT subpublications FROM pg_subscription"
-            )
-        except Exception:
-            dest_subs = []
+        dest_db_rows = await dest_default_conn.fetch(
+            "SELECT datname FROM pg_database WHERE datistemplate = false AND datallowconn = true ORDER BY datname"
+        )
+        dest_databases = [r["datname"] for r in dest_db_rows]
     finally:
-        await dest_conn.close()
+        await dest_default_conn.close()
 
     used_pubs: set[str] = set()
-    for row in dest_subs:
-        for p in (row["subpublications"] or []):
-            used_pubs.add(p)
+    for dest_db in dest_databases:
+        dest_db_conn = None
+        try:
+            dest_db_conn = await _asyncpg.connect(dsn_for_database(state.dest_dsn, dest_db), timeout=10)
+            rows = await dest_db_conn.fetch("SELECT subpublications FROM pg_subscription")
+            for row in rows:
+                for p in (row["subpublications"] or []):
+                    used_pubs.add(p)
+        except Exception:
+            pass
+        finally:
+            if dest_db_conn:
+                await dest_db_conn.close()
 
     # Get list of all user databases on source
     src_conn = await _asyncpg.connect(state.source_dsn, timeout=15)
