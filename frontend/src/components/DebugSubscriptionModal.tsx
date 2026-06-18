@@ -59,6 +59,48 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
   const [readdResults, setReaddResults] = useState<Record<string, { ok: boolean; steps: { step: string; ok: boolean; error?: string }[] }>>({})
   const [readdConfirm, setReaddConfirm] = useState<string | null>(null)
 
+  // Dead sync slots
+  type DeadSlot = { slot_name: string; lag_pretty: string; lag_bytes: number; restart_lsn: string; rel_oid: number | null }
+  const [deadSlots, setDeadSlots] = useState<DeadSlot[] | null>(null)
+  const [deadSlotsLoading, setDeadSlotsLoading] = useState(false)
+  const [deadSlotsError, setDeadSlotsError] = useState('')
+  const [deadSlotSelected, setDeadSlotSelected] = useState<Set<string>>(new Set())
+  const [truncateConfirmed, setTruncateConfirmed] = useState(false)
+  const [droppingDeadSlots, setDroppingDeadSlots] = useState(false)
+  const [dropDeadResults, setDropDeadResults] = useState<{ dropped: { slot: string; ok: boolean; error?: string }[]; truncated: { oid: number; table?: string; ok: boolean; error?: string }[] } | null>(null)
+
+  async function loadDeadSlots() {
+    setDeadSlotsLoading(true); setDeadSlotsError(''); setDropDeadResults(null)
+    try {
+      const { data: d } = await replicationApi.deadSyncSlots(subName, database || undefined)
+      setDeadSlots(d.slots)
+      setDeadSlotSelected(new Set(d.slots.map(s => s.slot_name)))
+    } catch (e: unknown) {
+      setDeadSlotsError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDeadSlotsLoading(false)
+    }
+  }
+
+  async function dropDeadSyncSlots() {
+    const selected = [...deadSlotSelected]
+    const relOids = (deadSlots ?? [])
+      .filter(s => deadSlotSelected.has(s.slot_name) && s.rel_oid != null)
+      .map(s => s.rel_oid as number)
+    setDroppingDeadSlots(true); setDropDeadResults(null)
+    try {
+      const { data: d } = await replicationApi.dropDeadSyncSlots(subName, selected, relOids, truncateConfirmed, database || undefined)
+      setDropDeadResults(d)
+      setDeadSlots(prev => prev?.filter(s => !d.dropped.some(r => r.slot === s.slot_name && r.ok)) ?? null)
+      setDeadSlotSelected(new Set())
+      setTruncateConfirmed(false)
+    } catch (e: unknown) {
+      setDeadSlotsError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDroppingDeadSlots(false)
+    }
+  }
+
   async function load() {
     setLoading(true); setError('')
     try {
@@ -472,6 +514,113 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                   )}
                 </div>
               </div>
+
+              {/* Dead sync slots */}
+              <Section title="Dead sync slots on source">
+                {deadSlots === null && !deadSlotsLoading && (
+                  <button
+                    onClick={loadDeadSlots}
+                    className="text-xs flex items-center gap-1.5 text-blue-400 hover:text-blue-300 border border-blue-900 hover:border-blue-700 px-3 py-1 rounded"
+                  >
+                    <RefreshCw size={11} /> Check for dead sync slots
+                  </button>
+                )}
+                {deadSlotsLoading && <span className="text-xs text-gray-500 flex items-center gap-2"><Spinner size={3} /> Loading...</span>}
+                {deadSlotsError && <div className="text-xs text-red-400">{deadSlotsError}</div>}
+                {deadSlots !== null && !deadSlotsLoading && (
+                  <div className="space-y-2">
+                    {deadSlots.length === 0 ? (
+                      <div className="text-xs text-green-400 flex items-center gap-1.5"><CheckCircle size={12} /> No dead sync slots found.</div>
+                    ) : (
+                      <>
+                        <div className="text-xs text-yellow-400 flex items-center gap-1.5 mb-1">
+                          <AlertTriangle size={12} /> {deadSlots.length} inactive sync slot{deadSlots.length !== 1 ? 's' : ''} holding WAL — select to drop:
+                        </div>
+                        <table className="w-full text-xs mb-2">
+                          <thead><tr className="text-gray-500 border-b border-gray-700">
+                            <th className="text-left py-1 pr-2 w-4">
+                              <input type="checkbox"
+                                checked={deadSlotSelected.size === deadSlots.length}
+                                onChange={e => setDeadSlotSelected(e.target.checked ? new Set(deadSlots.map(s => s.slot_name)) : new Set())}
+                                className="accent-blue-500"
+                              />
+                            </th>
+                            <th className="text-left py-1 pr-4">Slot name</th>
+                            <th className="text-left py-1 pr-4">WAL lag</th>
+                            <th className="text-left py-1">Restart LSN</th>
+                          </tr></thead>
+                          <tbody>
+                            {deadSlots.map(s => (
+                              <tr key={s.slot_name} className="border-b border-gray-800">
+                                <td className="py-1 pr-2">
+                                  <input type="checkbox"
+                                    checked={deadSlotSelected.has(s.slot_name)}
+                                    onChange={e => setDeadSlotSelected(prev => {
+                                      const n = new Set(prev)
+                                      e.target.checked ? n.add(s.slot_name) : n.delete(s.slot_name)
+                                      return n
+                                    })}
+                                    className="accent-blue-500"
+                                  />
+                                </td>
+                                <td className="py-1 pr-4 font-mono text-[10px] text-gray-300">{s.slot_name}</td>
+                                <td className={clsx('py-1 pr-4 font-mono', s.lag_bytes > 10 * 1024 * 1024 * 1024 ? 'text-red-400' : 'text-yellow-400')}>
+                                  {s.lag_pretty}
+                                </td>
+                                <td className="py-1 font-mono text-[10px] text-gray-500">{s.restart_lsn}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+
+                        {deadSlotSelected.size > 0 && (
+                          <div className="space-y-2 border border-orange-900/50 rounded p-3 bg-orange-950/20">
+                            <label className="flex items-start gap-2 text-xs cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={truncateConfirmed}
+                                onChange={e => setTruncateConfirmed(e.target.checked)}
+                                className="accent-orange-500 mt-0.5 shrink-0"
+                              />
+                              <span className="text-orange-300">
+                                Also <strong>TRUNCATE corresponding tables on destination</strong> so they get re-synced from scratch.
+                                <span className="text-orange-500 block mt-0.5">⚠ Destroys all existing data in those tables on dest. Check this only if the tables are partially copied and need a fresh start.</span>
+                              </span>
+                            </label>
+                            <button
+                              onClick={dropDeadSyncSlots}
+                              disabled={droppingDeadSlots}
+                              className="flex items-center gap-1.5 text-xs bg-red-800 hover:bg-red-700 disabled:opacity-50 px-3 py-1.5 rounded font-semibold text-white"
+                            >
+                              {droppingDeadSlots ? <Spinner size={3} /> : <AlertTriangle size={11} />}
+                              Drop {deadSlotSelected.size} slot{deadSlotSelected.size !== 1 ? 's' : ''}
+                              {truncateConfirmed ? ' + truncate tables' : ''}
+                            </button>
+                          </div>
+                        )}
+
+                        {dropDeadResults && (
+                          <div className="space-y-1 text-xs mt-2">
+                            {dropDeadResults.dropped.map(r => (
+                              <div key={r.slot} className={r.ok ? 'text-green-400' : 'text-red-400'}>
+                                {r.ok ? '✓' : '✗'} dropped {r.slot}{r.error ? `: ${r.error}` : ''}
+                              </div>
+                            ))}
+                            {dropDeadResults.truncated.map(r => (
+                              <div key={r.oid} className={r.ok ? 'text-green-400' : 'text-red-400'}>
+                                {r.ok ? '✓' : '✗'} truncated {r.table ?? `oid:${r.oid}`}{r.error ? `: ${r.error}` : ''}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+                    <button onClick={loadDeadSlots} className="text-xs text-gray-600 hover:text-gray-400 flex items-center gap-1">
+                      <RefreshCw size={10} /> Refresh
+                    </button>
+                  </div>
+                )}
+              </Section>
 
               {/* Apply worker locks */}
               {applyLocks.length > 0 && (

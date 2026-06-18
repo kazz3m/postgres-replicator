@@ -320,6 +320,15 @@ export const replicationApi = {
   listSlots: (database?: string) =>
     api.get<ReplicationSlotInfo[]>(`/replication/slots${database ? `?database=${encodeURIComponent(database)}` : ''}`),
   dropSlot: (name: string) => api.delete(`/replication/slot/${name}`),
+  deadSyncSlots: (name: string, database?: string) =>
+    api.get<{ slots: { slot_name: string; lag_pretty: string; lag_bytes: number; restart_lsn: string; rel_oid: number | null }[]; sub_oid: number | null }>(
+      `/replication/subscription/${name}/dead-sync-slots${database ? `?database=${encodeURIComponent(database)}` : ''}`
+    ),
+  dropDeadSyncSlots: (name: string, slotNames: string[], relOids: number[], truncateTables: boolean, database?: string) =>
+    api.post<{ dropped: { slot: string; ok: boolean; error?: string }[]; truncated: { oid: number; table?: string; ok: boolean; error?: string }[] }>(
+      `/replication/subscription/${name}/drop-dead-sync-slots`,
+      { slot_names: slotNames, rel_oids: relOids, truncate_tables: truncateTables, database }
+    ),
   progress: () => api.get<TableReplicationProgress[]>('/replication/progress'),
   reset: (subscriptionName: string) => api.post(`/replication/reset/${subscriptionName}`),
   getInterval: () => api.get('/replication/stats/interval'),

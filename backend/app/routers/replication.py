@@ -527,6 +527,134 @@ async def drop_slot(name: str):
     return {"status": "dropped", "name": name}
 
 
+@router.get("/subscription/{name}/dead-sync-slots")
+async def get_dead_sync_slots(name: str, database: str | None = None):
+    """
+    Return inactive sync replication slots on source for a given subscription.
+    These are pg_NNN_sync_NNN slots left behind by crashed sync workers.
+    Also returns the corresponding table OIDs so frontend can show which tables
+    need cleanup on destination.
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+    src_dsn = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    src_conn = await _asyncpg.connect(src_dsn, timeout=15)
+    try:
+        # Subscription OID — sync slots are named pg_{suboid}_sync_{reloid}_{...}
+        sub_oid = await src_conn.fetchval(
+            "SELECT oid FROM pg_subscription WHERE subname = $1", name
+        )
+        if sub_oid is None:
+            # Try on dest (subscription lives on dest)
+            await src_conn.close()
+            dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
+            dest_conn = await _asyncpg.connect(dest_dsn, timeout=15)
+            try:
+                sub_oid = await dest_conn.fetchval(
+                    "SELECT oid FROM pg_subscription WHERE subname = $1", name
+                )
+            finally:
+                await dest_conn.close()
+            src_conn = await _asyncpg.connect(src_dsn, timeout=15)
+
+        prefix = f"pg_{sub_oid}_sync_" if sub_oid else None
+
+        rows = await src_conn.fetch("""
+            SELECT slot_name,
+                   active,
+                   active_pid,
+                   restart_lsn::text,
+                   pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS lag_pretty,
+                   pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS lag_bytes
+            FROM pg_replication_slots
+            WHERE slot_name LIKE $1
+              AND active = false
+            ORDER BY lag_bytes DESC NULLS LAST
+        """, f"{prefix}%" if prefix else "pg_%_sync_%")
+
+        slots = []
+        for r in rows:
+            # Extract table OID from slot name: pg_{suboid}_sync_{reloid}_{...}
+            parts = r["slot_name"].split("_")
+            rel_oid = None
+            if len(parts) >= 4:
+                try:
+                    rel_oid = int(parts[3])
+                except ValueError:
+                    pass
+            slots.append({
+                "slot_name": r["slot_name"],
+                "active": r["active"],
+                "restart_lsn": r["restart_lsn"],
+                "lag_pretty": r["lag_pretty"],
+                "lag_bytes": r["lag_bytes"],
+                "rel_oid": rel_oid,
+            })
+    finally:
+        await src_conn.close()
+
+    return {"slots": slots, "sub_oid": sub_oid}
+
+
+@router.post("/subscription/{name}/drop-dead-sync-slots")
+async def drop_dead_sync_slots(name: str, body: dict):
+    """
+    Drop specified inactive sync slots on source, optionally TRUNCATE the
+    corresponding tables on destination so they get re-synced cleanly.
+    body: { "slot_names": [...], "truncate_tables": true/false,
+            "rel_oids": [123, 456], "database": "dbname" }
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+    slot_names: list[str] = body.get("slot_names", [])
+    truncate_tables: bool = body.get("truncate_tables", False)
+    rel_oids: list[int] = body.get("rel_oids", [])
+    database: str | None = body.get("database")
+
+    if not slot_names:
+        raise HTTPException(400, "slot_names required")
+
+    src_dsn  = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    dest_dsn = dsn_for_database(state.dest_dsn,   database) if database else state.dest_dsn
+    src_conn = await _asyncpg.connect(src_dsn, timeout=15)
+    results = []
+
+    try:
+        for slot in slot_names:
+            try:
+                await src_conn.execute("SELECT pg_drop_replication_slot($1)", slot)
+                results.append({"slot": slot, "ok": True, "action": "dropped"})
+            except Exception as e:
+                results.append({"slot": slot, "ok": False, "error": str(e).split("\n")[0]})
+    finally:
+        await src_conn.close()
+
+    truncate_results = []
+    if truncate_tables and rel_oids:
+        dest_conn = await _asyncpg.connect(dest_dsn, timeout=15)
+        try:
+            for oid in rel_oids:
+                try:
+                    # Resolve OID → schema.table on destination
+                    row = await dest_conn.fetchrow(
+                        "SELECT n.nspname, c.relname FROM pg_class c "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE c.oid = $1", oid
+                    )
+                    if row:
+                        qualified = f'"{row["nspname"]}"."{row["relname"]}"'
+                        await dest_conn.execute(f"TRUNCATE {qualified}")
+                        truncate_results.append({"oid": oid, "table": f"{row['nspname']}.{row['relname']}", "ok": True})
+                    else:
+                        truncate_results.append({"oid": oid, "table": None, "ok": False, "error": "Table not found on dest"})
+                except Exception as e:
+                    truncate_results.append({"oid": oid, "ok": False, "error": str(e).split("\n")[0]})
+        finally:
+            await dest_conn.close()
+
+    return {"dropped": results, "truncated": truncate_results}
+
+
 # ── Progress ──────────────────────────────────────────────────────────────────
 
 @router.get("/progress", response_model=List[TableReplicationProgress])
