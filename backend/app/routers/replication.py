@@ -460,6 +460,16 @@ async def create_or_update_subscription(config: SubscriptionConfig):
                 except Exception:
                     pass
 
+    if config.truncate_dest and pub_tables:
+        trunc_conn = await _asyncpg.connect(dest_dsn_db, timeout=30)
+        try:
+            tables_sql = ", ".join(
+                f'"{r["schemaname"]}"."{r["tablename"]}"' for r in pub_tables
+            )
+            await trunc_conn.execute(f"TRUNCATE {tables_sql}")
+        finally:
+            await trunc_conn.close()
+
     try:
         await _do_create_subscription()
     except Exception as e:

@@ -40,6 +40,7 @@ export interface SubscriptionConfig {
   source_dsn: string; copy_data: boolean
   slot_name?: string
   database?: string
+  truncate_dest?: boolean
 }
 export interface ReplicationSlotInfo {
   slot_name: string; plugin: string; slot_type: string

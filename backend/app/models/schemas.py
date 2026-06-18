@@ -43,6 +43,7 @@ class SubscriptionConfig(BaseModel):
     copy_data: bool = True
     slot_name: Optional[str] = None
     database: Optional[str] = None  # source database; if set, overrides DSN default in CONNECTION string
+    truncate_dest: bool = False      # TRUNCATE destination tables before creating subscription
 
 
 class ReplicationSlotInfo(BaseModel):

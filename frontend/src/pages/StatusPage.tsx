@@ -162,7 +162,7 @@ export function StatusPage({ initialSnapshot }: Props) {
   const [unusedPubsExpanded, setUnusedPubsExpanded] = useState(true)
   const [confirmDropUnusedPub, setConfirmDropUnusedPub] = useState<UnusedPublication | null>(null)
   const [connectPubModal, setConnectPubModal] = useState<UnusedPublication | null>(null)
-  const [connectForm, setConnectForm] = useState({ subName: '', slotName: '', copyData: true })
+  const [connectForm, setConnectForm] = useState({ subName: '', slotName: '', copyData: true, truncateDest: false })
   const [connectLoading, setConnectLoading] = useState(false)
   const [connectError, setConnectError] = useState('')
 
@@ -480,6 +480,7 @@ export function StatusPage({ initialSnapshot }: Props) {
         copy_data: connectForm.copyData,
         slot_name: connectForm.slotName.trim() || undefined,
         database: connectPubModal.database,
+        truncate_dest: connectForm.truncateDest,
       })
       setConnectPubModal(null)
       refetchAll()
@@ -1530,6 +1531,16 @@ export function StatusPage({ initialSnapshot }: Props) {
                   />
                   <span className="text-gray-300">Copy existing data (COPY DATA)</span>
                   <span className="text-xs text-gray-600">— uncheck to replicate only new changes</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={connectForm.truncateDest}
+                    onChange={e => setConnectForm(f => ({ ...f, truncateDest: e.target.checked }))}
+                    className="accent-red-500"
+                  />
+                  <span className="text-red-300 font-medium">TRUNCATE destination tables before connecting</span>
+                  <span className="text-xs text-gray-600">— removes all existing rows on dest</span>
                 </label>
               </div>
               {connectError && (
