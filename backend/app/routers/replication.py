@@ -2246,8 +2246,12 @@ async def skip_lsn(body: dict):
 @router.post("/subscription/{name}/stop")
 async def stop_subscription(name: str, database: str | None = None):
     """
-    Gracefully stop replication: DISABLE subscription on dest, drop slot on source.
-    Leaves tables and data intact. Use reset to restart from scratch.
+    Stop replication without touching the source slot:
+      1. ALTER SUBSCRIPTION ... DISABLE
+      2. ALTER SUBSCRIPTION ... SET (slot_name = NONE)   -- detach slot so DROP doesn't try to remove it
+      3. DROP SUBSCRIPTION
+    Slot on source is preserved — use Drop Slot separately if needed.
+    Leaves tables and data intact.
     """
     _require_connection()
     import asyncpg as _asyncpg
@@ -2261,35 +2265,24 @@ async def stop_subscription(name: str, database: str | None = None):
         if not row:
             raise HTTPException(404, f"Subscription '{name}' not found.")
 
+        slot_name = row["subslotname"]
+
         if row["subenabled"]:
             try:
                 await dest_conn.execute(f'ALTER SUBSCRIPTION "{name}" DISABLE')
             except Exception as e:
                 raise HTTPException(500, f"Could not disable subscription: {e}")
 
-        slot_name = row["subslotname"]
-
-        # Detach slot so source can clean up WAL
         try:
             await dest_conn.execute(f'ALTER SUBSCRIPTION "{name}" SET (slot_name = NONE)')
-        except Exception:
-            pass
+        except Exception as e:
+            raise HTTPException(500, f"Could not detach slot from subscription: {e}")
+
+        await dest_conn.execute(f'DROP SUBSCRIPTION IF EXISTS "{name}"')
     finally:
         await dest_conn.close()
 
-    if slot_name:
-        src_pool = await get_source_pool(state.source_dsn)
-        async with src_pool.acquire() as conn:
-            still_exists = await conn.fetchval(
-                "SELECT 1 FROM pg_replication_slots WHERE slot_name = $1", slot_name
-            )
-            if still_exists:
-                try:
-                    await conn.execute("SELECT pg_drop_replication_slot($1)", slot_name)
-                except Exception as e:
-                    raise HTTPException(500, f"Could not drop replication slot '{slot_name}': {e}")
-
-    return {"status": "stopped", "subscription_name": name, "slot_dropped": bool(slot_name)}
+    return {"status": "stopped", "subscription_name": name, "slot_name": slot_name}
 
 
 # ── Vacuum truncate ────────────────────────────────────────────────────────────
