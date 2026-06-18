@@ -1220,7 +1220,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                     <button
                       onClick={() => {
                         setConnectPubModal(pub)
-                        const suggested = pub.pub_name.replace(/pub/gi, m => m === m.toUpperCase() ? 'SUB' : m[0] === m[0].toUpperCase() ? 'Sub' : 'sub')
+                        const suggested = pub.pub_name.replace(/_pub_/gi, m => m === m.toUpperCase() ? '_SUB_' : '_sub_')
                         setConnectForm({ subName: suggested, slotName: suggested, copyData: true, truncateDest: false })
                         setConnectError('')
                       }}
