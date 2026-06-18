@@ -1217,7 +1217,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                       onClick={() => {
                         setConnectPubModal(pub)
                         const suggested = pub.pub_name.replace(/pub/gi, m => m === m.toUpperCase() ? 'SUB' : m[0] === m[0].toUpperCase() ? 'Sub' : 'sub')
-                        setConnectForm({ subName: suggested, slotName: suggested, copyData: true })
+                        setConnectForm({ subName: suggested, slotName: suggested, copyData: true, truncateDest: false })
                         setConnectError('')
                       }}
                       className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded bg-blue-900/50 border border-blue-700 text-blue-300 hover:bg-blue-800/50"
@@ -1532,15 +1532,30 @@ export function StatusPage({ initialSnapshot }: Props) {
                   <span className="text-gray-300">Copy existing data (COPY DATA)</span>
                   <span className="text-xs text-gray-600">— uncheck to replicate only new changes</span>
                 </label>
-                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <label className="flex items-start gap-2 text-sm cursor-pointer">
                   <input
                     type="checkbox"
                     checked={connectForm.truncateDest}
                     onChange={e => setConnectForm(f => ({ ...f, truncateDest: e.target.checked }))}
-                    className="accent-red-500"
+                    className="accent-red-500 mt-0.5 shrink-0"
                   />
-                  <span className="text-red-300 font-medium">TRUNCATE destination tables before connecting</span>
-                  <span className="text-xs text-gray-600">— removes all existing rows on dest</span>
+                  <div>
+                    <span className="text-red-300 font-medium">TRUNCATE destination tables before connecting</span>
+                    {(() => {
+                      const dsn = connState?.dest_dsn
+                      if (!dsn) return null
+                      try {
+                        const u = new URL(dsn)
+                        const db = connectPubModal?.database ?? u.pathname.replace(/^\//, '')
+                        const hint = `${u.hostname}${u.port ? ':' + u.port : ''}/${db}`
+                        return (
+                          <div className="text-xs text-red-500/80 mt-0.5 font-mono">
+                            → will TRUNCATE on <span className="text-red-400">{hint}</span>
+                          </div>
+                        )
+                      } catch { return null }
+                    })()}
+                  </div>
                 </label>
               </div>
               {connectError && (
