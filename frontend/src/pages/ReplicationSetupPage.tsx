@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useQueries } from '@tanstack/react-query'
-import { replicationApi, SchemaInfo, TableSchemaDiff, IndexDiff, SequenceDiff, TriggerDiff, ConstraintDiff, SchemaSyncResult } from '../api/client'
+import { useQueries, useQuery } from '@tanstack/react-query'
+import { replicationApi, ReplicationSlotInfo, SchemaInfo, TableSchemaDiff, IndexDiff, SequenceDiff, TriggerDiff, ConstraintDiff, SchemaSyncResult } from '../api/client'
 import { ReplicationConfig } from '../utils/profiles'
 import { Spinner } from '../components/Spinner'
 import { ConfirmModal } from '../components/ConfirmModal'
@@ -860,6 +860,9 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
   const [showApplyModal, setShowApplyModal] = useState(false)
   const [applySteps, setApplySteps] = useState<Step[]>([])
   const [applyDone, setApplyDone] = useState(false)
+  const [useExistingSlot, setUseExistingSlot] = useState(false)
+  const [selectedSlot, setSelectedSlot] = useState('')
+  const [preserveSlotOnDrop, setPreserveSlotOnDrop] = useState(false)
 
   // Derived names — always consistent
   const pubName = buildPubName(prefix, label)
@@ -890,6 +893,17 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
     ...[...selectedSchemas].map(k => k.split('.')[0]),
   ])
   const multiDb = selectedDbs.size > 1
+  const selectedDatabase = [...selectedDbs][0]
+
+  const slotsQuery = useQuery({
+    queryKey: ['replication-slots', selectedDatabase],
+    queryFn: () => replicationApi.listSlots(selectedDatabase).then(r => r.data),
+    enabled: hasSelection && !multiDb && !!selectedDatabase,
+    staleTime: 10_000,
+  })
+  const attachableSlots = (slotsQuery.data ?? []).filter(
+    (slot: ReplicationSlotInfo) => slot.slot_type === 'logical' && slot.plugin === 'pgoutput'
+  )
 
   // Fetch table sizes from source once per selected DB to compute correct totalBytes.
   const dbList = [...selectedDbs].filter(Boolean)
@@ -953,7 +967,12 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
     return [
       { label: `Create publication "${pubName}" on source`, state: 'pending' },
       { label: `Verify all tables exist on destination`, state: 'pending' },
-      { label: `Create subscription "${subName}" on destination`, state: 'pending' },
+      {
+        label: useExistingSlot
+          ? `Create subscription "${subName}" using slot "${selectedSlot}"`
+          : `Create subscription "${subName}" on destination`,
+        state: 'pending',
+      },
     ]
   }
 
@@ -1023,6 +1042,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
         publication_name: pubName,
         source_dsn: sourceDsn,
         copy_data: copyData,
+        slot_name: useExistingSlot ? selectedSlot : undefined,
         database,
       })
       setStep(2, { state: 'ok', detail: copyData ? 'Initial data copy will begin shortly' : 'Replication active (no initial copy)' })
@@ -1063,15 +1083,30 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
   async function dropSubscription() {
     setLoading(true); setError('')
     try {
-      await replicationApi.dropSubscription(subName, replConfigs[pubName]?.database ?? [...selectedDbs][0])
-      setResult(`Subscription "${subName}" dropped.`)
+      const { data } = await replicationApi.dropSubscription(
+        subName,
+        replConfigs[pubName]?.database ?? [...selectedDbs][0],
+        preserveSlotOnDrop,
+      )
+      setResult(
+        data.slot_preserved
+          ? `Subscription "${subName}" dropped. Replication slot "${data.slot_name}" was preserved.`
+          : `Subscription "${subName}" dropped.`
+      )
     } catch (e: any) {
       setError(extractError(e))
-    } finally { setLoading(false); setConfirmAction(null) }
+    } finally {
+      setLoading(false)
+      setConfirmAction(null)
+      setPreserveSlotOnDrop(false)
+      slotsQuery.refetch()
+    }
   }
 
   // Apply is allowed when: has selection AND (schema-level OR all tables ok on dest)
-  const canApply = hasSelection && (selectedSchemas.size > 0 || schemaOk)
+  const canApply = hasSelection
+    && (selectedSchemas.size > 0 || schemaOk)
+    && (!useExistingSlot || !!selectedSlot)
 
   return (
     <div className="p-6 space-y-6">
@@ -1290,6 +1325,53 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
           <input type="checkbox" checked={copyData} onChange={e => setCopyData(e.target.checked)} className="accent-blue-500" />
           <span className="text-gray-300">Copy existing data (initial sync)</span>
         </label>
+
+        <div className="border-t border-gray-700 pt-3 space-y-2">
+          <label className="flex items-center gap-2 cursor-pointer text-sm">
+            <input
+              type="checkbox"
+              checked={useExistingSlot}
+              onChange={e => {
+                setUseExistingSlot(e.target.checked)
+                if (!e.target.checked) setSelectedSlot('')
+              }}
+              className="accent-blue-500"
+            />
+            <span className="text-gray-300">Use an existing replication slot</span>
+          </label>
+
+          {useExistingSlot && (
+            <div className="pl-6 space-y-2">
+              <select
+                value={selectedSlot}
+                onChange={e => setSelectedSlot(e.target.value)}
+                disabled={slotsQuery.isLoading}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm font-mono text-gray-200"
+              >
+                <option value="">
+                  {slotsQuery.isLoading ? 'Loading slots…' : 'Select a slot…'}
+                </option>
+                {attachableSlots.map((slot: ReplicationSlotInfo) => (
+                  <option key={slot.slot_name} value={slot.slot_name}>
+                    {slot.slot_name}{slot.active ? ' (active)' : ''}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-yellow-400">
+                The slot will not be created or reset. Replication continues from its saved LSN.
+                Enable initial copy only when the destination does not already contain the slot's data.
+              </p>
+              {!slotsQuery.isLoading && attachableSlots.length === 0 && (
+                <p className="text-xs text-gray-500">
+                  No logical pgoutput slots were found in database "{selectedDatabase}".
+                </p>
+              )}
+              {slotsQuery.isError && (
+                <p className="text-xs text-red-400">Could not load replication slots.</p>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {error && <div className="text-red-400 text-sm bg-red-950 border border-red-800 rounded p-3">{error}</div>}
@@ -1311,7 +1393,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
           </span>
         )}
         <div className="flex gap-2 ml-auto">
-          <button onClick={() => setConfirmAction('drop_sub')} disabled={loading}
+          <button onClick={() => { setPreserveSlotOnDrop(false); setConfirmAction('drop_sub') }} disabled={loading}
             className="px-3 py-2 bg-red-900 hover:bg-red-800 disabled:opacity-50 rounded text-sm">
             Drop Subscription
           </button>
@@ -1347,8 +1429,23 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
           message={`Drop subscription "${subName}" from destination? This will stop replication.`}
           confirmLabel="Drop"
           onConfirm={dropSubscription}
-          onCancel={() => setConfirmAction(null)}
-        />
+          onCancel={() => { setConfirmAction(null); setPreserveSlotOnDrop(false) }}
+        >
+          <label className="flex items-start gap-2 cursor-pointer rounded border border-yellow-800 bg-yellow-950/30 p-3">
+            <input
+              type="checkbox"
+              checked={preserveSlotOnDrop}
+              onChange={e => setPreserveSlotOnDrop(e.target.checked)}
+              className="accent-yellow-500 mt-0.5"
+            />
+            <span>
+              <span className="block text-sm text-yellow-300">Keep replication slot on source</span>
+              <span className="block text-xs text-gray-400 mt-1">
+                The slot retains its LSN and continues retaining WAL until it is reused or manually dropped.
+              </span>
+            </span>
+          </label>
+        </ConfirmModal>
       )}
     </div>
   )

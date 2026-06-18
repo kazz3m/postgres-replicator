@@ -210,6 +210,12 @@ async def list_publications():
 async def create_or_update_subscription(config: SubscriptionConfig):
     _require_connection()
 
+    if config.slot_name and not re.fullmatch(r"[a-z0-9_]{1,63}", config.slot_name):
+        raise HTTPException(
+            400,
+            "Replication slot name must contain only lowercase letters, numbers, and underscores (max 63 characters)."
+        )
+
     # Use dedicated replication DSN if provided, otherwise fall back to admin DSN.
     # If a specific database is requested, replace the database in the DSN so the
     # subscriber connects to the correct source database (not the DSN default).
@@ -274,13 +280,52 @@ async def create_or_update_subscription(config: SubscriptionConfig):
                 f"Tables missing on destination (apply schema DDL first): {', '.join(missing)}"
             )
 
-        exists = await dest_db_conn.fetchval(
-            "SELECT 1 FROM pg_subscription WHERE subname = $1", config.subscription_name
+        existing_sub = await dest_db_conn.fetchrow(
+            "SELECT subslotname FROM pg_subscription WHERE subname = $1", config.subscription_name
         )
-        if exists:
+        exists = bool(existing_sub)
+
+        if config.slot_name:
+            src_slot_conn = await _asyncpg_sub.connect(src_dsn_db, timeout=15)
+            try:
+                slot = await src_slot_conn.fetchrow(
+                    """
+                    SELECT slot_name, plugin, slot_type, active
+                    FROM pg_replication_slots
+                    WHERE slot_name = $1 AND database = current_database()
+                    """,
+                    config.slot_name,
+                )
+            finally:
+                await src_slot_conn.close()
+
+            if not slot:
+                raise HTTPException(
+                    400,
+                    f"Replication slot '{config.slot_name}' does not exist in the source database."
+                )
+            if slot["slot_type"] != "logical" or slot["plugin"] != "pgoutput":
+                raise HTTPException(
+                    400,
+                    f"Replication slot '{config.slot_name}' must be a logical slot using the pgoutput plugin."
+                )
+            slot_belongs_to_existing_sub = (
+                existing_sub and existing_sub["subslotname"] == config.slot_name
+            )
+            if slot["active"] and not slot_belongs_to_existing_sub:
+                raise HTTPException(
+                    400,
+                    f"Replication slot '{config.slot_name}' is active and cannot be attached."
+                )
+
+        if existing_sub:
             await dest_db_conn.execute(
                 f'ALTER SUBSCRIPTION "{config.subscription_name}" DISABLE'
             )
+            if config.slot_name and existing_sub["subslotname"] == config.slot_name:
+                await dest_db_conn.execute(
+                    f'ALTER SUBSCRIPTION "{config.subscription_name}" SET (slot_name = NONE)'
+                )
             await dest_db_conn.execute(
                 f'DROP SUBSCRIPTION IF EXISTS "{config.subscription_name}"'
             )
@@ -307,12 +352,16 @@ async def create_or_update_subscription(config: SubscriptionConfig):
         try:
             dedicated_conn = await _asyncpg.connect(dest_dsn_db, timeout=30)
             copy_data_sql = "true" if config.copy_data else "false"
+            slot_sql = (
+                f", create_slot = false, slot_name = '{config.slot_name}'"
+                if config.slot_name else ""
+            )
             await dedicated_conn.execute("SET statement_timeout = '120s'")
             await dedicated_conn.execute(f"""
                 CREATE SUBSCRIPTION "{config.subscription_name}"
                 CONNECTION $conn_str${conn_dsn}$conn_str$
                 PUBLICATION "{config.publication_name}"
-                WITH (copy_data = {copy_data_sql})
+                WITH (copy_data = {copy_data_sql}{slot_sql})
             """)
         finally:
             if dedicated_conn:
@@ -326,7 +375,7 @@ async def create_or_update_subscription(config: SubscriptionConfig):
     except Exception as e:
         err = str(e)
         # Orphaned slot from a previous failed attempt — drop it and retry once
-        if "replication slot" in err and "already exists" in err:
+        if not config.slot_name and "replication slot" in err and "already exists" in err:
             try:
                 await _drop_orphaned_slot(config.subscription_name)
                 await _do_create_subscription()
@@ -355,7 +404,11 @@ async def create_or_update_subscription(config: SubscriptionConfig):
 
 
 @router.delete("/subscription/{name}")
-async def drop_subscription(name: str, database: str | None = None):
+async def drop_subscription(
+    name: str,
+    database: str | None = None,
+    preserve_slot: bool = False,
+):
     _require_connection()
     import asyncpg as _asyncpg
     dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
@@ -376,12 +429,14 @@ async def drop_subscription(name: str, database: str | None = None):
             except Exception as e:
                 raise HTTPException(500,
                     f"Could not disable subscription '{name}' before dropping: {e}.")
+        if preserve_slot and slot_name:
+            await conn.execute(f'ALTER SUBSCRIPTION "{name}" SET (slot_name = NONE)')
         await conn.execute(f'DROP SUBSCRIPTION IF EXISTS "{name}"')
     finally:
         await conn.close()
 
     # Drop orphaned slot on source if DROP SUBSCRIPTION didn't clean it up
-    if slot_name:
+    if slot_name and not preserve_slot:
         async with src_pool.acquire() as conn:
             still_exists = await conn.fetchval(
                 "SELECT 1 FROM pg_replication_slots WHERE slot_name = $1", slot_name
@@ -392,7 +447,12 @@ async def drop_subscription(name: str, database: str | None = None):
                 except Exception:
                     pass
 
-    return {"status": "dropped", "name": name}
+    return {
+        "status": "dropped",
+        "name": name,
+        "slot_name": slot_name,
+        "slot_preserved": bool(slot_name and preserve_slot),
+    }
 
 
 @router.get("/subscriptions")
@@ -431,16 +491,22 @@ async def refresh_subscription(name: str):
 # ── Slots ─────────────────────────────────────────────────────────────────────
 
 @router.get("/slots", response_model=List[ReplicationSlotInfo])
-async def list_slots():
+async def list_slots(database: str | None = None):
     _require_connection()
-    pool = await get_source_pool(state.source_dsn)
-    async with pool.acquire() as conn:
+    import asyncpg as _asyncpg
+    src_dsn = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    conn = await _asyncpg.connect(src_dsn, timeout=10)
+    try:
         rows = await conn.fetch("""
             SELECT slot_name, plugin, slot_type, active,
                    restart_lsn::text, confirmed_flush_lsn::text,
                    COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn), 0) AS lag_bytes
             FROM pg_replication_slots
+            WHERE database = current_database()
+            ORDER BY slot_name
         """)
+    finally:
+        await conn.close()
     return [ReplicationSlotInfo(
         slot_name=r["slot_name"],
         plugin=r["plugin"] or "",

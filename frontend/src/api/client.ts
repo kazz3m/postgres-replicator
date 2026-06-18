@@ -38,6 +38,7 @@ export interface PublicationServerConfig {
 export interface SubscriptionConfig {
   subscription_name: string; publication_name: string
   source_dsn: string; copy_data: boolean
+  slot_name?: string
   database?: string
 }
 export interface ReplicationSlotInfo {
@@ -308,10 +309,16 @@ export const replicationApi = {
     api.delete(`/replication/publication/${name}${database ? `?database=${encodeURIComponent(database)}` : ''}`),
   listPublications: () => api.get('/replication/publications'),
   createSubscription: (cfg: SubscriptionConfig) => api.post('/replication/subscription', cfg),
-  dropSubscription: (name: string, database?: string) =>
-    api.delete(`/replication/subscription/${name}${database ? `?database=${encodeURIComponent(database)}` : ''}`),
+  dropSubscription: (name: string, database?: string, preserveSlot = false) => {
+    const params = new URLSearchParams()
+    if (database) params.set('database', database)
+    if (preserveSlot) params.set('preserve_slot', 'true')
+    const query = params.toString()
+    return api.delete(`/replication/subscription/${name}${query ? `?${query}` : ''}`)
+  },
   listSubscriptions: () => api.get('/replication/subscriptions'),
-  listSlots: () => api.get<ReplicationSlotInfo[]>('/replication/slots'),
+  listSlots: (database?: string) =>
+    api.get<ReplicationSlotInfo[]>(`/replication/slots${database ? `?database=${encodeURIComponent(database)}` : ''}`),
   dropSlot: (name: string) => api.delete(`/replication/slot/${name}`),
   progress: () => api.get<TableReplicationProgress[]>('/replication/progress'),
   reset: (subscriptionName: string) => api.post(`/replication/reset/${subscriptionName}`),
