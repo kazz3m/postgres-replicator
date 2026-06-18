@@ -95,8 +95,8 @@ export function StatusPage({ initialSnapshot }: Props) {
   const [interval, setIntervalSecs] = useState(10)
   const [editInterval, setEditInterval] = useState(false)
   const [intervalInput, setIntervalInput] = useState('10')
-  const [confirmReset, setConfirmReset] = useState<string | null>(null)
-  const [confirmStop, setConfirmStop] = useState<string | null>(null)
+  const [confirmReset, setConfirmReset] = useState<{ subName: string; slotName?: string } | null>(null)
+  const [confirmStop, setConfirmStop] = useState<{ subName: string; slotName?: string } | null>(null)
   const [confirmDropSlot, setConfirmDropSlot] = useState<string | null>(null)
   const [confirmDropSub, setConfirmDropSub] = useState<{ subName: string; database?: string } | null>(null)
   const [confirmDropPub, setConfirmDropPub] = useState<{ subName: string; pubName: string; database?: string } | null>(null)
@@ -339,6 +339,10 @@ export function StatusPage({ initialSnapshot }: Props) {
     } finally {
       setActionLoading(false); setConfirmStop(null)
     }
+  }
+
+  function getSubSlotName(subName: string): string | undefined {
+    return subs?.find((s: any) => s.subname === subName)?.subslotname ?? undefined
   }
 
   function getSubDatabase(subName: string): string | undefined {
@@ -1096,15 +1100,15 @@ export function StatusPage({ initialSnapshot }: Props) {
                             >▶ Resume</button>
                         }
                         <button
-                          onClick={() => setConfirmStop(sub.subname)}
+                          onClick={() => setConfirmStop({ subName: sub.subname, slotName: sub.subslotname ?? undefined })}
                           disabled={actionLoading || !sub.subenabled}
                           className="text-xs text-orange-400 hover:text-orange-300 border border-orange-800 px-2 py-1 rounded disabled:opacity-40 flex items-center gap-1"
-                          title="Stop replication gracefully (disable + drop slot)"
+                          title="Stop replication gracefully"
                         >
                           <Square size={10} /> Stop
                         </button>
                         <button
-                          onClick={() => setConfirmReset(sub.subname)}
+                          onClick={() => setConfirmReset({ subName: sub.subname, slotName: sub.subslotname ?? undefined })}
                           disabled={actionLoading}
                           className="text-xs text-red-400 hover:text-red-300 border border-red-800 px-2 py-1 rounded"
                         >
@@ -1258,22 +1262,116 @@ export function StatusPage({ initialSnapshot }: Props) {
 
 
       {confirmStop && (
-        <ConfirmModal
-          title="Stop Replication"
-          message={`Disable subscription "${confirmStop}" and drop its replication slot on source. Existing data on destination is preserved. You can restart replication later via Reset.`}
-          confirmLabel="Stop"
-          onConfirm={() => handleStop(confirmStop)}
-          onCancel={() => setConfirmStop(null)}
-        />
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-orange-800/60 rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-base font-bold text-orange-400 mb-1 flex items-center gap-2">
+              <Square size={14} /> Stop Replication
+            </h3>
+            <p className="text-xs text-gray-400 mb-4">
+              Subscription <span className="font-mono text-gray-200">"{confirmStop.subName}"</span> will be stopped. Existing data on destination is preserved.
+            </p>
+            <div className="bg-gray-950 rounded border border-gray-800 px-3 py-3 mb-4 space-y-1.5 font-mono text-xs">
+              <div className="text-gray-300">
+                <span className="text-orange-400/70">1.</span>{' '}
+                <span className="text-blue-300">ALTER SUBSCRIPTION</span>{' '}
+                <span className="text-gray-200">"{confirmStop.subName}"</span>{' '}
+                <span className="text-blue-300">DISABLE</span><span className="text-gray-600">;</span>
+                <span className="ml-2 text-gray-600 font-sans">— stops apply worker</span>
+              </div>
+              <div className="text-gray-300">
+                <span className="text-orange-400/70">2.</span>{' '}
+                <span className="text-blue-300">ALTER SUBSCRIPTION</span>{' '}
+                <span className="text-gray-200">"{confirmStop.subName}"</span>{' '}
+                <span className="text-blue-300">SET</span>{' '}
+                <span className="text-gray-400">(slot_name = </span><span className="text-yellow-300">NONE</span><span className="text-gray-400">)</span><span className="text-gray-600">;</span>
+                <span className="ml-2 text-gray-600 font-sans">— detaches slot</span>
+              </div>
+              <div className="text-gray-300">
+                <span className="text-orange-400/70">3.</span>{' '}
+                <span className="text-blue-300">DROP SUBSCRIPTION</span>{' '}
+                <span className="text-gray-200">"{confirmStop.subName}"</span><span className="text-gray-600">;</span>
+                <span className="ml-2 text-gray-600 font-sans">— removes from pg_subscription</span>
+              </div>
+            </div>
+            {confirmStop.slotName && (
+              <div className="text-xs text-amber-400/80 bg-amber-950/30 border border-amber-800/40 rounded px-3 py-2 mb-4 flex items-start gap-2">
+                <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+                <span>Slot <span className="font-mono text-amber-300">"{confirmStop.slotName}"</span> on source is <strong>preserved</strong> — it will keep accumulating WAL until dropped manually.</span>
+              </div>
+            )}
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setConfirmStop(null)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+              >Cancel</button>
+              <button
+                onClick={() => handleStop(confirmStop.subName)}
+                disabled={actionLoading}
+                className="px-4 py-2 bg-orange-700 hover:bg-orange-600 rounded text-sm font-semibold flex items-center gap-2 disabled:opacity-50"
+              >
+                {actionLoading ? <Spinner size={3} /> : <Square size={13} />}
+                Stop
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {confirmReset && (
-        <ConfirmModal
-          title="Reset Replication"
-          message={`This will drop subscription "${confirmReset}" and its slot, then recreate it from scratch. All data will be re-synced. This is destructive and may take a long time on large databases.`}
-          confirmLabel="Reset"
-          onConfirm={() => handleReset(confirmReset)}
-          onCancel={() => setConfirmReset(null)}
-        />
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-red-800/60 rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-base font-bold text-red-400 mb-1 flex items-center gap-2">
+              <AlertTriangle size={14} /> Reset Replication
+            </h3>
+            <p className="text-xs text-gray-400 mb-4">
+              Subscription <span className="font-mono text-gray-200">"{confirmReset.subName}"</span> will be dropped and recreated from scratch. <span className="text-red-400">All data will be re-synced — this may take a long time.</span>
+            </p>
+            <div className="bg-gray-950 rounded border border-gray-800 px-3 py-3 mb-4 space-y-1.5 font-mono text-xs">
+              <div className="text-gray-300">
+                <span className="text-red-400/70">1.</span>{' '}
+                <span className="text-blue-300">ALTER SUBSCRIPTION</span>{' '}
+                <span className="text-gray-200">"{confirmReset.subName}"</span>{' '}
+                <span className="text-blue-300">DISABLE</span><span className="text-gray-600">;</span>
+              </div>
+              <div className="text-gray-300">
+                <span className="text-red-400/70">2.</span>{' '}
+                <span className="text-blue-300">DROP SUBSCRIPTION</span>{' '}
+                <span className="text-gray-200">"{confirmReset.subName}"</span><span className="text-gray-600">;</span>
+              </div>
+              {confirmReset.slotName && (
+                <div className="text-gray-300">
+                  <span className="text-red-400/70">3.</span>{' '}
+                  <span className="text-blue-300">SELECT</span>{' '}
+                  <span className="text-yellow-300">pg_drop_replication_slot</span>
+                  <span className="text-gray-400">(</span>
+                  <span className="text-green-300">'{confirmReset.slotName}'</span>
+                  <span className="text-gray-400">)</span><span className="text-gray-600">;</span>
+                  <span className="ml-2 text-gray-600 font-sans">— on source</span>
+                </div>
+              )}
+              <div className="text-gray-300">
+                <span className="text-red-400/70">{confirmReset.slotName ? '4' : '3'}.</span>{' '}
+                <span className="text-blue-300">CREATE SUBSCRIPTION</span>{' '}
+                <span className="text-gray-200">"{confirmReset.subName}"</span>{' '}
+                <span className="text-gray-400">... WITH (</span><span className="text-yellow-300">copy_data = true</span><span className="text-gray-400">)</span><span className="text-gray-600">;</span>
+                <span className="ml-2 text-gray-600 font-sans">— full resync</span>
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setConfirmReset(null)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+              >Cancel</button>
+              <button
+                onClick={() => handleReset(confirmReset.subName)}
+                disabled={actionLoading}
+                className="px-4 py-2 bg-red-700 hover:bg-red-600 rounded text-sm font-semibold flex items-center gap-2 disabled:opacity-50"
+              >
+                {actionLoading ? <Spinner size={3} /> : <AlertTriangle size={13} />}
+                Reset
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {confirmDropSlot && (
         <ConfirmModal
