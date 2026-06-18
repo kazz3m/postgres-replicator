@@ -302,7 +302,16 @@ export interface ReplicationCapacity {
   slots_active: number
 }
 
+export interface UnusedPublication {
+  pub_name: string
+  database: string
+  table_count: number
+  tables: string[]
+  schemas: string[]
+}
+
 export const replicationApi = {
+  unusedPublications: () => api.get<UnusedPublication[]>('/replication/unused-publications'),
   capacity: () => api.get<ReplicationCapacity>('/replication/capacity'),
   createPublication: (cfg: PublicationConfig) => api.post('/replication/publication', cfg),
   dropPublication: (name: string, database?: string) =>

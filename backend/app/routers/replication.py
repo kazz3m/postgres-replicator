@@ -173,6 +173,78 @@ async def get_publication_config(name: str, database: str | None = None):
     return result
 
 
+@router.get("/unused-publications")
+async def list_unused_publications():
+    """
+    Return publications on source that have no matching subscription on destination.
+    Each item includes the pub name, database, table count, and table list.
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+
+    src_conn = await _asyncpg.connect(state.source_dsn, timeout=15)
+    dest_conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
+    try:
+        version_num = await src_conn.fetchval("SELECT current_setting('server_version_num')::int")
+        major = version_num // 10000
+        source_database = await src_conn.fetchval("SELECT current_database()")
+
+        if major >= 15:
+            pub_rows = await src_conn.fetch("""
+                SELECT p.pubname,
+                       array_agg(DISTINCT pt.schemaname||'.'||pt.tablename)
+                           FILTER (WHERE pt.tablename IS NOT NULL) AS tables,
+                       array_agg(DISTINCT pn.nspname)
+                           FILTER (WHERE pn.nspname IS NOT NULL) AS schemas
+                FROM pg_publication p
+                LEFT JOIN pg_publication_tables pt ON pt.pubname = p.pubname
+                LEFT JOIN pg_publication_namespace ppn ON ppn.pnpubid = p.oid
+                LEFT JOIN pg_namespace pn ON pn.oid = ppn.pnnspid
+                GROUP BY p.pubname
+            """)
+        else:
+            pub_rows = await src_conn.fetch("""
+                SELECT p.pubname,
+                       array_agg(DISTINCT pt.schemaname||'.'||pt.tablename)
+                           FILTER (WHERE pt.tablename IS NOT NULL) AS tables,
+                       NULL::text[] AS schemas
+                FROM pg_publication p
+                LEFT JOIN pg_publication_tables pt ON pt.pubname = p.pubname
+                GROUP BY p.pubname
+            """)
+
+        try:
+            dest_subs = await dest_conn.fetch(
+                "SELECT subname, subpublications FROM pg_subscription"
+            )
+        except Exception:
+            dest_subs = []
+
+        used_pubs: set[str] = set()
+        for row in dest_subs:
+            for p in (row["subpublications"] or []):
+                used_pubs.add(p)
+
+        result = []
+        for row in pub_rows:
+            if row["pubname"] in used_pubs:
+                continue
+            tables = list(row["tables"] or [])
+            schemas = list(row["schemas"] or [])
+            result.append({
+                "pub_name": row["pubname"],
+                "database": source_database,
+                "table_count": len(tables),
+                "tables": sorted(tables),
+                "schemas": sorted(schemas),
+            })
+    finally:
+        await src_conn.close()
+        await dest_conn.close()
+
+    return result
+
+
 @router.get("/publications")
 async def list_publications():
     _require_connection()

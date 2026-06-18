@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { replicationApi, ReplicationSlotInfo, SubscriptionInfo, TableCopyProgress, CopyProgressResponse, ReplicationCapacity } from '../api/client'
+import { replicationApi, connectionsApi, ReplicationSlotInfo, SubscriptionInfo, TableCopyProgress, CopyProgressResponse, ReplicationCapacity, UnusedPublication } from '../api/client'
 import { Badge } from '../components/Badge'
 import { DebugTableModal } from '../components/DebugTableModal'
 import { DebugSubscriptionModal } from '../components/DebugSubscriptionModal'
@@ -11,7 +11,7 @@ import { SequenceSyncPanel } from '../components/SequenceSyncPanel'
 import { SchemaSyncPanel } from '../components/SchemaSyncPanel'
 import { IndexSyncPanel } from '../components/IndexSyncPanel'
 import { RolesSyncPanel } from '../components/RolesSyncPanel'
-import { RefreshCw, AlertTriangle, Square, Layers, Database, ChevronDown, ChevronRight, FlaskConical, Bug, CheckCircle, XCircle, Circle, Loader } from 'lucide-react'
+import { RefreshCw, AlertTriangle, Square, Layers, Database, ChevronDown, ChevronRight, FlaskConical, Bug, CheckCircle, XCircle, Circle, Loader, Trash2, Link, ChevronUp } from 'lucide-react'
 import clsx from 'clsx'
 import type { WorkspaceSnapshot } from './WorkspacePicker'
 
@@ -158,6 +158,13 @@ export function StatusPage({ initialSnapshot }: Props) {
   const [managePub, setManagePub] = useState<{ pubName: string; database: string; subName: string } | null>(null)
   // Debug modal (subscription)
   const [debugSub, setDebugSub] = useState<{ subName: string; database: string } | null>(null)
+  // Unused publications
+  const [unusedPubsExpanded, setUnusedPubsExpanded] = useState(true)
+  const [confirmDropUnusedPub, setConfirmDropUnusedPub] = useState<UnusedPublication | null>(null)
+  const [connectPubModal, setConnectPubModal] = useState<UnusedPublication | null>(null)
+  const [connectForm, setConnectForm] = useState({ subName: '', slotName: '', copyData: true })
+  const [connectLoading, setConnectLoading] = useState(false)
+  const [connectError, setConnectError] = useState('')
 
   const { data: progress, refetch: refetchProgress, isLoading: progressLoading } = useQuery({
     queryKey: ['progress'],
@@ -274,6 +281,18 @@ export function StatusPage({ initialSnapshot }: Props) {
     queryFn: () => replicationApi.listSubscriptions().then(r => r.data),
     refetchInterval: interval * 1000,
     initialData: initialSnapshot?.subscriptions,
+  })
+
+  const { data: connState } = useQuery({
+    queryKey: ['conn-status'],
+    queryFn: () => connectionsApi.status().then(r => r.data),
+    staleTime: 60_000,
+  })
+
+  const { data: unusedPubs, refetch: refetchUnusedPubs } = useQuery<UnusedPublication[]>({
+    queryKey: ['unused-publications'],
+    queryFn: () => replicationApi.unusedPublications().then(r => r.data),
+    refetchInterval: interval * 1000,
   })
 
   const { data: capacity } = useQuery<ReplicationCapacity>({
@@ -433,7 +452,43 @@ export function StatusPage({ initialSnapshot }: Props) {
     }
   }
 
-  function refetchAll() { refetchProgress(); refetchCopy(); refetchSlots(); refetchSubs() }
+  function refetchAll() { refetchProgress(); refetchCopy(); refetchSlots(); refetchSubs(); refetchUnusedPubs() }
+
+  async function handleDropUnusedPub(pub: UnusedPublication) {
+    setActionLoading(true); setActionError('')
+    try {
+      await replicationApi.dropPublication(pub.pub_name, pub.database)
+      refetchUnusedPubs()
+    } catch (e: any) {
+      setActionError(e.response?.data?.detail || e.message)
+    } finally {
+      setActionLoading(false); setConfirmDropUnusedPub(null)
+    }
+  }
+
+  async function handleConnectSubscription() {
+    if (!connectPubModal) return
+    const subName = connectForm.subName.trim()
+    if (!subName) { setConnectError('Subscription name is required'); return }
+    setConnectLoading(true); setConnectError('')
+    try {
+      const sourceDsn = connState?.source_repl_dsn || connState?.source_dsn || ''
+      await replicationApi.createSubscription({
+        subscription_name: subName,
+        publication_name: connectPubModal.pub_name,
+        source_dsn: sourceDsn,
+        copy_data: connectForm.copyData,
+        slot_name: connectForm.slotName.trim() || undefined,
+        database: connectPubModal.database,
+      })
+      setConnectPubModal(null)
+      refetchAll()
+    } catch (e: any) {
+      setConnectError(e.response?.data?.detail || e.message)
+    } finally {
+      setConnectLoading(false)
+    }
+  }
 
   function openAnalyzeModal(tables: string[], database?: string, allTables?: string[]) {
     setAnalyzeModal({ tables, database, allTables })
@@ -1117,6 +1172,72 @@ export function StatusPage({ initialSnapshot }: Props) {
         />
       )}
 
+      {/* Unused (orphaned) publications — publications on source with no subscription on dest */}
+      {unusedPubs && unusedPubs.length > 0 && (
+        <div className="bg-gray-900 border border-amber-800/50 rounded-lg overflow-hidden">
+          <button
+            className="w-full px-4 py-3 flex items-center gap-2 text-left hover:bg-gray-800/30"
+            onClick={() => setUnusedPubsExpanded(v => !v)}
+          >
+            <AlertTriangle size={14} className="text-amber-400 shrink-0" />
+            <span className="font-semibold text-amber-300 flex-1">
+              Unused Publications
+              <span className="ml-2 text-xs font-normal text-amber-500">
+                {unusedPubs.length} publication{unusedPubs.length !== 1 ? 's' : ''} on source with no subscription on destination
+              </span>
+            </span>
+            {unusedPubsExpanded ? <ChevronUp size={14} className="text-gray-500" /> : <ChevronDown size={14} className="text-gray-500" />}
+          </button>
+
+          {unusedPubsExpanded && (
+            <div className="border-t border-gray-800 divide-y divide-gray-800">
+              {unusedPubs.map(pub => (
+                <div key={pub.pub_name} className="px-4 py-3 flex items-start gap-3">
+                  <Layers size={13} className="text-gray-500 mt-0.5 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono text-gray-200 font-medium">{pub.pub_name}</span>
+                      {pub.database && (
+                        <span className="text-xs bg-blue-950 border border-blue-800 text-blue-300 rounded px-1.5 py-0.5 font-mono">{pub.database}</span>
+                      )}
+                      <span className="text-xs text-gray-500">{pub.table_count} table{pub.table_count !== 1 ? 's' : ''}</span>
+                      {pub.schemas.length > 0 && (
+                        <span className="text-xs text-gray-500">· schemas: {pub.schemas.join(', ')}</span>
+                      )}
+                    </div>
+                    {pub.tables.length > 0 && (
+                      <div className="mt-1 text-xs text-gray-600 font-mono truncate" title={pub.tables.join(', ')}>
+                        {pub.tables.slice(0, 5).join(', ')}{pub.tables.length > 5 ? ` +${pub.tables.length - 5} more` : ''}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => {
+                        setConnectPubModal(pub)
+                        setConnectForm({ subName: '', slotName: '', copyData: true })
+                        setConnectError('')
+                      }}
+                      className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded bg-blue-900/50 border border-blue-700 text-blue-300 hover:bg-blue-800/50"
+                      title="Create a subscription on destination that connects to this publication"
+                    >
+                      <Link size={11} /> Connect
+                    </button>
+                    <button
+                      onClick={() => setConfirmDropUnusedPub(pub)}
+                      className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded bg-red-950/50 border border-red-800/50 text-red-400 hover:bg-red-900/50"
+                      title="Drop this publication from source"
+                    >
+                      <Trash2 size={11} /> Drop
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Roles & Grants migration — always available */}
       <RolesSyncPanel />
 
@@ -1347,6 +1468,87 @@ export function StatusPage({ initialSnapshot }: Props) {
                   <button onClick={() => setAnalyzeModal(null)} className="text-xs px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">Close</button>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDropUnusedPub && (
+        <ConfirmModal
+          title="Drop Publication"
+          message={`Drop publication "${confirmDropUnusedPub.pub_name}" from source database "${confirmDropUnusedPub.database}"? It has no active subscriptions so this is safe, but it cannot be undone without recreating it.`}
+          confirmLabel="Drop Publication"
+          onConfirm={() => handleDropUnusedPub(confirmDropUnusedPub)}
+          onCancel={() => setConfirmDropUnusedPub(null)}
+        />
+      )}
+
+      {connectPubModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-md mx-4 flex flex-col">
+            <div className="px-5 py-4 border-b border-gray-800 flex items-center gap-2">
+              <Link size={14} className="text-blue-400" />
+              <h3 className="font-bold text-blue-300">Connect to Publication</h3>
+              <span className="ml-1 font-mono text-gray-400 text-sm">"{connectPubModal.pub_name}"</span>
+            </div>
+            <div className="px-5 py-4 space-y-4">
+              <p className="text-xs text-gray-400">
+                Creates a subscription on the <span className="text-gray-300">destination</span> that replicates from publication <span className="font-mono text-blue-300">{connectPubModal.pub_name}</span> on source database <span className="font-mono text-blue-300">{connectPubModal.database}</span>.
+              </p>
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Subscription name <span className="text-red-400">*</span></label>
+                  <input
+                    type="text"
+                    placeholder="e.g. my_sub"
+                    value={connectForm.subName}
+                    onChange={e => setConnectForm(f => ({ ...f, subName: e.target.value }))}
+                    className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm font-mono focus:border-blue-500 outline-none"
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">
+                    Replication slot name <span className="text-gray-600">(optional — leave blank to auto-generate)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. my_slot (auto if blank)"
+                    value={connectForm.slotName}
+                    onChange={e => setConnectForm(f => ({ ...f, slotName: e.target.value }))}
+                    className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm font-mono focus:border-blue-500 outline-none"
+                  />
+                  <p className="text-xs text-gray-600 mt-1">Lowercase letters, digits, underscores only. Max 63 chars.</p>
+                </div>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={connectForm.copyData}
+                    onChange={e => setConnectForm(f => ({ ...f, copyData: e.target.checked }))}
+                    className="accent-blue-500"
+                  />
+                  <span className="text-gray-300">Copy existing data (COPY DATA)</span>
+                  <span className="text-xs text-gray-600">— uncheck to replicate only new changes</span>
+                </label>
+              </div>
+              {connectError && (
+                <div className="text-xs text-red-400 bg-red-950/50 border border-red-800 rounded p-2">{connectError}</div>
+              )}
+            </div>
+            <div className="px-5 pb-4 border-t border-gray-800 pt-3 flex justify-end gap-2">
+              <button
+                onClick={() => { setConnectPubModal(null); setConnectError('') }}
+                className="text-xs px-3 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConnectSubscription}
+                disabled={connectLoading || !connectForm.subName.trim()}
+                className="text-xs px-4 py-1.5 rounded bg-blue-700 hover:bg-blue-600 text-white font-semibold flex items-center gap-1.5 disabled:opacity-40"
+              >
+                {connectLoading ? <><Spinner size={3} /> Creating…</> : <><Link size={11} /> Create Subscription</>}
+              </button>
             </div>
           </div>
         </div>
