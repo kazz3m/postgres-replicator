@@ -138,7 +138,7 @@ export function StatusPage({ initialSnapshot }: Props) {
     else { setSortCol(col); setSortDir('asc') }
   }
   const STATE_ORDER: Record<string, number> = {
-    locked: 0, 'slot pending': 1, copying: 2, waiting: 3, initializing: 4, 'catching up': 5, synced: 6, ready: 7, error: 8, unknown: 9,
+    locked: 0, error: 1, 'catching up': 2, copying: 3, 'slot pending': 4, waiting: 5, initializing: 6, synced: 7, ready: 8, unknown: 9,
   }
   function sortTables(tables: TableCopyProgress[]) {
     return [...tables].sort((a, b) => {
