@@ -567,19 +567,45 @@ async def drop_subscription(
 
 @router.get("/subscriptions")
 async def list_subscriptions():
+    """
+    List all subscriptions across ALL destination databases.
+    Each row includes 'database' so the UI can route operations to the correct DB.
+    """
     _require_connection()
-    pool = await get_dest_pool(state.dest_dsn)
-    async with pool.acquire() as conn:
-        max_sync_workers = await conn.fetchval(
+    import asyncpg as _asyncpg
+
+    default_conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
+    try:
+        max_sync_workers = await default_conn.fetchval(
             "SELECT current_setting('max_sync_workers_per_subscription')::int"
         )
-        rows = await conn.fetch("""
-            SELECT subname, subenabled, subpublications, subslotname
-            FROM pg_subscription
-        """)
-    result = [dict(r) for r in rows]
-    for r in result:
-        r["max_sync_workers"] = max_sync_workers
+        db_rows = await default_conn.fetch(
+            "SELECT datname FROM pg_database WHERE datistemplate = false AND datallowconn = true ORDER BY datname"
+        )
+        dest_databases = [r["datname"] for r in db_rows]
+    finally:
+        await default_conn.close()
+
+    result = []
+    for db_name in dest_databases:
+        db_conn = None
+        try:
+            db_conn = await _asyncpg.connect(dsn_for_database(state.dest_dsn, db_name), timeout=10)
+            rows = await db_conn.fetch("""
+                SELECT subname, subenabled, subpublications, subslotname,
+                       current_database() AS database
+                FROM pg_subscription
+            """)
+            for r in rows:
+                entry = dict(r)
+                entry["max_sync_workers"] = max_sync_workers
+                result.append(entry)
+        except Exception:
+            pass
+        finally:
+            if db_conn:
+                await db_conn.close()
+
     return result
 
 

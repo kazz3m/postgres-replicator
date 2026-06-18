@@ -98,8 +98,8 @@ export function StatusPage({ initialSnapshot }: Props) {
   const [confirmReset, setConfirmReset] = useState<string | null>(null)
   const [confirmStop, setConfirmStop] = useState<string | null>(null)
   const [confirmDropSlot, setConfirmDropSlot] = useState<string | null>(null)
-  const [confirmDropSub, setConfirmDropSub] = useState<string | null>(null)
-  const [confirmDropPub, setConfirmDropPub] = useState<{ subName: string; pubName: string } | null>(null)
+  const [confirmDropSub, setConfirmDropSub] = useState<{ subName: string; database?: string } | null>(null)
+  const [confirmDropPub, setConfirmDropPub] = useState<{ subName: string; pubName: string; database?: string } | null>(null)
   const [editWorkers, setEditWorkers] = useState<{ subName: string; value: string } | null>(null)
   const [workersLoading, setWorkersLoading] = useState(false)
   const [vacuumTarget, setVacuumTarget] = useState<{ subName: string; destHost: string; tables: string[] } | null>(null)
@@ -389,10 +389,10 @@ export function StatusPage({ initialSnapshot }: Props) {
     }
   }
 
-  async function handleDropSubscription(subName: string) {
+  async function handleDropSubscription(subName: string, database?: string) {
     setActionLoading(true); setActionError('')
     try {
-      await replicationApi.dropSubscription(subName)
+      await replicationApi.dropSubscription(subName, database)
       refetchProgress(); refetchSlots(); refetchSubs(); refetchCopy()
     } catch (e: any) {
       setActionError(e.response?.data?.detail || e.message)
@@ -401,10 +401,10 @@ export function StatusPage({ initialSnapshot }: Props) {
     }
   }
 
-  async function handleDropPublication(pubName: string) {
+  async function handleDropPublication(pubName: string, database?: string) {
     setActionLoading(true); setActionError('')
     try {
-      await replicationApi.dropPublication(pubName)
+      await replicationApi.dropPublication(pubName, database)
       refetchProgress(); refetchSlots(); refetchSubs(); refetchCopy()
     } catch (e: any) {
       setActionError(e.response?.data?.detail || e.message)
@@ -1119,19 +1119,19 @@ export function StatusPage({ initialSnapshot }: Props) {
                           <Database size={10} /> Truncate
                         </button>
                         <button
-                          onClick={() => setConfirmDropSub(sub.subname)}
-                          disabled={actionLoading}
-                          className="text-xs text-red-500/70 hover:text-red-400 border border-red-900/60 hover:border-red-800 px-2 py-1 rounded disabled:opacity-30"
-                          title="DROP SUBSCRIPTION on destination"
+                          onClick={() => setConfirmDropSub({ subName: sub.subname, database: getSubDatabase(sub.subname) ?? sub.database ?? undefined })}
+                          disabled={actionLoading || sub.subenabled}
+                          className="text-xs text-red-500/70 hover:text-red-400 border border-red-900/60 hover:border-red-800 px-2 py-1 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                          title={sub.subenabled ? 'Stop or pause replication first before dropping' : 'DROP SUBSCRIPTION on destination'}
                         >
                           Drop sub
                         </button>
                         {sub.subpublications?.length > 0 && (
                           <button
-                            onClick={() => setConfirmDropPub({ subName: sub.subname, pubName: sub.subpublications[0] })}
-                            disabled={actionLoading}
-                            className="text-xs text-red-500/70 hover:text-red-400 border border-red-900/60 hover:border-red-800 px-2 py-1 rounded disabled:opacity-30"
-                            title="DROP PUBLICATION on source"
+                            onClick={() => setConfirmDropPub({ subName: sub.subname, pubName: sub.subpublications[0], database: getSubDatabase(sub.subname) ?? sub.database ?? undefined })}
+                            disabled={actionLoading || sub.subenabled}
+                            className="text-xs text-red-500/70 hover:text-red-400 border border-red-900/60 hover:border-red-800 px-2 py-1 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                            title={sub.subenabled ? 'Stop or pause replication first before dropping publication' : 'DROP PUBLICATION on source'}
                           >
                             Drop pub
                           </button>
@@ -1287,9 +1287,9 @@ export function StatusPage({ initialSnapshot }: Props) {
       {confirmDropSub && (
         <ConfirmModal
           title="Drop Subscription"
-          message={`Drop subscription "${confirmDropSub}" from destination? The slot will also be removed. Replication will stop.`}
+          message={`Drop subscription "${confirmDropSub.subName}"${confirmDropSub.database ? ` (database: ${confirmDropSub.database})` : ''} from destination? The slot will also be removed. Replication will stop.`}
           confirmLabel="Drop Subscription"
-          onConfirm={() => handleDropSubscription(confirmDropSub)}
+          onConfirm={() => handleDropSubscription(confirmDropSub.subName, confirmDropSub.database)}
           onCancel={() => setConfirmDropSub(null)}
         />
       )}
@@ -1298,7 +1298,7 @@ export function StatusPage({ initialSnapshot }: Props) {
           title="Drop Publication"
           message={`Drop publication "${confirmDropPub.pubName}" from source? This will stop replication for all subscribers of this publication.`}
           confirmLabel="Drop Publication"
-          onConfirm={() => handleDropPublication(confirmDropPub.pubName)}
+          onConfirm={() => handleDropPublication(confirmDropPub.pubName, confirmDropPub.database)}
           onCancel={() => setConfirmDropPub(null)}
         />
       )}

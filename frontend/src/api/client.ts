@@ -56,6 +56,7 @@ export interface SubscriptionInfo {
   subenabled: boolean
   subpublications: string[]
   subslotname: string | null
+  database: string | null
 }
 
 export interface WorkerStat {
