@@ -377,7 +377,7 @@ async def create_or_update_subscription(config: SubscriptionConfig):
                     """
                     SELECT slot_name, plugin, slot_type, active
                     FROM pg_replication_slots
-                    WHERE slot_name = $1 AND database = current_database()
+                    WHERE slot_name = $1
                     """,
                     config.slot_name,
                 )
