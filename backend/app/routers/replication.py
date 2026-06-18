@@ -183,17 +183,16 @@ async def list_unused_publications():
     import asyncpg as _asyncpg
 
     # Collect used publication names from dest.
-    # pg_subscription is a SHARED catalog — query it once from any database.
+    # pg_subscription requires superuser on Cloud SQL — fall back to pg_stat_subscription.
     dest_conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
     try:
         dest_sub_rows = await dest_conn.fetch("SELECT subpublications FROM pg_subscription")
+        used_pubs: set[str] = set()
+        for row in dest_sub_rows:
+            for p in (row["subpublications"] or []):
+                used_pubs.add(p)
     finally:
         await dest_conn.close()
-
-    used_pubs: set[str] = set()
-    for row in dest_sub_rows:
-        for p in (row["subpublications"] or []):
-            used_pubs.add(p)
 
     # Get list of all user databases on source
     src_conn = await _asyncpg.connect(state.source_dsn, timeout=15)
@@ -568,19 +567,13 @@ async def list_subscriptions():
         max_sync_workers = await conn.fetchval(
             "SELECT current_setting('max_sync_workers_per_subscription')::int"
         )
-        # subconninfo may be NULL on Cloud SQL — we fall back to slot lookup below
-        try:
-            rows = await conn.fetch("""
-                SELECT subname, subenabled, subpublications, subslotname,
-                       subconninfo
-                FROM pg_subscription
-            """)
-        except Exception:
-            rows = await conn.fetch("""
-                SELECT subname, subenabled, subpublications, subslotname,
-                       NULL::text AS subconninfo
-                FROM pg_subscription
-            """)
+        # subconninfo is blocked on Cloud SQL — read only the safe columns.
+        # Database is derived from pg_replication_slots on source (slot fallback below).
+        rows = await conn.fetch("""
+            SELECT subname, subenabled, subpublications, subslotname,
+                   NULL::text AS subconninfo
+            FROM pg_subscription
+        """)
     finally:
         await conn.close()
 
