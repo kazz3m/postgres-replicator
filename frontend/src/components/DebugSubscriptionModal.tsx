@@ -337,7 +337,7 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                   <Section title="Skip transaction (LSN)">
                     <p className="text-xs text-gray-500 mb-2">
                       Use when apply worker is stuck on an error (e.g. "could not map filenode to relation OID", duplicate key, missing row).
-                      Skips one transaction at the given LSN. The recommended LSN to skip is <strong className="text-gray-300">Sent LSN</strong> from pg_stat_replication above — that is the transaction currently failing.
+                      Skips one transaction at the given LSN. The recommended LSN to skip is <strong className="text-gray-300">Received LSN</strong> from the apply worker above — that is the LSN the destination has received and is currently failing to apply.
                     </p>
                     {skipLsnResult && (
                       <div className={clsx('mb-2 flex items-center gap-1.5 text-xs p-2 rounded border',
@@ -349,7 +349,11 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                     )}
                     <button
                       onClick={() => {
-                        const suggested = statRepl?.sent_lsn ? String(statRepl.sent_lsn) : ''
+                        const suggested = applyWorker?.received_lsn
+                          ? String(applyWorker.received_lsn)
+                          : applyWorker?.latest_end_lsn
+                          ? String(applyWorker.latest_end_lsn)
+                          : ''
                         setSkipLsnValue(suggested)
                         setSkipLsnModal(true)
                         setSkipLsnResult(null)
@@ -357,7 +361,10 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                       className="flex items-center gap-1.5 text-xs bg-orange-900/30 hover:bg-orange-800/50 border border-orange-700/60 text-orange-300 px-3 py-1.5 rounded transition-colors"
                     >
                       <SkipForward size={11} />
-                      Skip LSN{statRepl?.sent_lsn ? ` (pre-fill: ${statRepl.sent_lsn})` : '…'}
+                      {(() => {
+                        const lsn = applyWorker?.received_lsn ?? applyWorker?.latest_end_lsn
+                        return <>Skip LSN{lsn ? ` (pre-fill: ${lsn})` : '…'}</>
+                      })()}
                     </button>
                   </Section>
 
@@ -933,11 +940,16 @@ export function DebugSubscriptionModal({ subName, database, onClose }: Props) {
                 className="w-full bg-gray-800 border border-gray-600 focus:border-orange-500 rounded px-3 py-2 text-sm font-mono text-white outline-none"
                 autoFocus
               />
-              {statRepl?.sent_lsn != null && (
-                <p className="text-xs text-gray-500 mt-1">
-                  Suggested: <button className="text-orange-400 hover:text-orange-300 underline font-mono" onClick={() => setSkipLsnValue(String(statRepl!.sent_lsn))}>{String(statRepl.sent_lsn)}</button> (Sent LSN — transaction currently failing)
-                </p>
-              )}
+              {(() => {
+                const lsn = applyWorker?.received_lsn ?? applyWorker?.latest_end_lsn
+                if (!lsn || lsn === '—') return null
+                return (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Suggested: <button className="text-orange-400 hover:text-orange-300 underline font-mono" onClick={() => setSkipLsnValue(String(lsn))}>{String(lsn)}</button>
+                    {' '}(Received LSN — last LSN the destination apply worker received and is failing to commit)
+                  </p>
+                )
+              })()}
             </div>
 
             {skipLsnResult && !skipLsnResult.ok && (
