@@ -1551,6 +1551,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                         return (
                           <div className="text-xs text-red-500/80 mt-0.5 font-mono">
                             → will TRUNCATE on <span className="text-red-400">{hint}</span>
+                            <span className="text-red-500/60 font-sans"> (only tables listed in this publication)</span>
                           </div>
                         )
                       } catch { return null }
