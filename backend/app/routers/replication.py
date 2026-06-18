@@ -182,32 +182,18 @@ async def list_unused_publications():
     _require_connection()
     import asyncpg as _asyncpg
 
-    # Collect used publication names from ALL dest databases.
-    # pg_subscription is NOT a global catalog — it is per-database, so we must
-    # connect to each database individually.
-    dest_default_conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
+    # Collect used publication names from dest.
+    # pg_subscription is a SHARED catalog — query it once from any database.
+    dest_conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
     try:
-        dest_db_rows = await dest_default_conn.fetch(
-            "SELECT datname FROM pg_database WHERE datistemplate = false AND datallowconn = true ORDER BY datname"
-        )
-        dest_databases = [r["datname"] for r in dest_db_rows]
+        dest_sub_rows = await dest_conn.fetch("SELECT subpublications FROM pg_subscription")
     finally:
-        await dest_default_conn.close()
+        await dest_conn.close()
 
     used_pubs: set[str] = set()
-    for dest_db in dest_databases:
-        dest_db_conn = None
-        try:
-            dest_db_conn = await _asyncpg.connect(dsn_for_database(state.dest_dsn, dest_db), timeout=10)
-            rows = await dest_db_conn.fetch("SELECT subpublications FROM pg_subscription")
-            for row in rows:
-                for p in (row["subpublications"] or []):
-                    used_pubs.add(p)
-        except Exception:
-            pass
-        finally:
-            if dest_db_conn:
-                await dest_db_conn.close()
+    for row in dest_sub_rows:
+        for p in (row["subpublications"] or []):
+            used_pubs.add(p)
 
     # Get list of all user databases on source
     src_conn = await _asyncpg.connect(state.source_dsn, timeout=15)
@@ -568,43 +554,72 @@ async def drop_subscription(
 @router.get("/subscriptions")
 async def list_subscriptions():
     """
-    List all subscriptions across ALL destination databases.
-    Each row includes 'database' so the UI can route operations to the correct DB.
+    List all subscriptions with their source database derived from subconninfo.
+    pg_subscription is a shared catalog — query it once, extract dbname from the
+    connection string stored in subconninfo.
     """
     _require_connection()
     import asyncpg as _asyncpg
+    import re as _re
 
-    default_conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
+    conn = await _asyncpg.connect(state.dest_dsn, timeout=15)
     try:
-        max_sync_workers = await default_conn.fetchval(
+        max_sync_workers = await conn.fetchval(
             "SELECT current_setting('max_sync_workers_per_subscription')::int"
         )
-        db_rows = await default_conn.fetch(
-            "SELECT datname FROM pg_database WHERE datistemplate = false AND datallowconn = true ORDER BY datname"
-        )
-        dest_databases = [r["datname"] for r in db_rows]
-    finally:
-        await default_conn.close()
-
-    result = []
-    for db_name in dest_databases:
-        db_conn = None
+        # subconninfo may be NULL on Cloud SQL — we fall back to slot lookup below
         try:
-            db_conn = await _asyncpg.connect(dsn_for_database(state.dest_dsn, db_name), timeout=10)
-            rows = await db_conn.fetch("""
+            rows = await conn.fetch("""
                 SELECT subname, subenabled, subpublications, subslotname,
-                       current_database() AS database
+                       subconninfo
                 FROM pg_subscription
             """)
-            for r in rows:
-                entry = dict(r)
-                entry["max_sync_workers"] = max_sync_workers
-                result.append(entry)
         except Exception:
-            pass
+            rows = await conn.fetch("""
+                SELECT subname, subenabled, subpublications, subslotname,
+                       NULL::text AS subconninfo
+                FROM pg_subscription
+            """)
+    finally:
+        await conn.close()
+
+    def _extract_dbname(conninfo: str | None) -> str | None:
+        """Extract dbname= value from a libpq conninfo string."""
+        if not conninfo:
+            return None
+        m = _re.search(r'\bdbname=(\S+)', conninfo)
+        if m:
+            return m.group(1)
+        m = _re.search(r'^postgres(?:ql)?://[^/]+/([^?]+)', conninfo)
+        if m:
+            return m.group(1) or None
+        return None
+
+    # Build slot → source database map as fallback for Cloud SQL where subconninfo is NULL
+    slot_to_db: dict[str, str] = {}
+    try:
+        src_conn = await _asyncpg.connect(state.source_dsn, timeout=10)
+        try:
+            slot_rows = await src_conn.fetch(
+                "SELECT slot_name, database FROM pg_replication_slots WHERE slot_type = 'logical'"
+            )
+            for sr in slot_rows:
+                slot_to_db[sr["slot_name"]] = sr["database"]
         finally:
-            if db_conn:
-                await db_conn.close()
+            await src_conn.close()
+    except Exception:
+        pass
+
+    result = []
+    for r in rows:
+        entry = dict(r)
+        db = _extract_dbname(r["subconninfo"])
+        if not db and r["subslotname"]:
+            db = slot_to_db.get(r["subslotname"])
+        entry["database"] = db
+        entry.pop("subconninfo", None)
+        entry["max_sync_workers"] = max_sync_workers
+        result.append(entry)
 
     return result
 
@@ -633,12 +648,15 @@ async def list_slots(database: str | None = None):
     src_dsn = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
     conn = await _asyncpg.connect(src_dsn, timeout=10)
     try:
-        rows = await conn.fetch("""
+        # pg_replication_slots is a cluster-wide view visible from any database.
+        # Filter by database only when a specific database was requested.
+        db_filter = "WHERE database = current_database()" if database else ""
+        rows = await conn.fetch(f"""
             SELECT slot_name, plugin, slot_type, active,
                    restart_lsn::text, confirmed_flush_lsn::text,
                    COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn), 0) AS lag_bytes
             FROM pg_replication_slots
-            WHERE database = current_database()
+            {db_filter}
             ORDER BY slot_name
         """)
     finally:

@@ -1112,8 +1112,8 @@ export function StatusPage({ initialSnapshot }: Props) {
                         </button>
                         <button
                           onClick={() => handleVacuumOpen(sub.subname)}
-                          disabled={actionLoading || !isSlotDropped(sub)}
-                          title={isSlotDropped(sub) ? 'TRUNCATE all destination tables then VACUUM FULL — removes all data and reclaims disk space' : 'Available only after slot is dropped (replication stopped)'}
+                          disabled={actionLoading || sub.subenabled || !isSlotDropped(sub)}
+                          title={sub.subenabled ? 'Stop or pause replication first before truncating' : !isSlotDropped(sub) ? 'Available only after slot is dropped (replication stopped)' : 'TRUNCATE all destination tables then VACUUM FULL — removes all data and reclaims disk space'}
                           className="text-xs text-teal-400/70 hover:text-teal-300 border border-teal-900/50 hover:border-teal-700 px-2 py-1 rounded disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1"
                         >
                           <Database size={10} /> Truncate
