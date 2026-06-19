@@ -1977,15 +1977,14 @@ async def analyze_tables(body: dict):
 # ── Reset ─────────────────────────────────────────────────────────────────────
 
 @router.post("/reset/{subscription_name}")
-async def reset_replication(subscription_name: str):
-    """Drop subscription + slot, then recreate from scratch (destructive)."""
+async def reset_replication(subscription_name: str, database: str | None = None):
+    """Drop subscription + slot, TRUNCATE dest tables, then recreate from scratch (destructive)."""
     _require_connection()
+    import asyncpg as _asyncpg
     dest_pool = await get_dest_pool(state.dest_dsn)
     src_pool = await get_source_pool(state.source_dsn)
 
     async with dest_pool.acquire() as conn:
-        # Avoid reading subconninfo — requires superuser on Cloud SQL / restricted envs.
-        # Use state.source_repl_dsn (or source_dsn) as the connection string on recreate.
         row = await conn.fetchrow(
             "SELECT subslotname, subpublications FROM pg_subscription WHERE subname = $1",
             subscription_name
@@ -2012,6 +2011,36 @@ async def reset_replication(subscription_name: str):
             except Exception:
                 pass
 
+    # TRUNCATE destination tables listed in the publication(s)
+    src_dsn_db = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    pub_tables: list[dict] = []
+    try:
+        src_conn = await _asyncpg.connect(src_dsn_db, timeout=15)
+        try:
+            for pub_name in publications:
+                rows = await src_conn.fetch(
+                    "SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = $1",
+                    pub_name
+                )
+                pub_tables.extend({"schemaname": r["schemaname"], "tablename": r["tablename"]} for r in rows)
+        finally:
+            await src_conn.close()
+    except Exception:
+        pass  # if we can't reach source, skip truncate and proceed
+
+    if pub_tables:
+        try:
+            trunc_conn = await _asyncpg.connect(state.dest_dsn, timeout=30)
+            try:
+                tables_sql = ", ".join(
+                    f'"{r["schemaname"]}"."{r["tablename"]}"' for r in pub_tables
+                )
+                await trunc_conn.execute(f"TRUNCATE {tables_sql}")
+            finally:
+                await trunc_conn.close()
+        except Exception as e:
+            raise HTTPException(500, f"TRUNCATE destination tables failed: {e}")
+
     conn_dsn = state.source_repl_dsn if state.source_repl_dsn else state.source_dsn
     if not re.match(r'^postgres(ql)?://', conn_dsn):
         raise HTTPException(400, "Replication DSN is missing or invalid. Reconnect and try again.")
@@ -2019,7 +2048,6 @@ async def reset_replication(subscription_name: str):
         raise HTTPException(500, "Connection DSN contains illegal sequence, cannot recreate subscription.")
 
     pub_list = ", ".join(f'"{p}"' for p in publications)
-    import asyncpg as _asyncpg
     dedicated_conn = None
     try:
         dedicated_conn = await _asyncpg.connect(state.dest_dsn, timeout=30)
@@ -2042,7 +2070,7 @@ async def reset_replication(subscription_name: str):
             except Exception:
                 pass
 
-    return {"status": "reset", "subscription_name": subscription_name}
+    return {"status": "reset", "subscription_name": subscription_name, "tables_truncated": len(pub_tables)}
 
 
 # ── Pause / Resume ────────────────────────────────────────────────────────────

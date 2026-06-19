@@ -320,7 +320,7 @@ export function StatusPage({ initialSnapshot }: Props) {
   async function handleReset(subName: string) {
     setActionLoading(true); setActionError('')
     try {
-      await replicationApi.reset(subName)
+      await replicationApi.reset(subName, getSubDatabase(subName))
       refetchProgress(); refetchSlots(); refetchSubs()
     } catch (e: any) {
       setActionError(e.response?.data?.detail || e.message)
@@ -1350,6 +1350,12 @@ export function StatusPage({ initialSnapshot }: Props) {
               )}
               <div className="text-gray-300">
                 <span className="text-red-400/70">{confirmReset.slotName ? '4' : '3'}.</span>{' '}
+                <span className="text-blue-300">TRUNCATE</span>{' '}
+                <span className="text-gray-400">{'<tables in publication>'}</span><span className="text-gray-600">;</span>
+                <span className="ml-2 text-gray-600 font-sans">— on destination</span>
+              </div>
+              <div className="text-gray-300">
+                <span className="text-red-400/70">{confirmReset.slotName ? '5' : '4'}.</span>{' '}
                 <span className="text-blue-300">CREATE SUBSCRIPTION</span>{' '}
                 <span className="text-gray-200">"{confirmReset.subName}"</span>{' '}
                 <span className="text-gray-400">... WITH (</span><span className="text-yellow-300">copy_data = true</span><span className="text-gray-400">)</span><span className="text-gray-600">;</span>

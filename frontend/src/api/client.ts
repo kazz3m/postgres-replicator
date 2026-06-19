@@ -341,7 +341,7 @@ export const replicationApi = {
       { slot_names: slotNames, rel_oids: relOids, truncate_tables: truncateTables, database }
     ),
   progress: () => api.get<TableReplicationProgress[]>('/replication/progress'),
-  reset: (subscriptionName: string) => api.post(`/replication/reset/${subscriptionName}`),
+  reset: (subscriptionName: string, database?: string) => api.post(`/replication/reset/${subscriptionName}`, null, { params: database ? { database } : undefined }),
   getInterval: () => api.get('/replication/stats/interval'),
   setInterval: (interval_seconds: number) => api.put('/replication/stats/interval', { interval_seconds }),
   workerStats: () => api.get<WorkerStat[]>('/replication/worker-stats'),
