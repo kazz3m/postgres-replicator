@@ -1352,7 +1352,15 @@ export function StatusPage({ initialSnapshot }: Props) {
                 <span className="text-red-400/70">{confirmReset.slotName ? '4' : '3'}.</span>{' '}
                 <span className="text-blue-300">TRUNCATE</span>{' '}
                 <span className="text-gray-400">{'<tables in publication>'}</span><span className="text-gray-600">;</span>
-                <span className="ml-2 text-gray-600 font-sans">— on destination</span>
+                {(() => {
+                  const dsn = connState?.dest_dsn
+                  if (!dsn) return <span className="ml-2 text-gray-600 font-sans">— on destination</span>
+                  try {
+                    const u = new URL(dsn)
+                    const hint = `${u.hostname}${u.port ? ':' + u.port : ''}${u.pathname}`
+                    return <span className="ml-2 font-sans text-red-400/80">— on <span className="text-red-300 font-mono">{hint}</span></span>
+                  } catch { return <span className="ml-2 text-gray-600 font-sans">— on destination</span> }
+                })()}
               </div>
               <div className="text-gray-300">
                 <span className="text-red-400/70">{confirmReset.slotName ? '5' : '4'}.</span>{' '}
