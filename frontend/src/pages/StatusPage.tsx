@@ -1270,15 +1270,15 @@ export function StatusPage({ initialSnapshot }: Props) {
             <p className="text-xs text-gray-400 mb-4">
               Subscription <span className="font-mono text-gray-200">"{confirmStop.subName}"</span> will be stopped. Existing data on destination is preserved.
             </p>
-            <div className="bg-gray-950 rounded border border-gray-800 px-3 py-3 mb-4 space-y-1.5 font-mono text-xs">
-              <div className="text-gray-300">
+            <div className="bg-gray-950 rounded border border-gray-800 px-3 py-3 mb-4 space-y-1.5 font-mono text-xs overflow-hidden">
+              <div className="text-gray-300 break-all">
                 <span className="text-orange-400/70">1.</span>{' '}
                 <span className="text-blue-300">ALTER SUBSCRIPTION</span>{' '}
                 <span className="text-gray-200">"{confirmStop.subName}"</span>{' '}
                 <span className="text-blue-300">DISABLE</span><span className="text-gray-600">;</span>
                 <span className="ml-2 text-gray-600 font-sans">— stops apply worker</span>
               </div>
-              <div className="text-gray-300">
+              <div className="text-gray-300 break-all">
                 <span className="text-orange-400/70">2.</span>{' '}
                 <span className="text-blue-300">ALTER SUBSCRIPTION</span>{' '}
                 <span className="text-gray-200">"{confirmStop.subName}"</span>{' '}
@@ -1286,7 +1286,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                 <span className="text-gray-400">(slot_name = </span><span className="text-yellow-300">NONE</span><span className="text-gray-400">)</span><span className="text-gray-600">;</span>
                 <span className="ml-2 text-gray-600 font-sans">— detaches slot</span>
               </div>
-              <div className="text-gray-300">
+              <div className="text-gray-300 break-all">
                 <span className="text-orange-400/70">3.</span>{' '}
                 <span className="text-blue-300">DROP SUBSCRIPTION</span>{' '}
                 <span className="text-gray-200">"{confirmStop.subName}"</span><span className="text-gray-600">;</span>
@@ -1325,20 +1325,20 @@ export function StatusPage({ initialSnapshot }: Props) {
             <p className="text-xs text-gray-400 mb-4">
               Subscription <span className="font-mono text-gray-200">"{confirmReset.subName}"</span> will be dropped and recreated from scratch. <span className="text-red-400">All data will be re-synced — this may take a long time.</span>
             </p>
-            <div className="bg-gray-950 rounded border border-gray-800 px-3 py-3 mb-4 space-y-1.5 font-mono text-xs">
-              <div className="text-gray-300">
+            <div className="bg-gray-950 rounded border border-gray-800 px-3 py-3 mb-4 space-y-1.5 font-mono text-xs overflow-hidden">
+              <div className="text-gray-300 break-all">
                 <span className="text-red-400/70">1.</span>{' '}
                 <span className="text-blue-300">ALTER SUBSCRIPTION</span>{' '}
                 <span className="text-gray-200">"{confirmReset.subName}"</span>{' '}
                 <span className="text-blue-300">DISABLE</span><span className="text-gray-600">;</span>
               </div>
-              <div className="text-gray-300">
+              <div className="text-gray-300 break-all">
                 <span className="text-red-400/70">2.</span>{' '}
                 <span className="text-blue-300">DROP SUBSCRIPTION</span>{' '}
                 <span className="text-gray-200">"{confirmReset.subName}"</span><span className="text-gray-600">;</span>
               </div>
               {confirmReset.slotName && (
-                <div className="text-gray-300">
+                <div className="text-gray-300 break-all">
                   <span className="text-red-400/70">3.</span>{' '}
                   <span className="text-blue-300">SELECT</span>{' '}
                   <span className="text-yellow-300">pg_drop_replication_slot</span>
