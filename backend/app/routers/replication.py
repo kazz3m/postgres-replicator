@@ -965,7 +965,8 @@ async def copy_progress():
             COALESCE(cp.tuples_processed, 0)             AS tuples_done,
             COALESCE(NULLIF(c.reltuples::bigint, -1), 0) AS tuples_total,
             COALESCE(cp.bytes_processed, 0)              AS bytes_processed,
-            COALESCE(pg_relation_size(c.oid), 0)         AS table_size_bytes,
+            (c.relpages::bigint + COALESCE(ct.relpages, 0)::bigint)
+                * current_setting('block_size')::bigint   AS table_size_bytes,
             GREATEST(psu.last_analyze, psu.last_autoanalyze) AS last_analyze,
             (cp.pid IS NOT NULL)                         AS copy_active,
             sw.pid                                       AS sync_worker_pid,
@@ -978,6 +979,7 @@ async def copy_progress():
         JOIN pg_subscription s   ON s.oid  = sr.srsubid
         JOIN pg_class       c    ON c.oid  = sr.srrelid
         JOIN pg_namespace   n    ON n.oid  = c.relnamespace
+        LEFT JOIN pg_class               ct  ON ct.oid   = c.reltoastrelid
         LEFT JOIN pg_stat_progress_copy cp  ON cp.relid  = c.oid
         LEFT JOIN pg_stat_user_tables   psu ON psu.relid = c.oid
         LEFT JOIN pg_stat_subscription  sw  ON sw.subid  = s.oid
@@ -1878,7 +1880,8 @@ async def source_table_sizes(database: str):
         # but is always available without waiting.
         rows = await conn.fetch("""
             SELECT n.nspname || '.' || c.relname AS qualified,
-                   c.relpages::bigint * current_setting('block_size')::bigint AS size_bytes,
+                   (c.relpages::bigint + COALESCE(ct.relpages, 0)::bigint)
+                       * current_setting('block_size')::bigint AS size_bytes,
                    CASE WHEN c.reltuples > 0 THEN c.reltuples::bigint ELSE NULL END AS row_estimate,
                    CASE c.relreplident
                        WHEN 'd' THEN 'default'
@@ -1893,6 +1896,7 @@ async def source_table_sizes(database: str):
                    ) AS has_pk
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_class ct ON ct.oid = c.reltoastrelid
             WHERE c.relkind IN ('r', 'p')
               AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
         """)
