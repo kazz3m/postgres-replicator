@@ -225,7 +225,7 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
                     {srcTable ? (
                       <>
                         <KV label="OID" value={String(srcTable.oid)} />
-                        <KV label="Size (total, incl. TOAST)" value={fmtBytes(srcTable.size_bytes as number)} />
+                        <KV label="Size (heap + TOAST)" value={fmtBytes(srcTable.size_bytes as number)} />
                         <KV label="Row estimate" value={(srcTable.reltuples as number)?.toLocaleString()} />
                         <KV label="relkind" value={String(srcTable.relkind)} />
                         <KV label="Is partition" value={String(srcTable.relispartition)} />
@@ -274,7 +274,7 @@ export function DebugTableModal({ schema, table, database, subName, onClose }: P
                     {destTable ? (
                       <>
                         <KV label="OID" value={String(destTable.oid)} />
-                        <KV label="Size (total, incl. TOAST)" value={fmtBytes(destTable.size_bytes as number)} />
+                        <KV label="Size (heap + TOAST)" value={fmtBytes(destTable.size_bytes as number)} />
                         <KV label="Row estimate" value={(destTable.reltuples as number)?.toLocaleString()} />
                         <KV label="relkind" value={String(destTable.relkind)} />
                       </>
