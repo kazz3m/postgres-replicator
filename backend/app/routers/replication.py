@@ -965,8 +965,12 @@ async def copy_progress():
             COALESCE(cp.tuples_processed, 0)             AS tuples_done,
             COALESCE(NULLIF(c.reltuples::bigint, -1), 0) AS tuples_total,
             COALESCE(cp.bytes_processed, 0)              AS bytes_processed,
-            (c.relpages::bigint + COALESCE(ct.relpages, 0)::bigint)
-                * current_setting('block_size')::bigint   AS table_size_bytes,
+            CASE
+                WHEN cp.pid IS NOT NULL AND cp.bytes_processed > 0
+                THEN cp.bytes_processed
+                ELSE (c.relpages::bigint + COALESCE(ct.relpages, 0)::bigint)
+                         * current_setting('block_size')::bigint
+            END                                          AS table_size_bytes,
             GREATEST(psu.last_analyze, psu.last_autoanalyze) AS last_analyze,
             (cp.pid IS NOT NULL)                         AS copy_active,
             sw.pid                                       AS sync_worker_pid,
