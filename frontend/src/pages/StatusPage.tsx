@@ -95,7 +95,7 @@ export function StatusPage({ initialSnapshot }: Props) {
   const [interval, setIntervalSecs] = useState(10)
   const [editInterval, setEditInterval] = useState(false)
   const [intervalInput, setIntervalInput] = useState('10')
-  const [confirmReset, setConfirmReset] = useState<{ subName: string; slotName?: string } | null>(null)
+  const [confirmReset, setConfirmReset] = useState<{ subName: string; slotName?: string; database?: string } | null>(null)
   const [confirmStop, setConfirmStop] = useState<{ subName: string; slotName?: string } | null>(null)
   const [confirmDropSlot, setConfirmDropSlot] = useState<string | null>(null)
   const [confirmDropSub, setConfirmDropSub] = useState<{ subName: string; database?: string } | null>(null)
@@ -1108,7 +1108,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                           <Square size={10} /> Stop
                         </button>
                         <button
-                          onClick={() => setConfirmReset({ subName: sub.subname, slotName: sub.subslotname ?? undefined })}
+                          onClick={() => setConfirmReset({ subName: sub.subname, slotName: sub.subslotname ?? undefined, database: getSubDatabase(sub.subname) })}
                           disabled={actionLoading}
                           className="text-xs text-red-400 hover:text-red-300 border border-red-800 px-2 py-1 rounded"
                         >
@@ -1357,7 +1357,8 @@ export function StatusPage({ initialSnapshot }: Props) {
                   if (!dsn) return <span className="ml-2 text-gray-600 font-sans">— on destination</span>
                   try {
                     const u = new URL(dsn)
-                    const hint = `${u.hostname}${u.port ? ':' + u.port : ''}${u.pathname}`
+                    const db = confirmReset.database ?? u.pathname.replace(/^\//, '')
+                    const hint = `${u.hostname}${u.port ? ':' + u.port : ''}/${db}`
                     return <span className="ml-2 font-sans text-red-400/80">— on <span className="text-red-300 font-mono">{hint}</span></span>
                   } catch { return <span className="ml-2 text-gray-600 font-sans">— on destination</span> }
                 })()}
