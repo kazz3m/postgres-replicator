@@ -130,24 +130,32 @@ export function StatusPage({ initialSnapshot }: Props) {
   const [statisticsTarget, setStatisticsTarget] = useState<number | ''>('')
   const analyzeSubRef = useRef<string | undefined>(undefined)
   // Table sort — shared across all subscriptions (same column/dir preference)
-  type SortCol = 'table' | 'status'
+  type SortCol = 'table' | 'status' | 'dest_size' | 'source_size' | 'row_est'
   const [sortCol, setSortCol] = useState<SortCol>('table')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
   function handleSort(col: SortCol) {
     if (col === sortCol) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
-    else { setSortCol(col); setSortDir('asc') }
+    else { setSortCol(col); setSortDir('desc') }
   }
   const STATE_ORDER: Record<string, number> = {
     locked: 0, error: 1, 'catching up': 2, copying: 3, 'slot pending': 4, waiting: 5, initializing: 6, synced: 7, ready: 8, unknown: 9,
   }
-  function sortTables(tables: TableCopyProgress[]) {
+  function sortTables(tables: TableCopyProgress[], database: string) {
     return [...tables].sort((a, b) => {
       let cmp = 0
       if (sortCol === 'table') {
         cmp = `${a.schema_name}.${a.table_name}`.localeCompare(`${b.schema_name}.${b.table_name}`)
-      } else {
+      } else if (sortCol === 'status') {
         cmp = (STATE_ORDER[a.status] ?? 9) - (STATE_ORDER[b.status] ?? 9)
         if (cmp === 0) cmp = `${a.schema_name}.${a.table_name}`.localeCompare(`${b.schema_name}.${b.table_name}`)
+      } else if (sortCol === 'dest_size') {
+        cmp = (a.table_size_bytes ?? 0) - (b.table_size_bytes ?? 0)
+      } else if (sortCol === 'source_size') {
+        cmp = (a.source_size_bytes ?? 0) - (b.source_size_bytes ?? 0)
+      } else if (sortCol === 'row_est') {
+        const aEst = getSourceRowEstimate(database, a.schema_name, a.table_name) ?? a.row_estimate ?? 0
+        const bEst = getSourceRowEstimate(database, b.schema_name, b.table_name) ?? b.row_estimate ?? 0
+        cmp = aEst - bEst
       }
       return sortDir === 'asc' ? cmp : -cmp
     })
@@ -888,9 +896,15 @@ export function StatusPage({ initialSnapshot }: Props) {
                           {sortCol === col ? (sortDir === 'asc' ? ' ↑' : ' ↓') : <span className="text-gray-700"> ↕</span>}
                         </th>
                       ))}
-                      <th className="px-4 py-1.5 text-right">Dest size</th>
-                      <th className="px-4 py-1.5 text-right">Source size</th>
-                      <th className="px-4 py-1.5 text-right">Row est.</th>
+                      {(['dest_size', 'source_size', 'row_est'] as const).map(col => (
+                        <th key={col}
+                          className="px-4 py-1.5 text-right cursor-pointer select-none hover:text-gray-300 whitespace-nowrap"
+                          onClick={() => handleSort(col)}
+                        >
+                          {col === 'dest_size' ? 'Dest size' : col === 'source_size' ? 'Source size' : 'Row est.'}
+                          {sortCol === col ? (sortDir === 'asc' ? ' ↑' : ' ↓') : <span className="text-gray-700"> ↕</span>}
+                        </th>
+                      ))}
                       <th className="px-4 py-1.5 text-right">Rows copied</th>
                       <th className="px-4 py-1.5 text-left w-40">Progress</th>
                       <th className="px-4 py-1.5 text-left">Analyzed</th>
@@ -898,7 +912,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortTables(sub.tables).map((row: TableCopyProgress) => {
+                    {sortTables(sub.tables, sub.database ?? '').map((row: TableCopyProgress) => {
                       const isCopying = row.status === 'copying'
                       const isDone = ['f','s','r'].includes(row.sub_state)
                       const srcSize = getSourceSize(sub.database, row.schema_name, row.table_name)
@@ -1363,11 +1377,16 @@ export function StatusPage({ initialSnapshot }: Props) {
                   } catch { return <span className="ml-2 text-gray-600 font-sans">— on destination</span> }
                 })()}
               </div>
-              <div className="text-gray-300">
+              <div className="text-gray-300 break-all">
                 <span className="text-red-400/70">{confirmReset.slotName ? '5' : '4'}.</span>{' '}
                 <span className="text-blue-300">CREATE SUBSCRIPTION</span>{' '}
                 <span className="text-gray-200">"{confirmReset.subName}"</span>{' '}
-                <span className="text-gray-400">... WITH (</span><span className="text-yellow-300">copy_data = true</span><span className="text-gray-400">)</span><span className="text-gray-600">;</span>
+                <span className="text-gray-400">... WITH (</span>
+                <span className="text-yellow-300">copy_data = true</span>
+                {(connState?.pg_major ?? 0) >= 15 && (connState?.dest_pg_major ?? 0) >= 15 && (
+                  <><span className="text-gray-400">, </span><span className="text-yellow-300">streaming = parallel</span></>
+                )}
+                <span className="text-gray-400">)</span><span className="text-gray-600">;</span>
                 <span className="ml-2 text-gray-600 font-sans">— full resync</span>
               </div>
             </div>

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from typing import Optional, List
+import asyncio
 import asyncpg
 from ..models.schemas import ConnectionConfig, ConnectionStatus, PGVersion
 from ..db import get_source_pool, get_dest_pool, reset_pools
@@ -294,21 +295,28 @@ async def connect(config: ConnectionConfig):
 async def connection_status():
     connected = bool(state.source_dsn and state.dest_dsn)
     pg_major: Optional[int] = None
+    dest_pg_major: Optional[int] = None
 
     if connected:
-        # Re-derive PG version from the stored DSN so the frontend can restore
+        # Re-derive PG version from the stored DSNs so the frontend can restore
         # pgMajor after a backend restart without requiring a full re-connect.
-        try:
-            conn = await asyncpg.connect(state.source_dsn, timeout=5)
+        async def _get_major(dsn: str) -> Optional[int]:
             try:
-                version_num = await conn.fetchval(
-                    "SELECT current_setting('server_version_num')::int"
-                )
-                pg_major = version_num // 10000
-            finally:
-                await conn.close()
-        except Exception:
-            pass  # pg_major stays None; frontend will show 0 and let user reconnect
+                conn = await asyncpg.connect(dsn, timeout=5)
+                try:
+                    version_num = await conn.fetchval(
+                        "SELECT current_setting('server_version_num')::int"
+                    )
+                    return version_num // 10000
+                finally:
+                    await conn.close()
+            except Exception:
+                return None
+
+        pg_major, dest_pg_major = await asyncio.gather(
+            _get_major(state.source_dsn),
+            _get_major(state.dest_dsn),
+        )
 
     return {
         "source_dsn": mask_dsn(state.source_dsn) if state.source_dsn else None,
@@ -316,4 +324,5 @@ async def connection_status():
         "dest_dsn": mask_dsn(state.dest_dsn) if state.dest_dsn else None,
         "connected": connected,
         "pg_major": pg_major,
+        "dest_pg_major": dest_pg_major,
     }

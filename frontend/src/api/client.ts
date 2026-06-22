@@ -155,6 +155,7 @@ export interface ConnectionState {
   dest_dsn: string | null
   connected: boolean
   pg_major: number | null
+  dest_pg_major: number | null
 }
 
 export const connectionsApi = {

@@ -1,3 +1,4 @@
+import asyncio
 import re
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional
@@ -432,6 +433,20 @@ async def create_or_update_subscription(config: SubscriptionConfig):
             if exists:
                 await src_conn.execute("SELECT pg_drop_replication_slot($1)", slot_name)
 
+    async def _get_pg_major(dsn: str) -> int:
+        c = await _asyncpg.connect(dsn, timeout=10)
+        try:
+            v = await c.fetchval("SELECT current_setting('server_version_num')::int")
+            return v // 10000
+        finally:
+            await c.close()
+
+    src_major, dest_major = await asyncio.gather(
+        _get_pg_major(src_dsn_db),
+        _get_pg_major(dest_dsn_db),
+    )
+    use_streaming_parallel = src_major >= 15 and dest_major >= 15
+
     async def _do_create_subscription() -> None:
         dedicated_conn = None
         try:
@@ -441,12 +456,13 @@ async def create_or_update_subscription(config: SubscriptionConfig):
                 f", create_slot = false, slot_name = '{config.slot_name}'"
                 if config.slot_name else ""
             )
+            streaming_sql = ", streaming = parallel" if use_streaming_parallel else ""
             await dedicated_conn.execute("SET statement_timeout = '120s'")
             await dedicated_conn.execute(f"""
                 CREATE SUBSCRIPTION "{config.subscription_name}"
                 CONNECTION $conn_str${conn_dsn}$conn_str$
                 PUBLICATION "{config.publication_name}"
-                WITH (copy_data = {copy_data_sql}{slot_sql})
+                WITH (copy_data = {copy_data_sql}{slot_sql}{streaming_sql})
             """)
         finally:
             if dedicated_conn:
