@@ -139,8 +139,17 @@ async def get_publication_config(name: str, database: str | None = None):
                 name,
             )
         else:
+            # PG 14: filter out partition children via pg_class.relispartition
             tables = await src_conn.fetch(
-                "SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = $1 ORDER BY schemaname, tablename",
+                """
+                SELECT pt.schemaname, pt.tablename
+                FROM pg_publication_tables pt
+                JOIN pg_class c ON c.relname = pt.tablename
+                JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = pt.schemaname
+                WHERE pt.pubname = $1
+                  AND c.relispartition = false
+                ORDER BY pt.schemaname, pt.tablename
+                """,
                 name,
             )
 
@@ -2611,8 +2620,18 @@ async def drop_schema_from_publication(pub_name: str, schema: str, database: str
                 pub_name, schema,
             )
         else:
+            # PG 14: pg_publication_tables expands partition children — filter them out
+            # via pg_class.relispartition so we only DROP directly registered tables.
             rows = await conn.fetch(
-                "SELECT tablename FROM pg_publication_tables WHERE pubname = $1 AND schemaname = $2 ORDER BY tablename",
+                """
+                SELECT pt.tablename
+                FROM pg_publication_tables pt
+                JOIN pg_class c ON c.relname = pt.tablename
+                JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = pt.schemaname
+                WHERE pt.pubname = $1 AND pt.schemaname = $2
+                  AND c.relispartition = false
+                ORDER BY pt.tablename
+                """,
                 pub_name, schema,
             )
         tables = [r["tablename"] for r in rows]
