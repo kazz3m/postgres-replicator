@@ -368,6 +368,8 @@ export const replicationApi = {
     api.post(`/replication/publication/${pubName}/add-table`, { table, database }),
   dropTableFromPublication: (pubName: string, table: string, database?: string) =>
     api.delete(`/replication/publication/${pubName}/table?table=${encodeURIComponent(table)}${database ? `&database=${encodeURIComponent(database)}` : ''}`),
+  dropSchemaFromPublication: (pubName: string, schema: string, database?: string) =>
+    api.delete<{ tables_dropped: string[] }>(`/replication/publication/${pubName}/schema?schema=${encodeURIComponent(schema)}${database ? `&database=${encodeURIComponent(database)}` : ''}`),
   refreshPublicationSubscriptions: (pubName: string, database?: string) =>
     api.post(`/replication/publication/${pubName}/refresh-subscriptions${database ? `?database=${encodeURIComponent(database)}` : ''}`),
   listSequences: () => api.get<SequenceInfo[]>('/replication/sequences'),

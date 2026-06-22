@@ -2560,6 +2560,38 @@ async def drop_table_from_publication(pub_name: str, table: str, database: str |
     return {"status": "ok", "publication": pub_name, "table_dropped": table}
 
 
+@router.delete("/publication/{pub_name}/schema")
+async def drop_schema_from_publication(pub_name: str, schema: str, database: str | None = None):
+    """
+    ALTER PUBLICATION pub DROP TABLE for all tables in the given schema.
+    Returns list of dropped tables and any per-table errors.
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+    if not schema:
+        raise HTTPException(400, "schema is required")
+
+    src_dsn = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    conn = await _asyncpg.connect(src_dsn, timeout=15)
+    try:
+        exists = await conn.fetchval("SELECT 1 FROM pg_publication WHERE pubname = $1", pub_name)
+        if not exists:
+            raise HTTPException(404, f"Publication '{pub_name}' not found.")
+        rows = await conn.fetch(
+            "SELECT tablename FROM pg_publication_tables WHERE pubname = $1 AND schemaname = $2",
+            pub_name, schema,
+        )
+        tables = [r["tablename"] for r in rows]
+        if not tables:
+            raise HTTPException(404, f"No tables from schema '{schema}' in publication '{pub_name}'.")
+        tables_sql = ", ".join(f'"{schema}"."{t}"' for t in tables)
+        await conn.execute(f'ALTER PUBLICATION "{pub_name}" DROP TABLE {tables_sql}')
+    finally:
+        await conn.close()
+
+    return {"status": "ok", "publication": pub_name, "schema_dropped": schema, "tables_dropped": tables}
+
+
 @router.post("/publication/{pub_name}/refresh-subscriptions")
 async def refresh_publication_subscriptions(pub_name: str, database: str | None = None):
     """
