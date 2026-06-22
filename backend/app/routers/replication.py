@@ -1936,7 +1936,7 @@ async def source_table_sizes(database: str):
 @router.get("/dest-table-sizes")
 async def dest_table_sizes(database: str):
     """
-    Accurate heap sizes for all subscription tables in one dest database,
+    Accurate heap + TOAST sizes (no indexes) for all tables in one dest database,
     using pg_relation_size() (acquires AccessShareLock — call on demand only).
     Returns { "schema.table": bytes, ... }
     """
@@ -1947,7 +1947,8 @@ async def dest_table_sizes(database: str):
         conn = await _asyncpg.connect(dest_dsn, timeout=15)
         rows = await conn.fetch("""
             SELECT n.nspname || '.' || c.relname AS qualified,
-                   pg_relation_size(c.oid) AS size_bytes
+                   pg_relation_size(c.oid)
+                   + COALESCE(pg_relation_size(c.reltoastrelid), 0) AS size_bytes
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE c.relkind IN ('r', 'p')
