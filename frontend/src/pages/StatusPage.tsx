@@ -47,6 +47,13 @@ function fmtEta(seconds: number): string {
   return `${m}m`
 }
 
+function fmtCount(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return `${n}`
+}
+
 function lagColor(bytes: number): string {
   if (bytes > 1024 ** 3) return 'text-red-400'       // > 1 GB
   if (bytes > 100 * 1024 * 1024) return 'text-yellow-400'  // > 100 MB
@@ -227,7 +234,7 @@ export function StatusPage({ initialSnapshot }: Props) {
   // Key: "database/schema.table" → bytes
   // v2 = added replica_identity + has_pk; bump version to force refetch on format change
   const SOURCE_SIZES_CACHE_VERSION = 'v2'
-  const sourceSizesRef = useRef<Record<string, { size_bytes: number; row_estimate: number | null; replica_identity: string; has_pk: boolean }>>({})
+  const sourceSizesRef = useRef<Record<string, { size_bytes: number; row_estimate: number | null; replica_identity: string; has_pk: boolean; n_tup_ins: number; n_tup_upd: number; n_tup_del: number }>>({})
   const fetchedDatabasesRef = useRef<Set<string>>(new Set())
   const [sourceSizesVersion, setSourceSizesVersion] = useState(0)
 
@@ -312,6 +319,12 @@ export function StatusPage({ initialSnapshot }: Props) {
   function getAccurateDestSize(database: string | null, schema: string, table: string): number | null {
     if (!database) return null
     return destSizesRef.current[`${database}/${schema}.${table}`] ?? null
+  }
+
+  function getSourceTupStats(database: string | null, schema: string, table: string) {
+    const info = getSourceInfo(database, schema, table)
+    if (!info || info.n_tup_upd === undefined) return null
+    return { ins: info.n_tup_ins, upd: info.n_tup_upd, del: info.n_tup_del }
   }
 
   const { data: slots, refetch: refetchSlots } = useQuery({
@@ -939,7 +952,7 @@ export function StatusPage({ initialSnapshot }: Props) {
 
               {/* Table list — lazy */}
               {subExpanded && sub.tables.length > 0 && (
-                <tr><td colSpan={8} className="p-0">
+                <tr><td colSpan={9} className="p-0">
                 <table className="w-full text-xs border-t border-gray-800">
                   <thead>
                     <tr className="text-gray-500 border-b border-gray-700 bg-gray-950/40">
@@ -961,6 +974,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                           {sortCol === col ? (sortDir === 'asc' ? ' ↑' : ' ↓') : <span className="text-gray-700"> ↕</span>}
                         </th>
                       ))}
+                      <th className="px-4 py-1.5 text-right whitespace-nowrap" title="Cumulative inserts / updates / deletes since last stats reset on source (pg_stat_user_tables)">INS / UPD / DEL</th>
                       <th className="px-4 py-1.5 text-right">Rows copied</th>
                       <th className="px-4 py-1.5 text-left w-40">Progress</th>
                       <th className="px-4 py-1.5 text-left">Analyzed</th>
@@ -977,6 +991,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                       const riProblem = replicaInfo && (!replicaInfo.has_pk || replicaInfo.replica_identity === 'nothing')
                       const accurateDestSize = useAccurateSize ? getAccurateDestSize(sub.database, row.schema_name, row.table_name) : null
                       const displayDestSize = accurateDestSize ?? row.table_size_bytes
+                      const tupStats = getSourceTupStats(sub.database, row.schema_name, row.table_name)
                       return (
                         <tr key={`${row.schema_name}.${row.table_name}`}
                           className={clsx('border-b border-gray-800', {
@@ -1019,6 +1034,21 @@ export function StatusPage({ initialSnapshot }: Props) {
                           </td>
                           <td className="px-4 py-1.5 text-right text-gray-500 font-mono">
                             {srcRowEst != null ? srcRowEst.toLocaleString() : <span className="text-gray-700">…</span>}
+                          </td>
+                          <td className="px-4 py-1.5 text-right font-mono text-xs whitespace-nowrap">
+                            {tupStats
+                              ? <span className={clsx(
+                                  (tupStats.upd > 0 || tupStats.del > 0) && replicaInfo?.replica_identity === 'full'
+                                    ? 'text-orange-400'
+                                    : 'text-gray-500'
+                                )}>
+                                  <span title="inserts">{fmtCount(tupStats.ins)}</span>
+                                  {' / '}
+                                  <span title="updates" className={tupStats.upd > 0 ? 'text-yellow-400' : ''}>{fmtCount(tupStats.upd)}</span>
+                                  {' / '}
+                                  <span title="deletes" className={tupStats.del > 0 ? 'text-red-400' : ''}>{fmtCount(tupStats.del)}</span>
+                                </span>
+                              : <span className="text-gray-700">…</span>}
                           </td>
                           <td className="px-4 py-1.5 text-right text-gray-400">
                             {isCopying
@@ -1087,7 +1117,7 @@ export function StatusPage({ initialSnapshot }: Props) {
               </td></tr>
               )}
               {subExpanded && sub.tables.length === 0 && (
-                <tr><td colSpan={8} className="px-4 py-2 text-xs text-gray-500">No tables tracked for this subscription.</td></tr>
+                <tr><td colSpan={9} className="px-4 py-2 text-xs text-gray-500">No tables tracked for this subscription.</td></tr>
               )}
             </React.Fragment>
           )

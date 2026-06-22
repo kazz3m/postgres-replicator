@@ -1911,10 +1911,14 @@ async def source_table_sizes(database: str):
                    EXISTS (
                        SELECT 1 FROM pg_index i
                        WHERE i.indrelid = c.oid AND i.indisprimary
-                   ) AS has_pk
+                   ) AS has_pk,
+                   COALESCE(s.n_tup_ins, 0)  AS n_tup_ins,
+                   COALESCE(s.n_tup_upd, 0)  AS n_tup_upd,
+                   COALESCE(s.n_tup_del, 0)  AS n_tup_del
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             LEFT JOIN pg_class ct ON ct.oid = c.reltoastrelid
+            LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
             WHERE c.relkind IN ('r', 'p')
               AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
         """)
@@ -1926,6 +1930,9 @@ async def source_table_sizes(database: str):
         "row_estimate": r["row_estimate"],
         "replica_identity": r["replica_identity"],
         "has_pk": r["has_pk"],
+        "n_tup_ins": r["n_tup_ins"],
+        "n_tup_upd": r["n_tup_upd"],
+        "n_tup_del": r["n_tup_del"],
     } for r in rows}
 
 
