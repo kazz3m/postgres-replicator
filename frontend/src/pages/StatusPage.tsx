@@ -278,6 +278,42 @@ export function StatusPage({ initialSnapshot }: Props) {
     return { replica_identity: info.replica_identity, has_pk: info.has_pk }
   }
 
+  // Accurate dest table sizes — fetched on demand when user enables the checkbox per subscription.
+  // Key: "database/schema.table" → bytes (from pg_relation_size)
+  const destSizesRef = useRef<Record<string, number>>({})
+  const fetchingDestDatabasesRef = useRef<Set<string>>(new Set())
+  const [destSizesVersion, setDestSizesVersion] = useState(0)
+  const [accurateSizeSubs, setAccurateSizeSubs] = useState<Set<string>>(new Set())
+
+  function toggleAccurateSize(subName: string, database: string | null) {
+    setAccurateSizeSubs(prev => {
+      const next = new Set(prev)
+      if (next.has(subName)) {
+        next.delete(subName)
+      } else {
+        next.add(subName)
+        if (database && !fetchingDestDatabasesRef.current.has(database)) {
+          fetchingDestDatabasesRef.current.add(database)
+          replicationApi.destTableSizes(database).then(res => {
+            Object.entries(res.data).forEach(([qualified, bytes]) => {
+              destSizesRef.current[`${database}/${qualified}`] = bytes
+            })
+            setDestSizesVersion(v => v + 1)
+          }).catch(e => {
+            console.warn('dest-table-sizes failed for', database, e)
+            fetchingDestDatabasesRef.current.delete(database)
+          })
+        }
+      }
+      return next
+    })
+  }
+
+  function getAccurateDestSize(database: string | null, schema: string, table: string): number | null {
+    if (!database) return null
+    return destSizesRef.current[`${database}/${schema}.${table}`] ?? null
+  }
+
   const { data: slots, refetch: refetchSlots } = useQuery({
     queryKey: ['slots'],
     queryFn: () => replicationApi.listSlots().then(r => r.data),
@@ -736,6 +772,8 @@ export function StatusPage({ initialSnapshot }: Props) {
           // Source sizes come from sourceSizesRef (fetched once, not polled).
           // sourceSizesVersion dependency ensures re-render when ref is populated.
           void sourceSizesVersion
+          void destSizesVersion
+          const useAccurateSize = accurateSizeSubs.has(sub.sub_name)
           const tablesWithSource = sub.tables.filter(t => getSourceSize(sub.database, t.schema_name, t.table_name) != null)
           const totalSourceBytes = tablesWithSource.reduce((s, t) => s + (getSourceSize(sub.database, t.schema_name, t.table_name) ?? 0), 0)
           const totalCopiedBytes = tablesWithSource.reduce((s, t) => {
@@ -836,9 +874,27 @@ export function StatusPage({ initialSnapshot }: Props) {
                   </div>
                 </td>
 
-                {/* col 6: analyze */}
+                {/* col 6: analyze + accurate dest size toggle */}
                 <td className="px-1.5 py-2 text-xs">
                   <div className="flex items-center gap-1">
+                    <label
+                      className={clsx(
+                        'flex items-center gap-1 cursor-pointer px-1.5 py-0.5 rounded border transition-colors whitespace-nowrap select-none',
+                        useAccurateSize
+                          ? 'bg-purple-950/50 border-purple-700 text-purple-300'
+                          : 'border-gray-700 text-gray-600 hover:text-gray-400 hover:border-gray-500'
+                      )}
+                      title="Przelicz rozmiar tabel na dest przez pg_relation_size() — dokładniejszy, ale blokuje AccessShareLock"
+                    >
+                      <input
+                        type="checkbox"
+                        className="hidden"
+                        checked={useAccurateSize}
+                        onChange={() => toggleAccurateSize(sub.sub_name, sub.database ?? null)}
+                      />
+                      <Database size={10} />
+                      <span>pg_size</span>
+                    </label>
                     {unanalyzed.length > 0 && (
                       <button
                         onClick={() => openAnalyzeModal(unanalyzed, sub.database ?? undefined, sub.tables.map(t => `${t.schema_name}.${t.table_name}`))}
@@ -919,6 +975,8 @@ export function StatusPage({ initialSnapshot }: Props) {
                       const srcRowEst = getSourceRowEstimate(sub.database, row.schema_name, row.table_name)
                       const replicaInfo = getSourceReplicaInfo(sub.database, row.schema_name, row.table_name)
                       const riProblem = replicaInfo && (!replicaInfo.has_pk || replicaInfo.replica_identity === 'nothing')
+                      const accurateDestSize = useAccurateSize ? getAccurateDestSize(sub.database, row.schema_name, row.table_name) : null
+                      const displayDestSize = accurateDestSize ?? row.table_size_bytes
                       return (
                         <tr key={`${row.schema_name}.${row.table_name}`}
                           className={clsx('border-b border-gray-800', {
@@ -953,7 +1011,7 @@ export function StatusPage({ initialSnapshot }: Props) {
                           <td className="px-4 py-1.5">
                             <Badge label={row.status} variant={statusVariant(row.status)} />
                           </td>
-                          <td className="px-4 py-1.5 text-right text-gray-400">{fmtBytes(row.table_size_bytes)}</td>
+                          <td className={clsx('px-4 py-1.5 text-right', useAccurateSize && accurateDestSize != null ? 'text-purple-300' : 'text-gray-400')}>{fmtBytes(displayDestSize)}</td>
                           <td className="px-4 py-1.5 text-right text-gray-400">
                             {srcSize != null
                               ? <span className={clsx({ 'text-blue-300': isCopying })}>{fmtBytes(srcSize)}</span>
@@ -982,8 +1040,8 @@ export function StatusPage({ initialSnapshot }: Props) {
                               // this is the most reliable indicator regardless of whether
                               // a COPY worker is currently active for this table.
                               // bytes_processed only covers the active worker window.
-                              const destPct = (isCopying && srcSize && srcSize > 0 && row.table_size_bytes > 0)
-                                ? Math.min(100, row.table_size_bytes / srcSize * 100)
+                              const destPct = (isCopying && srcSize && srcSize > 0 && displayDestSize > 0)
+                                ? Math.min(100, displayDestSize / srcSize * 100)
                                 : null
                               const pct = destPct
                               return isCopying ? (

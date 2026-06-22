@@ -1931,6 +1931,34 @@ async def source_table_sizes(database: str):
     } for r in rows}
 
 
+# ── Accurate dest table sizes (pg_relation_size, on-demand) ──────────────────
+
+@router.get("/dest-table-sizes")
+async def dest_table_sizes(database: str):
+    """
+    Accurate heap sizes for all subscription tables in one dest database,
+    using pg_relation_size() (acquires AccessShareLock — call on demand only).
+    Returns { "schema.table": bytes, ... }
+    """
+    _require_connection()
+    import asyncpg as _asyncpg
+    dest_dsn = dsn_for_database(state.dest_dsn, database)
+    try:
+        conn = await _asyncpg.connect(dest_dsn, timeout=15)
+        rows = await conn.fetch("""
+            SELECT n.nspname || '.' || c.relname AS qualified,
+                   pg_relation_size(c.oid) AS size_bytes
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind IN ('r', 'p')
+              AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+        """)
+        await conn.close()
+    except Exception as e:
+        raise HTTPException(502, f"Cannot connect to dest database '{database}': {e}")
+    return {r["qualified"]: r["size_bytes"] for r in rows}
+
+
 # ── Analyze ───────────────────────────────────────────────────────────────────
 
 @router.post("/analyze")
