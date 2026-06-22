@@ -852,6 +852,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
   const [prefix, setPrefix] = useState(initParsed.prefix || randomPrefix())
   const [label, setLabel] = useState(initParsed.label)
   const [copyData, setCopyData] = useState(activeConfig.copy_data)
+  const [truncateDest, setTruncateDest] = useState(false)
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState('')
   const [error, setError] = useState('')
@@ -1042,6 +1043,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
         publication_name: pubName,
         source_dsn: sourceDsn,
         copy_data: copyData,
+        truncate_dest: truncateDest,
         slot_name: useExistingSlot ? selectedSlot : undefined,
         database,
       })
@@ -1324,6 +1326,23 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
         <label className="flex items-center gap-2 cursor-pointer text-sm">
           <input type="checkbox" checked={copyData} onChange={e => setCopyData(e.target.checked)} className="accent-blue-500" />
           <span className="text-gray-300">Copy existing data (initial sync)</span>
+        </label>
+
+        <label className="flex items-start gap-2 cursor-pointer text-sm">
+          <input
+            type="checkbox"
+            checked={truncateDest}
+            onChange={e => setTruncateDest(e.target.checked)}
+            className="accent-red-500 mt-0.5 shrink-0"
+          />
+          <div>
+            <span className={truncateDest ? 'text-red-300 font-medium' : 'text-gray-400'}>
+              Truncate destination tables before connecting
+            </span>
+            <div className="text-xs text-gray-600 mt-0.5">
+              — clears existing data on dest before initial sync (only tables in this publication)
+            </div>
+          </div>
         </label>
 
         <div className="border-t border-gray-700 pt-3 space-y-2">
