@@ -1649,12 +1649,11 @@ async def debug_table(schema: str, table: str, database: str, sub_name: str):
         try:
             table_info = await dest_conn.fetchrow("""
                 SELECT c.oid, c.relpages, c.reltuples::bigint AS reltuples,
-                       (c.relpages::bigint + COALESCE(t.relpages, 0)::bigint)
-                           * current_setting('block_size')::bigint AS size_bytes,
+                       pg_relation_size(c.oid)
+                           + COALESCE(pg_relation_size(c.reltoastrelid), 0) AS size_bytes,
                        c.relkind::text
                 FROM pg_class c
                 JOIN pg_namespace n ON n.oid = c.relnamespace
-                LEFT JOIN pg_class t ON t.oid = c.reltoastrelid
                 WHERE n.nspname = $1 AND c.relname = $2
             """, schema, table)
             result["dest_table"] = dict(table_info) if table_info else None
@@ -1682,15 +1681,14 @@ async def debug_table(schema: str, table: str, database: str, sub_name: str):
         # table existence + size on source
         src_table = await src_conn.fetchrow("""
             SELECT c.oid, c.relpages,
-                   (c.relpages::bigint + COALESCE(t.relpages, 0)::bigint)
-                       * current_setting('block_size')::bigint AS size_bytes,
+                   pg_relation_size(c.oid)
+                       + COALESCE(pg_relation_size(c.reltoastrelid), 0) AS size_bytes,
                    c.reltuples::bigint AS reltuples,
                    c.relkind::text, c.relispartition,
                    pg_get_partkeydef(c.oid) AS partkeydef,
                    pg_get_expr(c.relpartbound, c.oid) AS partbound
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
-            LEFT JOIN pg_class t ON t.oid = c.reltoastrelid
             WHERE n.nspname = $1 AND c.relname = $2
         """, schema, table)
         result["source_table"] = dict(src_table) if src_table else None
