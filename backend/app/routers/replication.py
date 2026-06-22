@@ -2637,12 +2637,20 @@ async def drop_schema_from_publication(pub_name: str, schema: str, database: str
         tables = [r["tablename"] for r in rows]
         if not tables:
             raise HTTPException(404, f"No tables from schema '{schema}' in publication '{pub_name}'.")
-        tables_sql = ", ".join(f'"{schema}"."{t}"' for t in tables)
-        await conn.execute(f'ALTER PUBLICATION "{pub_name}" DROP TABLE {tables_sql}')
+        # Drop one table at a time — batch DROP fails if any table is a partition
+        # child that PostgreSQL doesn't consider directly registered, even if it
+        # appears in pg_publication_tables.
+        dropped = []
+        for t in tables:
+            try:
+                await conn.execute(f'ALTER PUBLICATION "{pub_name}" DROP TABLE "{schema}"."{t}"')
+                dropped.append(t)
+            except Exception:
+                pass  # partition child or already removed — skip
     finally:
         await conn.close()
 
-    return {"status": "ok", "publication": pub_name, "schema_dropped": schema, "tables_dropped": tables}
+    return {"status": "ok", "publication": pub_name, "schema_dropped": schema, "tables_dropped": dropped}
 
 
 @router.post("/publication/{pub_name}/refresh-subscriptions")
