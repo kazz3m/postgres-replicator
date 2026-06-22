@@ -430,9 +430,9 @@ async def create_or_update_subscription(config: SubscriptionConfig):
     finally:
         await dest_db_conn.close()
 
-    # CREATE SUBSCRIPTION uses a dedicated connection (not shared pool) with a
-    # statement_timeout. The command makes destination PG connect back to source —
-    # if unreachable it blocks for the full OS TCP timeout and poisons pool connections.
+    # CREATE SUBSCRIPTION uses a dedicated connection (not shared pool) with no
+    # statement_timeout — slot creation can block for 30+ minutes when source has
+    # long-running locks. The dedicated conn is isolated so it cannot poison the pool.
     import asyncpg as _asyncpg
 
     async def _drop_orphaned_slot(slot_name: str) -> None:
@@ -469,7 +469,7 @@ async def create_or_update_subscription(config: SubscriptionConfig):
                 if config.slot_name else ""
             )
             streaming_sql = ", streaming = parallel" if use_streaming_parallel else ""
-            await dedicated_conn.execute("SET statement_timeout = '120s'")
+            await dedicated_conn.execute("SET statement_timeout = 0")
             await dedicated_conn.execute(f"""
                 CREATE SUBSCRIPTION "{config.subscription_name}"
                 CONNECTION $conn_str${conn_dsn}$conn_str$
@@ -505,7 +505,7 @@ async def create_or_update_subscription(config: SubscriptionConfig):
                 return {"status": "created", "subscription_name": config.subscription_name}
             except Exception as e2:
                 err = str(e2)
-        if "could not connect to the publisher" in err or "Connection timed out" in err or "Connection refused" in err or "statement timeout" in err:
+        if "could not connect to the publisher" in err or "Connection timed out" in err or "Connection refused" in err:
             raise HTTPException(
                 400,
                 f"Destination PostgreSQL could not reach the source at "
@@ -2113,7 +2113,7 @@ async def reset_replication(subscription_name: str, database: str | None = None)
     dedicated_conn = None
     try:
         dedicated_conn = await _asyncpg.connect(state.dest_dsn, timeout=30)
-        await dedicated_conn.execute("SET statement_timeout = '120s'")
+        await dedicated_conn.execute("SET statement_timeout = 0")
         await dedicated_conn.execute(f"""
             CREATE SUBSCRIPTION "{subscription_name}"
             CONNECTION $conn_str${conn_dsn}$conn_str$
@@ -2122,7 +2122,7 @@ async def reset_replication(subscription_name: str, database: str | None = None)
         """)
     except Exception as e:
         err = str(e)
-        if "could not connect to the publisher" in err or "Connection timed out" in err or "Connection refused" in err or "statement timeout" in err:
+        if "could not connect to the publisher" in err or "Connection timed out" in err or "Connection refused" in err:
             raise HTTPException(400, f"Destination could not reach source at {conn_dsn.split('@')[-1] if '@' in conn_dsn else conn_dsn}: {err}")
         raise HTTPException(400, f"CREATE SUBSCRIPTION failed during reset: {err}")
     finally:
