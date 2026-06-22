@@ -2637,16 +2637,53 @@ async def drop_schema_from_publication(pub_name: str, schema: str, database: str
         tables = [r["tablename"] for r in rows]
         if not tables:
             raise HTTPException(404, f"No tables from schema '{schema}' in publication '{pub_name}'.")
-        # Drop one table at a time — batch DROP fails if any table is a partition
-        # child that PostgreSQL doesn't consider directly registered, even if it
-        # appears in pg_publication_tables.
-        dropped = []
+        # For each table, find what is actually registered in the publication:
+        # - if the table itself is registered → drop it directly
+        # - if it's a partition child → find its topmost registered ancestor and drop that
+        # This handles PG 14 where pg_publication_tables expands children but
+        # ALTER PUBLICATION DROP TABLE only accepts directly registered relations.
+        # Walk up the inheritance chain to find the ancestor that is actually
+        # registered in the publication. On PG 14 partitions are visible in
+        # pg_publication_tables via the parent, but ALTER PUBLICATION DROP TABLE
+        # must name the registered ancestor, not the child.
+        to_drop: set[str] = set()
         for t in tables:
+            registered = await conn.fetchval(
+                """
+                WITH RECURSIVE ancestors AS (
+                    SELECT c.oid, c.relname, c.relispartition, c.relnamespace,
+                           i.inhparent
+                    FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    LEFT JOIN pg_inherits i ON i.inhrelid = c.oid
+                    WHERE n.nspname = $2 AND c.relname = $3
+                    UNION ALL
+                    SELECT p.oid, p.relname, p.relispartition, p.relnamespace,
+                           i2.inhparent
+                    FROM pg_class p
+                    JOIN ancestors a ON p.oid = a.inhparent
+                    LEFT JOIN pg_inherits i2 ON i2.inhrelid = p.oid
+                )
+                SELECT a.relname
+                FROM ancestors a
+                WHERE NOT a.relispartition
+                LIMIT 1
+                """,
+                pub_name, schema, t,
+            )
+            if registered and registered != t:
+                # t is a partition child — drop the registered parent instead
+                to_drop.add(registered)
+            else:
+                to_drop.add(t)
+
+        dropped = []
+        for t in sorted(to_drop):
             try:
                 await conn.execute(f'ALTER PUBLICATION "{pub_name}" DROP TABLE "{schema}"."{t}"')
                 dropped.append(t)
             except Exception:
-                pass  # partition child or already removed — skip
+                pass  # already removed or truly not registered
     finally:
         await conn.close()
 
