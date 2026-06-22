@@ -122,21 +122,27 @@ async def get_publication_config(name: str, database: str | None = None):
             await src_conn.close(); await dest_conn.close()
             raise HTTPException(404, f"Publication '{name}' not found on source.")
 
-        # pg_publication_rels = only directly registered relations (no partition children)
-        # pg_publication_tables also expands partitioned table children which cannot
-        # be independently managed (added/dropped) and clutter the list.
-        tables = await src_conn.fetch(
-            """
-            SELECT n.nspname AS schemaname, c.relname AS tablename
-            FROM pg_publication_rels pr
-            JOIN pg_publication p ON p.oid = pr.prpubid
-            JOIN pg_class c       ON c.oid = pr.prrelid
-            JOIN pg_namespace n   ON n.oid = c.relnamespace
-            WHERE p.pubname = $1
-            ORDER BY n.nspname, c.relname
-            """,
-            name,
-        )
+        # pg_publication_rels (PG 15+) = only directly registered relations,
+        # no partition children. On PG < 15 fall back to pg_publication_tables
+        # which is the only option available.
+        if major >= 15:
+            tables = await src_conn.fetch(
+                """
+                SELECT n.nspname AS schemaname, c.relname AS tablename
+                FROM pg_publication_rels pr
+                JOIN pg_publication p ON p.oid = pr.prpubid
+                JOIN pg_class c       ON c.oid = pr.prrelid
+                JOIN pg_namespace n   ON n.oid = c.relnamespace
+                WHERE p.pubname = $1
+                ORDER BY n.nspname, c.relname
+                """,
+                name,
+            )
+        else:
+            tables = await src_conn.fetch(
+                "SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = $1 ORDER BY schemaname, tablename",
+                name,
+            )
 
         schemas: list[str] = []
         if major >= 15:
@@ -2588,21 +2594,27 @@ async def drop_schema_from_publication(pub_name: str, schema: str, database: str
         exists = await conn.fetchval("SELECT 1 FROM pg_publication WHERE pubname = $1", pub_name)
         if not exists:
             raise HTTPException(404, f"Publication '{pub_name}' not found.")
-        # pg_publication_rels contains only directly registered relations —
-        # pg_publication_tables also expands partitioned table children which
-        # are not independently part of the publication and cannot be DROPped.
-        rows = await conn.fetch(
-            """
-            SELECT c.relname AS tablename
-            FROM pg_publication_rels pr
-            JOIN pg_publication p  ON p.oid = pr.prpubid
-            JOIN pg_class c        ON c.oid = pr.prrelid
-            JOIN pg_namespace n    ON n.oid = c.relnamespace
-            WHERE p.pubname = $1 AND n.nspname = $2
-            ORDER BY c.relname
-            """,
-            pub_name, schema,
-        )
+        version_num = await conn.fetchval("SELECT current_setting('server_version_num')::int")
+        major = version_num // 10000
+        if major >= 15:
+            # pg_publication_rels = only directly registered relations (no partition children)
+            rows = await conn.fetch(
+                """
+                SELECT c.relname AS tablename
+                FROM pg_publication_rels pr
+                JOIN pg_publication p  ON p.oid = pr.prpubid
+                JOIN pg_class c        ON c.oid = pr.prrelid
+                JOIN pg_namespace n    ON n.oid = c.relnamespace
+                WHERE p.pubname = $1 AND n.nspname = $2
+                ORDER BY c.relname
+                """,
+                pub_name, schema,
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT tablename FROM pg_publication_tables WHERE pubname = $1 AND schemaname = $2 ORDER BY tablename",
+                pub_name, schema,
+            )
         tables = [r["tablename"] for r in rows]
         if not tables:
             raise HTTPException(404, f"No tables from schema '{schema}' in publication '{pub_name}'.")
