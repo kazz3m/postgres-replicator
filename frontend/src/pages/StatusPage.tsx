@@ -232,8 +232,8 @@ export function StatusPage({ initialSnapshot }: Props) {
 
   // Source table sizes — fetched once per database, never re-polled.
   // Key: "database/schema.table" → bytes
-  // v2 = added replica_identity + has_pk; bump version to force refetch on format change
-  const SOURCE_SIZES_CACHE_VERSION = 'v2'
+  // v3 = added n_tup_ins/upd/del; bump version to force refetch on format change
+  const SOURCE_SIZES_CACHE_VERSION = 'v3'
   const sourceSizesRef = useRef<Record<string, { size_bytes: number; row_estimate: number | null; replica_identity: string; has_pk: boolean; n_tup_ins: number; n_tup_upd: number; n_tup_del: number }>>({})
   const fetchedDatabasesRef = useRef<Set<string>>(new Set())
   const [sourceSizesVersion, setSourceSizesVersion] = useState(0)
@@ -246,7 +246,7 @@ export function StatusPage({ initialSnapshot }: Props) {
       if (fetchedDatabasesRef.current.has(db)) {
         // Check if cached data has the current format (replica_identity present)
         const sample = Object.entries(sourceSizesRef.current).find(([k]) => k.startsWith(`${db}/`))
-        if (sample && (sample[1] as Record<string, unknown>).replica_identity === undefined) {
+        if (sample && ((sample[1] as Record<string, unknown>).replica_identity === undefined || (sample[1] as Record<string, unknown>).n_tup_upd === undefined)) {
           // Stale format — clear and refetch
           for (const k of Object.keys(sourceSizesRef.current)) {
             if (k.startsWith(`${db}/`)) delete sourceSizesRef.current[k]
