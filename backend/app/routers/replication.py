@@ -125,33 +125,19 @@ async def get_publication_config(name: str, database: str | None = None):
         # pg_publication_rels (PG 15+) = only directly registered relations,
         # no partition children. On PG < 15 fall back to pg_publication_tables
         # which is the only option available.
-        if major >= 15:
-            tables = await src_conn.fetch(
-                """
-                SELECT n.nspname AS schemaname, c.relname AS tablename
-                FROM pg_publication_rels pr
-                JOIN pg_publication p ON p.oid = pr.prpubid
-                JOIN pg_class c       ON c.oid = pr.prrelid
-                JOIN pg_namespace n   ON n.oid = c.relnamespace
-                WHERE p.pubname = $1
-                ORDER BY n.nspname, c.relname
-                """,
-                name,
-            )
-        else:
-            # PG 14: filter out partition children via pg_class.relispartition
-            tables = await src_conn.fetch(
-                """
-                SELECT pt.schemaname, pt.tablename
-                FROM pg_publication_tables pt
-                JOIN pg_class c ON c.relname = pt.tablename
-                JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = pt.schemaname
-                WHERE pt.pubname = $1
-                  AND c.relispartition = false
-                ORDER BY pt.schemaname, pt.tablename
-                """,
-                name,
-            )
+        # pg_publication_rel (PG 13+) contains only directly registered relations.
+        tables = await src_conn.fetch(
+            """
+            SELECT n.nspname AS schemaname, c.relname AS tablename
+            FROM pg_publication_rel pr
+            JOIN pg_publication p ON p.oid = pr.prpubid
+            JOIN pg_class c       ON c.oid = pr.prrelid
+            JOIN pg_namespace n   ON n.oid = c.relnamespace
+            WHERE p.pubname = $1
+            ORDER BY n.nspname, c.relname
+            """,
+            name,
+        )
 
         schemas: list[str] = []
         if major >= 15:
@@ -2603,87 +2589,32 @@ async def drop_schema_from_publication(pub_name: str, schema: str, database: str
         exists = await conn.fetchval("SELECT 1 FROM pg_publication WHERE pubname = $1", pub_name)
         if not exists:
             raise HTTPException(404, f"Publication '{pub_name}' not found.")
-        version_num = await conn.fetchval("SELECT current_setting('server_version_num')::int")
-        major = version_num // 10000
-        if major >= 15:
-            # pg_publication_rels = only directly registered relations (no partition children)
-            rows = await conn.fetch(
-                """
-                SELECT c.relname AS tablename
-                FROM pg_publication_rels pr
-                JOIN pg_publication p  ON p.oid = pr.prpubid
-                JOIN pg_class c        ON c.oid = pr.prrelid
-                JOIN pg_namespace n    ON n.oid = c.relnamespace
-                WHERE p.pubname = $1 AND n.nspname = $2
-                ORDER BY c.relname
-                """,
-                pub_name, schema,
-            )
-        else:
-            # PG 14: pg_publication_tables expands partition children — filter them out
-            # via pg_class.relispartition so we only DROP directly registered tables.
-            rows = await conn.fetch(
-                """
-                SELECT pt.tablename
-                FROM pg_publication_tables pt
-                JOIN pg_class c ON c.relname = pt.tablename
-                JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = pt.schemaname
-                WHERE pt.pubname = $1 AND pt.schemaname = $2
-                  AND c.relispartition = false
-                ORDER BY pt.tablename
-                """,
-                pub_name, schema,
-            )
+        # pg_publication_rel (available since PG 13) contains only directly
+        # registered relations — no partition children, unlike pg_publication_tables.
+        # Filter by schema to get only what we want to drop.
+        rows = await conn.fetch(
+            """
+            SELECT n.nspname AS schemaname, c.relname AS tablename
+            FROM pg_publication_rel pr
+            JOIN pg_publication p ON p.oid = pr.prpubid
+            JOIN pg_class c       ON c.oid = pr.prrelid
+            JOIN pg_namespace n   ON n.oid = c.relnamespace
+            WHERE p.pubname = $1 AND n.nspname = $2
+            ORDER BY c.relname
+            """,
+            pub_name, schema,
+        )
         tables = [r["tablename"] for r in rows]
         if not tables:
             raise HTTPException(404, f"No tables from schema '{schema}' in publication '{pub_name}'.")
-        # For each table, find what is actually registered in the publication:
-        # - if the table itself is registered → drop it directly
-        # - if it's a partition child → find its topmost registered ancestor and drop that
-        # This handles PG 14 where pg_publication_tables expands children but
-        # ALTER PUBLICATION DROP TABLE only accepts directly registered relations.
-        # Walk up the inheritance chain to find the ancestor that is actually
-        # registered in the publication. On PG 14 partitions are visible in
-        # pg_publication_tables via the parent, but ALTER PUBLICATION DROP TABLE
-        # must name the registered ancestor, not the child.
-        to_drop: set[str] = set()
-        for t in tables:
-            registered = await conn.fetchval(
-                """
-                WITH RECURSIVE ancestors AS (
-                    SELECT c.oid, c.relname, c.relispartition, c.relnamespace,
-                           i.inhparent
-                    FROM pg_class c
-                    JOIN pg_namespace n ON n.oid = c.relnamespace
-                    LEFT JOIN pg_inherits i ON i.inhrelid = c.oid
-                    WHERE n.nspname = $2 AND c.relname = $3
-                    UNION ALL
-                    SELECT p.oid, p.relname, p.relispartition, p.relnamespace,
-                           i2.inhparent
-                    FROM pg_class p
-                    JOIN ancestors a ON p.oid = a.inhparent
-                    LEFT JOIN pg_inherits i2 ON i2.inhrelid = p.oid
-                )
-                SELECT a.relname
-                FROM ancestors a
-                WHERE NOT a.relispartition
-                LIMIT 1
-                """,
-                pub_name, schema, t,
-            )
-            if registered and registered != t:
-                # t is a partition child — drop the registered parent instead
-                to_drop.add(registered)
-            else:
-                to_drop.add(t)
 
         dropped = []
-        for t in sorted(to_drop):
+        for t in tables:
             try:
                 await conn.execute(f'ALTER PUBLICATION "{pub_name}" DROP TABLE "{schema}"."{t}"')
                 dropped.append(t)
             except Exception:
-                pass  # already removed or truly not registered
+                pass  # already removed
     finally:
         await conn.close()
 
