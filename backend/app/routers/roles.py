@@ -262,7 +262,7 @@ async def _db_grant_statements(
         def_acls = await conn.fetch("""
             SELECT r.rolname AS owner,
                    n.nspname AS schema,
-                   d.defaclobjtype,
+                   d.defaclobjtype::text AS defaclobjtype,
                    d.defaclacl
             FROM pg_default_acl d
             JOIN pg_authid r ON r.oid = d.defaclrole
@@ -285,8 +285,17 @@ async def _db_grant_statements(
                 elif obj_type == "SEQUENCES":
                     seq_map = {"r": "SELECT", "w": "UPDATE", "U": "USAGE"}
                     grants = [seq_map[c] for c in privs if c in seq_map]
+                elif obj_type == "FUNCTIONS":
+                    func_map = {"X": "EXECUTE"}
+                    grants = [func_map[c] for c in privs if c in func_map]
+                elif obj_type == "TYPES":
+                    type_map = {"U": "USAGE"}
+                    grants = [type_map[c] for c in privs if c in type_map]
+                elif obj_type == "SCHEMAS":
+                    schema_map = {"U": "USAGE", "C": "CREATE"}
+                    grants = [schema_map[c] for c in privs if c in schema_map]
                 else:
-                    grants = list(privs)  # raw for functions/types
+                    grants = list(privs)
                 if not grants:
                     continue
                 grantee_sql = "PUBLIC" if grantee == "PUBLIC" else _q(grantee)
