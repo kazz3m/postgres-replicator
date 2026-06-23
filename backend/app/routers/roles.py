@@ -97,6 +97,9 @@ def _unpack_acl(acl_string: str):
         return None
     grantee, rest = acl_string.split("=", 1)
     privs, grantor = rest.split("/", 1) if "/" in rest else (rest, "")
+    # PostgreSQL quotes role names containing special chars: "svc-foo"=rwx/bar
+    if grantee.startswith('"') and grantee.endswith('"'):
+        grantee = grantee[1:-1].replace('""', '"')
     return grantee or "PUBLIC", privs, grantor
 
 
