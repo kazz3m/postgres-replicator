@@ -161,7 +161,7 @@ export function RolesSyncPanel() {
   async function handleApply() {
     const stmts = filtered
       .filter((_, i) => selected.has(i))
-      .map(s => ({ sql: s.sql, database: s.database }))
+      .map(s => ({ sql: s.sql, database: s.database, steps: s.steps }))
     if (stmts.length === 0) return
     setApplying(true)
     setApplyResults(null)

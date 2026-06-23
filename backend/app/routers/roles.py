@@ -19,12 +19,13 @@ router = APIRouter(prefix="/api/roles", tags=["roles"])
 # ── Models ─────────────────────────────────────────────────────────────────────
 
 class RoleStatement(BaseModel):
-    sql: str
-    kind: str          # create_role | alter_role | grant_membership | grant_schema | grant_table | grant_default | comment
-    role: str          # primary role name this statement concerns
-    exists_on_dest: bool = False   # True → role already present; statement is ALTER, not CREATE
-    warning: Optional[str] = None  # e.g. "password unavailable on Cloud SQL"
-    database: Optional[str] = None # for per-db grants: which database to connect to on dest
+    sql: str                        # display SQL (joined for multi-step blocks)
+    kind: str                       # create_role | alter_role | grant_membership | grant_schema | grant_table | grant_default | comment
+    role: str                       # primary role name this statement concerns
+    exists_on_dest: bool = False    # True → role already present; statement is ALTER, not CREATE
+    warning: Optional[str] = None   # e.g. "password unavailable on Cloud SQL"
+    database: Optional[str] = None  # for per-db grants: which database to connect to on dest
+    steps: Optional[List[str]] = None  # if set, execute each step in order as one logical unit
 
 
 class RolesDiffResponse(BaseModel):
@@ -36,7 +37,8 @@ class RolesDiffResponse(BaseModel):
 
 class ApplyStatement(BaseModel):
     sql: str
-    database: Optional[str] = None  # if set, connect to this database on dest instead of the DSN default
+    database: Optional[str] = None   # if set, connect to this database on dest instead of the DSN default
+    steps: Optional[List[str]] = None  # if set, execute each step sequentially as one logical unit
 
 
 class RolesApplyRequest(BaseModel):
@@ -339,22 +341,20 @@ async def _db_grant_statements(
                 ))
 
         for owner, owner_block in owner_stmts.items():
+            steps = (
+                [f"GRANT {_q(owner)} TO CURRENT_USER;"]
+                + [f"SET ROLE {_q(owner)};"]
+                + [s.sql for s in owner_block]
+                + ["RESET ROLE;"]
+                + [f"REVOKE {_q(owner)} FROM CURRENT_USER;"]
+            )
+            display_sql = "\n".join(steps)
             stmts.append(RoleStatement(
-                sql=f"SET ROLE {_q(owner)};",
-                kind="grant_role_for_default",
+                sql=display_sql,
+                kind="grant_default",
                 role=owner,
                 database=database,
-                warning=(
-                    f"Requires membership in \"{owner}\". "
-                    f"If this fails run first: GRANT \"{owner}\" TO <migration_user>;"
-                ),
-            ))
-            stmts.extend(owner_block)
-            stmts.append(RoleStatement(
-                sql="RESET ROLE;",
-                kind="revoke_role_after_default",
-                role=owner,
-                database=database,
+                steps=steps,
             ))
     finally:
         await conn.close()
@@ -497,10 +497,22 @@ async def roles_apply(body: RolesApplyRequest):
                 continue
 
             try:
-                await conn.execute(stripped)
+                if item.steps:
+                    # Execute multi-step block sequentially on the same connection.
+                    # RESET ROLE is always attempted as cleanup if a step fails.
+                    for step in item.steps:
+                        await conn.execute(step)
+                else:
+                    await conn.execute(stripped)
                 results.append(StatementResult(sql=item.sql, ok=True))
                 applied += 1
             except Exception as e:
+                # Best-effort cleanup: restore role context if we were mid-block
+                if item.steps:
+                    try:
+                        await conn.execute("RESET ROLE")
+                    except Exception:
+                        pass
                 err = str(e)
                 results.append(StatementResult(sql=item.sql, ok=False, error=err))
                 failed += 1
