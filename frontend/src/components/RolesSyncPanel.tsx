@@ -18,6 +18,8 @@ const KIND_LABEL: Record<string, string> = {
   grant_default:            'DEFAULT PRIVILEGES',
   grant_role_for_default:   'SET ROLE',
   revoke_role_after_default:'RESET ROLE',
+  alter_owner:              'ALTER OWNER',
+  create_extension:         'EXTENSION',
   comment:                  'skipped',
 }
 
@@ -31,6 +33,8 @@ const KIND_COLOR: Record<string, string> = {
   grant_default:            'text-amber-400',
   grant_role_for_default:   'text-gray-500',
   revoke_role_after_default:'text-gray-500',
+  alter_owner:              'text-orange-400',
+  create_extension:         'text-teal-400',
   comment:                  'text-gray-500',
 }
 

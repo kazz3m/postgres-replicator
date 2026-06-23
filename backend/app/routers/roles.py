@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/roles", tags=["roles"])
 
 class RoleStatement(BaseModel):
     sql: str                        # display SQL (joined for multi-step blocks)
-    kind: str                       # create_role | alter_role | grant_membership | grant_schema | grant_table | grant_default | comment
+    kind: str                       # create_role | alter_role | alter_role_set | grant_membership | grant_schema | grant_table | grant_default | alter_owner | create_extension | comment
     role: str                       # primary role name this statement concerns
     exists_on_dest: bool = False    # True → role already present; statement is ALTER, not CREATE
     warning: Optional[str] = None   # e.g. "password unavailable on Cloud SQL"
@@ -208,6 +208,37 @@ async def _globals_statements(
     return stmts
 
 
+async def _database_owner_statements(
+    src_conn: asyncpg.Connection,
+    non_system_roles: set,
+    dest_roles: set,
+) -> List[RoleStatement]:
+    """ALTER DATABASE x OWNER TO y — emitted at globals level (no per-db connection needed)."""
+    stmts: List[RoleStatement] = []
+    rows = await src_conn.fetch("""
+        SELECT d.datname, r.rolname AS owner
+        FROM pg_database d
+        JOIN pg_authid r ON r.oid = d.datdba
+        WHERE d.datistemplate = false
+          AND d.datname NOT IN ('postgres')
+        ORDER BY d.datname
+    """)
+    for row in rows:
+        owner = row["owner"]
+        if owner not in non_system_roles:
+            continue
+        warning = None
+        if dest_roles and owner not in dest_roles:
+            warning = f"Role \"{owner}\" does not exist on destination yet — apply CREATE ROLE first."
+        stmts.append(RoleStatement(
+            sql=f"ALTER DATABASE {_q(row['datname'])} OWNER TO {_q(owner)};",
+            kind="alter_owner",
+            role=owner,
+            warning=warning,
+        ))
+    return stmts
+
+
 # ── Per-database grants (schema + table + default privileges) ─────────────────
 
 async def _db_grant_statements(
@@ -369,6 +400,73 @@ async def _db_grant_statements(
                     database=database,
                 ))
 
+        # Schema owners
+        schema_owners = await conn.fetch("""
+            SELECT n.nspname, r.rolname AS owner
+            FROM pg_namespace n
+            JOIN pg_authid r ON r.oid = n.nspowner
+            WHERE n.nspname NOT LIKE 'pg\\_%'
+              AND n.nspname <> 'information_schema'
+            ORDER BY n.nspname
+        """)
+        for row in schema_owners:
+            owner = row["owner"]
+            if owner not in non_system_roles:
+                continue
+            warning = None
+            if dest_roles and owner not in dest_roles:
+                warning = f"Role \"{owner}\" does not exist on destination yet."
+            stmts.append(RoleStatement(
+                sql=f"ALTER SCHEMA {_q(row['nspname'])} OWNER TO {_q(owner)};",
+                kind="alter_owner",
+                role=owner,
+                database=database,
+                warning=warning,
+            ))
+
+        # Table / view / materialized view / sequence / foreign table owners
+        obj_owners = await conn.fetch("""
+            SELECT n.nspname, c.relname, c.relkind, r.rolname AS owner
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            JOIN pg_authid r ON r.oid = c.relowner
+            WHERE c.relkind IN ('r','v','m','S','f','p')
+              AND n.nspname NOT IN ('pg_catalog','information_schema')
+              AND n.nspname NOT LIKE 'pg\\_%'
+            ORDER BY n.nspname, c.relname
+        """)
+        _relkind_sql = {'r': 'TABLE', 'v': 'TABLE', 'm': 'TABLE', 'S': 'SEQUENCE', 'f': 'TABLE', 'p': 'TABLE'}
+        for row in obj_owners:
+            owner = row["owner"]
+            if owner not in non_system_roles:
+                continue
+            warning = None
+            if dest_roles and owner not in dest_roles:
+                warning = f"Role \"{owner}\" does not exist on destination yet."
+            obj_type = _relkind_sql.get(row["relkind"], "TABLE")
+            stmts.append(RoleStatement(
+                sql=f"ALTER {obj_type} {_q(row['nspname'])}.{_q(row['relname'])} OWNER TO {_q(owner)};",
+                kind="alter_owner",
+                role=owner,
+                database=database,
+                warning=warning,
+            ))
+
+        # Extensions — create on dest if missing
+        extensions = await conn.fetch("""
+            SELECT e.extname, n.nspname AS schema
+            FROM pg_extension e
+            JOIN pg_namespace n ON n.oid = e.extnamespace
+            ORDER BY e.extname
+        """)
+        for row in extensions:
+            stmts.append(RoleStatement(
+                sql=f"CREATE EXTENSION IF NOT EXISTS {_q(row['extname'])} SCHEMA {_q(row['schema'])};",
+                kind="create_extension",
+                role="__extension__",
+                database=database,
+            ))
+
         for owner, owner_block in owner_stmts.items():
             # ALTER DEFAULT PRIVILEGES FOR ROLE X only requires membership in X,
             # not an active SET ROLE. We GRANT on conn1, reconnect so membership
@@ -437,6 +535,7 @@ async def roles_diff(include_databases: bool = True):
         stmts = await _globals_statements(
             src_conn, dest_roles, password_available, dest_is_cloudsql=dest_is_cloudsql
         )
+        stmts += await _database_owner_statements(src_conn, non_system_roles, dest_roles)
 
     # Per-database grants — use separate connections outside the pool
     if include_databases:
