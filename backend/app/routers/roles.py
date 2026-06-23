@@ -344,6 +344,10 @@ async def _db_grant_statements(
                 kind="grant_role_for_default",
                 role=owner,
                 database=database,
+                warning=(
+                    f"Requires membership in \"{owner}\". "
+                    f"If this fails run first: GRANT \"{owner}\" TO <migration_user>;"
+                ),
             ))
             stmts.extend(owner_block)
             stmts.append(RoleStatement(
