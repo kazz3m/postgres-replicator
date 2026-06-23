@@ -553,6 +553,31 @@ async def roles_apply(body: RolesApplyRequest):
                     # GRANT membership is only visible to new connections in PG.
                     # Pattern: GRANT on conn1 → new conn2 (sees membership) → ALTER DEFAULT PRIVILEGES → REVOKE on conn1.
                     # No SET ROLE needed — ALTER DEFAULT PRIVILEGES FOR ROLE X only checks membership.
+                    #
+                    # On Cloud SQL ALTER DEFAULT PRIVILEGES FOR ROLE X also requires ADMIN OPTION on X.
+                    # Check before attempting to give a clear warning instead of a cryptic PG error.
+                    if owner_name:
+                        has_admin = await conn.fetchval(
+                            """SELECT admin_option FROM pg_auth_members
+                               WHERE roleid = (SELECT oid FROM pg_roles WHERE rolname = $1)
+                                 AND member = (SELECT oid FROM pg_roles WHERE rolname = current_user)""",
+                            owner_name,
+                        )
+                        if not has_admin:  # None (not a member) or False (member, no admin option)
+                            results.append(StatementResult(
+                                sql=item.sql, ok=False,
+                                error=(
+                                    f"Skipped: current user lacks ADMIN OPTION on \"{owner_name}\". "
+                                    f"Run on destination as superuser: "
+                                    f"GRANT \"{owner_name}\" TO CURRENT_USER WITH ADMIN OPTION; "
+                                    f"then re-apply."
+                                ),
+                            ))
+                            failed += 1
+                            if body.stop_on_error:
+                                break
+                            continue
+
                     grant_step = item.steps[0]
                     revoke_step = item.steps[-1]
                     alter_steps = item.steps[1:-1]
