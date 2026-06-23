@@ -231,6 +231,7 @@ export interface RoleStatement {
   role: string
   exists_on_dest: boolean
   warning?: string
+  database?: string  // for per-db grants: which database to execute against on dest
 }
 
 export interface RolesDiffResponse {
@@ -293,7 +294,7 @@ export const schemaDumpApi = {
 export const rolesApi = {
   diff: (includeDatabases = true) =>
     api.get<RolesDiffResponse>(`/roles/diff?include_databases=${includeDatabases}`),
-  apply: (statements: string[], stopOnError = false) =>
+  apply: (statements: Array<{ sql: string; database?: string }>, stopOnError = false) =>
     api.post<RolesApplyResponse>('/roles/apply', { statements, stop_on_error: stopOnError }),
 }
 

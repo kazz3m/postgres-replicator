@@ -153,14 +153,14 @@ export function RolesSyncPanel() {
   }
 
   async function handleApply() {
-    const sqls = filtered
+    const stmts = filtered
       .filter((_, i) => selected.has(i))
-      .map(s => s.sql)
-    if (sqls.length === 0) return
+      .map(s => ({ sql: s.sql, database: s.database }))
+    if (stmts.length === 0) return
     setApplying(true)
     setApplyResults(null)
     try {
-      const { data: res } = await rolesApi.apply(sqls, stopOnError)
+      const { data: res } = await rolesApi.apply(stmts, stopOnError)
       setApplyResults(res.results)
     } finally {
       setApplying(false)

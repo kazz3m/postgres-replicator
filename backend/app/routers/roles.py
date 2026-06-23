@@ -24,6 +24,7 @@ class RoleStatement(BaseModel):
     role: str          # primary role name this statement concerns
     exists_on_dest: bool = False   # True → role already present; statement is ALTER, not CREATE
     warning: Optional[str] = None  # e.g. "password unavailable on Cloud SQL"
+    database: Optional[str] = None # for per-db grants: which database to connect to on dest
 
 
 class RolesDiffResponse(BaseModel):
@@ -33,8 +34,13 @@ class RolesDiffResponse(BaseModel):
     dest_is_cloudsql: bool     # True → SUPERUSER/REPLICATION options stripped
 
 
+class ApplyStatement(BaseModel):
+    sql: str
+    database: Optional[str] = None  # if set, connect to this database on dest instead of the DSN default
+
+
 class RolesApplyRequest(BaseModel):
-    statements: List[str]   # raw SQL strings to execute on dest
+    statements: List[ApplyStatement]
     stop_on_error: bool = False
 
 
@@ -220,6 +226,7 @@ async def _db_grant_statements(
                     sql=f"GRANT {', '.join(grants)} ON SCHEMA {_q(row['nspname'])} TO {grantee_sql};",
                     kind="grant_schema",
                     role=grantee if grantee != "PUBLIC" else "__public__",
+                    database=database,
                 ))
 
         # Table grants — information_schema view (standard, no superuser needed)
@@ -248,6 +255,7 @@ async def _db_grant_statements(
                 sql=f"GRANT {', '.join(sorted(info['privs']))} ON TABLE {_q(schema)}.{_q(table)} TO {grantee_sql}{go};",
                 kind="grant_table",
                 role=grantee if grantee != "PUBLIC" else "__public__",
+                database=database,
             ))
 
         # Default privileges — pg_default_acl
@@ -287,6 +295,7 @@ async def _db_grant_statements(
                          f"{schema_clause} GRANT {', '.join(grants)} ON {obj_type} TO {grantee_sql};"),
                     kind="grant_default",
                     role=grantee if grantee != "PUBLIC" else "__public__",
+                    database=database,
                 ))
     finally:
         await conn.close()
@@ -370,30 +379,55 @@ async def roles_diff(include_databases: bool = True):
 async def roles_apply(body: RolesApplyRequest):
     """
     Execute the provided SQL statements on the destination cluster.
+    Statements with a database field are executed against that specific database on dest.
+    Statements without a database field are executed on the dest DSN default database.
     Statements that are comments (start with --) are skipped automatically.
     """
     if not state.dest_dsn:
         raise HTTPException(400, "Not connected.")
 
-    dest_pool = await get_dest_pool(state.dest_dsn)
+    import urllib.parse
+
+    def _dsn_for_db(base_dsn: str, database: Optional[str]) -> str:
+        if not database:
+            return base_dsn
+        parsed = urllib.parse.urlparse(base_dsn)
+        return urllib.parse.urlunparse(
+            parsed._replace(path="/" + urllib.parse.quote(database, safe=""))
+        )
+
     results: List[StatementResult] = []
     applied = 0
     failed = 0
 
-    async with dest_pool.acquire() as conn:
-        for sql in body.statements:
-            stripped = sql.strip()
+    # Cache open connections per database to avoid reconnecting per statement
+    conns: dict = {}
+    try:
+        for item in body.statements:
+            stripped = item.sql.strip()
             if not stripped or stripped.startswith("--"):
                 continue
+
+            dsn = _dsn_for_db(state.dest_dsn, item.database)
+            if dsn not in conns:
+                conns[dsn] = await asyncpg.connect(dsn)
+
+            conn = conns[dsn]
             try:
                 await conn.execute(stripped)
-                results.append(StatementResult(sql=sql, ok=True))
+                results.append(StatementResult(sql=item.sql, ok=True))
                 applied += 1
             except Exception as e:
                 err = str(e)
-                results.append(StatementResult(sql=sql, ok=False, error=err))
+                results.append(StatementResult(sql=item.sql, ok=False, error=err))
                 failed += 1
                 if body.stop_on_error:
                     break
+    finally:
+        for conn in conns.values():
+            try:
+                await conn.close()
+            except Exception:
+                pass
 
     return RolesApplyResponse(results=results, applied=applied, failed=failed)
