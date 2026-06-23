@@ -555,28 +555,37 @@ async def roles_apply(body: RolesApplyRequest):
                     # No SET ROLE needed — ALTER DEFAULT PRIVILEGES FOR ROLE X only checks membership.
                     #
                     # On Cloud SQL ALTER DEFAULT PRIVILEGES FOR ROLE X also requires ADMIN OPTION on X.
-                    # Check before attempting to give a clear warning instead of a cryptic PG error.
+                    # cloudsqlsuperuser members can grant any role with admin option, so skip the
+                    # check for them — otherwise check pg_auth_members directly.
                     if owner_name:
-                        has_admin = await conn.fetchval(
-                            """SELECT admin_option FROM pg_auth_members
-                               WHERE roleid = (SELECT oid FROM pg_roles WHERE rolname = $1)
-                                 AND member = (SELECT oid FROM pg_roles WHERE rolname = current_user)""",
-                            owner_name,
+                        is_cloudsql_super = await conn.fetchval(
+                            """SELECT EXISTS(
+                                SELECT 1 FROM pg_auth_members
+                                WHERE roleid = (SELECT oid FROM pg_roles WHERE rolname = 'cloudsqlsuperuser')
+                                  AND member = (SELECT oid FROM pg_roles WHERE rolname = current_user)
+                            )"""
                         )
-                        if not has_admin:  # None (not a member) or False (member, no admin option)
-                            results.append(StatementResult(
-                                sql=item.sql, ok=False,
-                                error=(
-                                    f"Skipped: current user lacks ADMIN OPTION on \"{owner_name}\". "
-                                    f"Run on destination as superuser: "
-                                    f"GRANT \"{owner_name}\" TO CURRENT_USER WITH ADMIN OPTION; "
-                                    f"then re-apply."
-                                ),
-                            ))
-                            failed += 1
-                            if body.stop_on_error:
-                                break
-                            continue
+                        if not is_cloudsql_super:
+                            has_admin = await conn.fetchval(
+                                """SELECT admin_option FROM pg_auth_members
+                                   WHERE roleid = (SELECT oid FROM pg_roles WHERE rolname = $1)
+                                     AND member = (SELECT oid FROM pg_roles WHERE rolname = current_user)""",
+                                owner_name,
+                            )
+                            if not has_admin:  # None (not a member) or False (member, no admin option)
+                                results.append(StatementResult(
+                                    sql=item.sql, ok=False,
+                                    error=(
+                                        f"Skipped: current user lacks ADMIN OPTION on \"{owner_name}\". "
+                                        f"Run on destination as superuser: "
+                                        f"GRANT \"{owner_name}\" TO CURRENT_USER WITH ADMIN OPTION; "
+                                        f"then re-apply."
+                                    ),
+                                ))
+                                failed += 1
+                                if body.stop_on_error:
+                                    break
+                                continue
 
                     grant_step = item.steps[0]
                     revoke_step = item.steps[-1]
