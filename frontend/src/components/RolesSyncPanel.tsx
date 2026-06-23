@@ -162,6 +162,9 @@ export function RolesSyncPanel() {
     try {
       const { data: res } = await rolesApi.apply(stmts, stopOnError)
       setApplyResults(res.results)
+    } catch (e: any) {
+      const msg = e.response?.data?.detail || e.message || 'Apply failed'
+      setApplyResults([{ sql: '(request failed)', ok: false, error: msg }])
     } finally {
       setApplying(false)
     }
