@@ -435,7 +435,7 @@ async def _db_grant_statements(
               AND n.nspname NOT LIKE 'pg\\_%'
             ORDER BY n.nspname, c.relname
         """)
-        _relkind_sql = {'r': 'TABLE', 'v': 'TABLE', 'm': 'TABLE', 'S': 'SEQUENCE', 'f': 'TABLE', 'p': 'TABLE'}
+        _relkind_sql = {'r': 'TABLE', 'v': 'VIEW', 'm': 'MATERIALIZED VIEW', 'S': 'SEQUENCE', 'f': 'FOREIGN TABLE', 'p': 'TABLE'}
         for row in obj_owners:
             owner = row["owner"]
             if owner not in non_system_roles:
