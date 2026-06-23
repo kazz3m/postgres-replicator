@@ -164,8 +164,7 @@ async def _globals_statements(
         FROM pg_auth_members m
         JOIN pg_authid ur ON ur.oid = m.roleid
         JOIN pg_authid um ON um.oid = m.member
-        WHERE LEFT(ur.rolname, 3) <> 'pg_'
-          AND LEFT(um.rolname, 3) <> 'pg_'
+        WHERE LEFT(um.rolname, 3) <> 'pg_'
         ORDER BY ur.rolname, um.rolname
     """)
     for row in members:
