@@ -121,7 +121,7 @@ async def _globals_statements(
                rolcanlogin, rolreplication, rolbypassrls, rolconnlimit,
                rolpassword, rolvaliduntil
         FROM pg_authid
-        WHERE rolname NOT LIKE 'pg\_%'
+        WHERE LEFT(rolname, 3) <> 'pg_'
           AND rolname NOT IN ('replication')
         ORDER BY rolname
     """)
@@ -164,8 +164,8 @@ async def _globals_statements(
         FROM pg_auth_members m
         JOIN pg_authid ur ON ur.oid = m.roleid
         JOIN pg_authid um ON um.oid = m.member
-        WHERE ur.rolname NOT LIKE 'pg\_%'
-          AND um.rolname NOT LIKE 'pg\_%'
+        WHERE LEFT(ur.rolname, 3) <> 'pg_'
+          AND LEFT(um.rolname, 3) <> 'pg_'
         ORDER BY ur.rolname, um.rolname
     """)
     for row in members:
@@ -365,13 +365,13 @@ async def roles_diff(include_databases: bool = True):
 
         # Roles already present on destination
         dest_role_rows = await dest_conn.fetch(
-            "SELECT rolname FROM pg_roles WHERE rolname NOT LIKE 'pg\\_%'"
+            "SELECT rolname FROM pg_roles WHERE LEFT(rolname, 3) <> 'pg_'"
         )
         dest_roles = {r["rolname"] for r in dest_role_rows}
 
         # Roles present on source (non-system) — for grant filtering
         src_role_rows = await src_conn.fetch(
-            "SELECT rolname FROM pg_authid WHERE rolname NOT LIKE 'pg\\_%'"
+            "SELECT rolname FROM pg_authid WHERE LEFT(rolname, 3) <> 'pg_'"
         )
         non_system_roles = {r["rolname"] for r in src_role_rows}
 
