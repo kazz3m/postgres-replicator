@@ -400,7 +400,8 @@ async def roles_apply(body: RolesApplyRequest):
     applied = 0
     failed = 0
 
-    # Cache open connections per database to avoid reconnecting per statement
+    # Cache open connections per database to avoid reconnecting per statement.
+    # None sentinel means "connection failed" — skip all statements for that db.
     conns: dict = {}
     try:
         for item in body.statements:
@@ -410,9 +411,32 @@ async def roles_apply(body: RolesApplyRequest):
 
             dsn = _dsn_for_db(state.dest_dsn, item.database)
             if dsn not in conns:
-                conns[dsn] = await asyncpg.connect(dsn)
+                try:
+                    conns[dsn] = await asyncpg.connect(dsn)
+                except Exception as e:
+                    conns[dsn] = None  # mark as unreachable so we don't retry
+                    db_label = item.database or "(default)"
+                    results.append(StatementResult(
+                        sql=item.sql, ok=False,
+                        error=f"Cannot connect to database '{db_label}' on destination: {e}",
+                    ))
+                    failed += 1
+                    if body.stop_on_error:
+                        break
+                    continue
 
             conn = conns[dsn]
+            if conn is None:
+                # Database unreachable — skip silently (already counted above)
+                results.append(StatementResult(
+                    sql=item.sql, ok=False,
+                    error=f"Skipped — database '{item.database or '(default)'}' not reachable on destination",
+                ))
+                failed += 1
+                if body.stop_on_error:
+                    break
+                continue
+
             try:
                 await conn.execute(stripped)
                 results.append(StatementResult(sql=item.sql, ok=True))
