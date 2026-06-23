@@ -498,10 +498,32 @@ async def roles_apply(body: RolesApplyRequest):
 
             try:
                 if item.steps:
+                    # steps[0] is always: GRANT "owner" TO CURRENT_USER
+                    # Extract owner name to verify it exists on dest before attempting SET ROLE.
+                    import re as _re
+                    m = _re.match(r'^GRANT\s+"([^"]+)"\s+TO\s+CURRENT_USER', item.steps[0])
+                    owner_name = m.group(1) if m else None
+                    if owner_name:
+                        exists = await conn.fetchval(
+                            "SELECT 1 FROM pg_roles WHERE rolname = $1", owner_name
+                        )
+                        if not exists:
+                            results.append(StatementResult(
+                                sql=item.sql, ok=False,
+                                error=(
+                                    f"Skipped: role \"{owner_name}\" does not exist on destination. "
+                                    f"Apply CREATE ROLE statements first, then re-run default privileges."
+                                ),
+                            ))
+                            failed += 1
+                            if body.stop_on_error:
+                                break
+                            continue
+
                     # GRANT membership is only visible to new connections in PG.
                     # Pattern: GRANT on current conn → new conn for SET ROLE + work → REVOKE on current conn.
-                    grant_step = item.steps[0]   # GRANT "owner" TO CURRENT_USER
-                    revoke_step = item.steps[-1]  # REVOKE "owner" FROM CURRENT_USER
+                    grant_step = item.steps[0]
+                    revoke_step = item.steps[-1]
                     inner_steps = item.steps[1:-1]  # SET ROLE ... ALTER ... RESET ROLE
                     await conn.execute(grant_step)
                     new_conn = await asyncpg.connect(dsn)
@@ -516,7 +538,6 @@ async def roles_apply(body: RolesApplyRequest):
                 results.append(StatementResult(sql=item.sql, ok=True))
                 applied += 1
             except Exception as e:
-                # Best-effort cleanup: ensure role is revoked on failure
                 if item.steps:
                     try:
                         await conn.execute("RESET ROLE")
