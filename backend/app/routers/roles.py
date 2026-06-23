@@ -341,11 +341,12 @@ async def _db_grant_statements(
                 ))
 
         for owner, owner_block in owner_stmts.items():
+            # ALTER DEFAULT PRIVILEGES FOR ROLE X only requires membership in X,
+            # not an active SET ROLE. We GRANT on conn1, reconnect so membership
+            # is visible, run ALTER DEFAULT PRIVILEGES, then REVOKE on conn1.
             steps = (
                 [f"GRANT {_q(owner)} TO CURRENT_USER;"]
-                + [f"SET ROLE {_q(owner)};"]
                 + [s.sql for s in owner_block]
-                + ["RESET ROLE;"]
                 + [f"REVOKE {_q(owner)} FROM CURRENT_USER;"]
             )
             display_sql = "\n".join(steps)
@@ -521,14 +522,15 @@ async def roles_apply(body: RolesApplyRequest):
                             continue
 
                     # GRANT membership is only visible to new connections in PG.
-                    # Pattern: GRANT on current conn → new conn for SET ROLE + work → REVOKE on current conn.
+                    # Pattern: GRANT on conn1 → new conn2 (sees membership) → ALTER DEFAULT PRIVILEGES → REVOKE on conn1.
+                    # No SET ROLE needed — ALTER DEFAULT PRIVILEGES FOR ROLE X only checks membership.
                     grant_step = item.steps[0]
                     revoke_step = item.steps[-1]
-                    inner_steps = item.steps[1:-1]  # SET ROLE ... ALTER ... RESET ROLE
+                    alter_steps = item.steps[1:-1]
                     await conn.execute(grant_step)
                     new_conn = await asyncpg.connect(dsn)
                     try:
-                        for step in inner_steps:
+                        for step in alter_steps:
                             await new_conn.execute(step)
                     finally:
                         await new_conn.close()
@@ -540,11 +542,7 @@ async def roles_apply(body: RolesApplyRequest):
             except Exception as e:
                 if item.steps:
                     try:
-                        await conn.execute("RESET ROLE")
-                    except Exception:
-                        pass
-                    try:
-                        await conn.execute(item.steps[-1])  # REVOKE
+                        await conn.execute(item.steps[-1])  # REVOKE cleanup
                     except Exception:
                         pass
                 err = str(e)
