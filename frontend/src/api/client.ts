@@ -227,7 +227,7 @@ export interface CopyProgressResponse {
 
 export interface RoleStatement {
   sql: string
-  kind: 'create_role' | 'alter_role' | 'grant_membership' | 'grant_schema' | 'grant_table' | 'grant_default' | 'comment'
+  kind: 'create_role' | 'alter_role' | 'grant_membership' | 'grant_schema' | 'grant_table' | 'grant_default' | 'grant_role_for_default' | 'revoke_role_after_default' | 'comment'
   role: string
   exists_on_dest: boolean
   warning?: string

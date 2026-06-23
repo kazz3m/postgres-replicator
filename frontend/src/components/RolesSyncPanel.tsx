@@ -9,23 +9,27 @@ import {
 import clsx from 'clsx'
 
 const KIND_LABEL: Record<string, string> = {
-  create_role:      'CREATE ROLE',
-  alter_role:       'ALTER ROLE',
-  grant_membership: 'GRANT (membership)',
-  grant_schema:     'GRANT (schema)',
-  grant_table:      'GRANT (table)',
-  grant_default:    'DEFAULT PRIVILEGES',
-  comment:          'skipped',
+  create_role:              'CREATE ROLE',
+  alter_role:               'ALTER ROLE',
+  grant_membership:         'GRANT (membership)',
+  grant_schema:             'GRANT (schema)',
+  grant_table:              'GRANT (table)',
+  grant_default:            'DEFAULT PRIVILEGES',
+  grant_role_for_default:   'GRANT (temp)',
+  revoke_role_after_default:'REVOKE (temp)',
+  comment:                  'skipped',
 }
 
 const KIND_COLOR: Record<string, string> = {
-  create_role:      'text-green-400',
-  alter_role:       'text-blue-400',
-  grant_membership: 'text-purple-400',
-  grant_schema:     'text-cyan-400',
-  grant_table:      'text-cyan-300',
-  grant_default:    'text-amber-400',
-  comment:          'text-gray-500',
+  create_role:              'text-green-400',
+  alter_role:               'text-blue-400',
+  grant_membership:         'text-purple-400',
+  grant_schema:             'text-cyan-400',
+  grant_table:              'text-cyan-300',
+  grant_default:            'text-amber-400',
+  grant_role_for_default:   'text-gray-500',
+  revoke_role_after_default:'text-gray-500',
+  comment:                  'text-gray-500',
 }
 
 function StatementRow({ stmt, selected, onToggle }: {

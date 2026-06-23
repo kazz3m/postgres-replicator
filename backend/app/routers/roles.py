@@ -259,6 +259,9 @@ async def _db_grant_statements(
             ))
 
         # Default privileges — pg_default_acl
+        # ALTER DEFAULT PRIVILEGES FOR ROLE X requires membership in X.
+        # We wrap each owner's block with GRANT/REVOKE so the executing user
+        # temporarily assumes the role, following the pg_dumpall pattern.
         def_acls = await conn.fetch("""
             SELECT r.rolname AS owner,
                    n.nspname AS schema,
@@ -270,6 +273,11 @@ async def _db_grant_statements(
             ORDER BY owner, schema, defaclobjtype
         """)
         obj_type_map = {"r": "TABLES", "S": "SEQUENCES", "f": "FUNCTIONS", "T": "TYPES", "n": "SCHEMAS"}
+
+        # Collect per-owner so we can bracket with GRANT/REVOKE
+        from collections import defaultdict
+        owner_stmts: dict = defaultdict(list)
+
         for row in def_acls:
             obj_type = obj_type_map.get(row["defaclobjtype"], row["defaclobjtype"])
             schema_clause = f" IN SCHEMA {_q(row['schema'])}" if row["schema"] else ""
@@ -299,13 +307,28 @@ async def _db_grant_statements(
                 if not grants:
                     continue
                 grantee_sql = "PUBLIC" if grantee == "PUBLIC" else _q(grantee)
-                stmts.append(RoleStatement(
+                owner_stmts[row["owner"]].append(RoleStatement(
                     sql=(f"ALTER DEFAULT PRIVILEGES FOR ROLE {_q(row['owner'])}"
                          f"{schema_clause} GRANT {', '.join(grants)} ON {obj_type} TO {grantee_sql};"),
                     kind="grant_default",
                     role=grantee if grantee != "PUBLIC" else "__public__",
                     database=database,
                 ))
+
+        for owner, owner_block in owner_stmts.items():
+            stmts.append(RoleStatement(
+                sql=f"GRANT {_q(owner)} TO CURRENT_USER;",
+                kind="grant_role_for_default",
+                role=owner,
+                database=database,
+            ))
+            stmts.extend(owner_block)
+            stmts.append(RoleStatement(
+                sql=f"REVOKE {_q(owner)} FROM CURRENT_USER;",
+                kind="revoke_role_after_default",
+                role=owner,
+                database=database,
+            ))
     finally:
         await conn.close()
 
