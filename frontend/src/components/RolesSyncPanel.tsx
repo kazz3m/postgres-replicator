@@ -11,6 +11,7 @@ import clsx from 'clsx'
 const KIND_LABEL: Record<string, string> = {
   create_role:              'CREATE ROLE',
   alter_role:               'ALTER ROLE',
+  alter_role_set:           'ALTER ROLE SET',
   grant_membership:         'GRANT (membership)',
   grant_schema:             'GRANT (schema)',
   grant_table:              'GRANT (table)',
@@ -23,6 +24,7 @@ const KIND_LABEL: Record<string, string> = {
 const KIND_COLOR: Record<string, string> = {
   create_role:              'text-green-400',
   alter_role:               'text-blue-400',
+  alter_role_set:           'text-blue-300',
   grant_membership:         'text-purple-400',
   grant_schema:             'text-cyan-400',
   grant_table:              'text-cyan-300',

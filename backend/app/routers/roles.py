@@ -176,6 +176,30 @@ async def _globals_statements(
             exists_on_dest=row["role"] in dest_roles,
         ))
 
+    # --- Per-role GUC settings (ALTER ROLE ... SET ...) ---
+    settings = await src_conn.fetch("""
+        SELECT r.rolname, d.datname, s.setconfig
+        FROM pg_db_role_setting s
+        JOIN pg_authid r ON r.oid = s.setrole
+        LEFT JOIN pg_database d ON d.oid = s.setdatabase
+        WHERE LEFT(r.rolname, 3) <> 'pg_'
+          AND r.rolname NOT IN ('replication')
+        ORDER BY r.rolname, d.datname NULLS FIRST
+    """)
+    for row in settings:
+        name = row["rolname"]
+        db_clause = f" IN DATABASE {_q(row['datname'])}" if row["datname"] else ""
+        for setting in (row["setconfig"] or []):
+            if "=" not in setting:
+                continue
+            key, val = setting.split("=", 1)
+            stmts.append(RoleStatement(
+                sql=f"ALTER ROLE {_q(name)}{db_clause} SET {key} = '{val}';",
+                kind="alter_role_set",
+                role=name,
+                exists_on_dest=name in dest_roles,
+            ))
+
     return stmts
 
 
