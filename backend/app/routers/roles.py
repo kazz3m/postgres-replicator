@@ -257,27 +257,44 @@ async def _db_grant_statements(
                     database=database,
                 ))
 
-        # Table grants — information_schema view (standard, no superuser needed)
-        table_grants = await conn.fetch("""
-            SELECT grantee, table_schema, table_name, privilege_type, is_grantable
-            FROM information_schema.role_table_grants
-            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-              AND grantor <> grantee
-            ORDER BY grantee, table_schema, table_name, privilege_type
+        # Table grants — read relacl directly to avoid information_schema visibility
+        # restrictions (it only shows grants for roles the current user is a member of).
+        table_acl_rows = await conn.fetch("""
+            SELECT n.nspname AS schema, c.relname AS table, c.relacl
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind IN ('r','v','m','f','p')
+              AND n.nspname NOT IN ('pg_catalog','information_schema')
+              AND n.nspname NOT LIKE 'pg\\_toast%'
+              AND n.nspname NOT LIKE 'pg\\_temp%'
+              AND c.relacl IS NOT NULL
+            ORDER BY n.nspname, c.relname
         """)
-        # Collapse per (grantee, table) for compact GRANT statements
+        _TABLE_PRIV_MAP = {
+            "r": "SELECT", "w": "UPDATE", "a": "INSERT", "d": "DELETE",
+            "D": "TRUNCATE", "x": "REFERENCES", "t": "TRIGGER",
+        }
         from collections import defaultdict
-        collapsed: dict = defaultdict(lambda: {"privs": [], "grantable": False})
-        for row in table_grants:
-            key = (row["grantee"], row["table_schema"], row["table_name"])
-            collapsed[key]["privs"].append(row["privilege_type"])
-            if row["is_grantable"] == "YES":
-                collapsed[key]["grantable"] = True
+        collapsed: dict = defaultdict(lambda: {"privs": set(), "grantable": False})
+        for row in table_acl_rows:
+            for entry in row["relacl"]:
+                parsed_acl = _unpack_acl(entry)
+                if not parsed_acl:
+                    continue
+                grantee, privs, grantable = parsed_acl
+                if grantee != "PUBLIC" and grantee not in non_system_roles:
+                    continue
+                if grantee != "PUBLIC" and dest_roles and grantee not in dest_roles:
+                    continue
+                key = (grantee, row["schema"], row["table"])
+                for c in privs:
+                    if c in _TABLE_PRIV_MAP:
+                        collapsed[key]["privs"].add(_TABLE_PRIV_MAP[c])
+                if grantable:
+                    collapsed[key]["grantable"] = True
 
         for (grantee, schema, table), info in collapsed.items():
-            if grantee not in non_system_roles and grantee != "PUBLIC":
-                continue
-            if grantee != "PUBLIC" and dest_roles and grantee not in dest_roles:
+            if not info["privs"]:
                 continue
             go = " WITH GRANT OPTION" if info["grantable"] else ""
             grantee_sql = "PUBLIC" if grantee == "PUBLIC" else _q(grantee)
