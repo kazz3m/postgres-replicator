@@ -2680,6 +2680,7 @@ async def list_sequences(database: Optional[str] = None):
         try: await dest_conn_outer.close()
         except Exception: pass
 
+    try:
         # Gather all sequences with their owning table/column if any
         seq_rows = await src_conn.fetch("""
             SELECT
