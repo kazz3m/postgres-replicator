@@ -2671,6 +2671,7 @@ async def list_sequences(database: Optional[str] = None):
     dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
     # Use direct connections — pool is a singleton keyed to the initial DSN and
     # would ignore a different database name passed here.
+    import asyncpg as _asyncpg
     src_conn = await _asyncpg.connect(src_dsn, timeout=15)
     dest_conn_outer = await _asyncpg.connect(dest_dsn, timeout=15)
 
@@ -2776,6 +2777,7 @@ async def sync_sequences(body: dict):
     synced = []
     errors = []
 
+    import asyncpg as _asyncpg
     conn = await _asyncpg.connect(dest_dsn, timeout=15)
     try:
         for seq in to_sync:

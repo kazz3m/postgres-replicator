@@ -403,7 +403,10 @@ export function StatusPage({ initialSnapshot }: Props) {
   }
 
   function getSubDatabase(subName: string): string | undefined {
-    return copyData?.subscriptions?.find(s => s.sub_name === subName)?.database ?? undefined
+    // subs (from pg_subscription) always has database; copyData only exists during COPY phase
+    return (subs as any[])?.find(s => s.subname === subName)?.database
+      ?? copyData?.subscriptions?.find(s => s.sub_name === subName)?.database
+      ?? undefined
   }
 
   function isSlotDropped(sub: any): boolean {
