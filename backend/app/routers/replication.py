@@ -2656,7 +2656,7 @@ async def refresh_publication_subscriptions(pub_name: str, database: str | None 
 # ── Sequence sync ─────────────────────────────────────────────────────────────
 
 @router.get("/sequences", response_model=List[SequenceInfo])
-async def list_sequences():
+async def list_sequences(database: Optional[str] = None):
     """
     Read current sequence values from source using the most reliable method:
     pg_sequences.last_value is NOT reliable (may lag due to caching), so we
@@ -2667,8 +2667,10 @@ async def list_sequences():
     For plain sequences: pg_sequences.last_value (best available without nextval()).
     """
     _require_connection()
-    src_pool = await get_source_pool(state.source_dsn)
-    dest_pool = await get_dest_pool(state.dest_dsn)
+    src_dsn = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
+    dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
+    src_pool = await get_source_pool(src_dsn)
+    dest_pool = await get_dest_pool(dest_dsn)
 
     async with src_pool.acquire() as src_conn:
         # Gather all sequences with their owning table/column if any
@@ -2754,8 +2756,9 @@ async def sync_sequences(body: dict):
     """
     _require_connection()
     only = set(body.get("sequences", []))  # empty = sync all that need it
+    database: Optional[str] = body.get("database")
 
-    sequences = await list_sequences()
+    sequences = await list_sequences(database=database)
     to_sync = [
         s for s in sequences
         if s.needs_sync and (not only or s.sequence_name in only)
@@ -2764,7 +2767,8 @@ async def sync_sequences(body: dict):
     if not to_sync:
         return {"synced": [], "message": "All sequences are already up to date."}
 
-    dest_pool = await get_dest_pool(state.dest_dsn)
+    dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
+    dest_pool = await get_dest_pool(dest_dsn)
     synced = []
     errors = []
 

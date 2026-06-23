@@ -6,15 +6,15 @@ import { Spinner } from './Spinner'
 import { RefreshCw, AlertTriangle, CheckCircle } from 'lucide-react'
 import { ConfirmModal } from './ConfirmModal'
 
-export function SequenceSyncPanel() {
+export function SequenceSyncPanel({ database }: { database?: string }) {
   const [syncing, setSyncing] = useState(false)
   const [syncResult, setSyncResult] = useState<any[] | null>(null)
   const [confirmAll, setConfirmAll] = useState(false)
   const [error, setError] = useState('')
 
   const { data: sequences, isLoading, refetch } = useQuery({
-    queryKey: ['sequences'],
-    queryFn: () => replicationApi.listSequences().then(r => r.data),
+    queryKey: ['sequences', database],
+    queryFn: () => replicationApi.listSequences(database).then(r => r.data),
   })
 
   const needsSync = sequences?.filter(s => s.needs_sync) ?? []
@@ -23,7 +23,7 @@ export function SequenceSyncPanel() {
   async function handleSyncAll() {
     setSyncing(true); setError(''); setSyncResult(null)
     try {
-      const { data } = await replicationApi.syncSequences()
+      const { data } = await replicationApi.syncSequences(undefined, database)
       setSyncResult(data.synced)
       refetch()
     } catch (e: any) {

@@ -374,9 +374,10 @@ export const replicationApi = {
     api.delete<{ tables_dropped: string[] }>(`/replication/publication/${pubName}/schema?schema=${encodeURIComponent(schema)}${database ? `&database=${encodeURIComponent(database)}` : ''}`),
   refreshPublicationSubscriptions: (pubName: string, database?: string) =>
     api.post(`/replication/publication/${pubName}/refresh-subscriptions${database ? `?database=${encodeURIComponent(database)}` : ''}`),
-  listSequences: () => api.get<SequenceInfo[]>('/replication/sequences'),
-  syncSequences: (sequences?: string[]) =>
-    api.post('/replication/sequences/sync', { sequences: sequences ?? [] }),
+  listSequences: (database?: string) =>
+    api.get<SequenceInfo[]>(`/replication/sequences${database ? `?database=${encodeURIComponent(database)}` : ''}`),
+  syncSequences: (sequences?: string[], database?: string) =>
+    api.post('/replication/sequences/sync', { sequences: sequences ?? [], database }),
   schemaDiff: (publication: string) =>
     api.get<TableSchemaDiff[]>(`/replication/schema-diff?publication=${encodeURIComponent(publication)}`),
   schemaCheck: (tables: string[], database?: string) =>

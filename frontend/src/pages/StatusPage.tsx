@@ -115,7 +115,7 @@ export function StatusPage({ initialSnapshot }: Props) {
   const [actionLoading, setActionLoading] = useState(false)
   const [actionError, setActionError] = useState('')
   // Schema sync — track active publication for schema panel
-  const [schemaPub, setSchemaPub] = useState<string | null>(null)
+  const [schemaPub, setSchemaPub] = useState<{ pub: string; database: string } | null>(null)
   // Index panel after stop
   const [indexPub, setIndexPub] = useState<string | null>(null)
   // Progress table expanded per subscription
@@ -1158,9 +1158,9 @@ export function StatusPage({ initialSnapshot }: Props) {
                           return (
                             <div key={p} className="flex items-center gap-1">
                               <button
-                                onClick={() => setSchemaPub(schemaPub === p ? null : p)}
+                                onClick={() => setSchemaPub(schemaPub?.pub === p ? null : { pub: p, database: db })}
                                 className={`text-xs px-1.5 py-0.5 rounded border transition-colors ${
-                                  schemaPub === p
+                                  schemaPub?.pub === p
                                     ? 'border-blue-500 text-blue-300 bg-blue-900/30'
                                     : 'border-gray-700 text-gray-400 hover:border-gray-500'
                                 }`}
@@ -1352,8 +1352,8 @@ export function StatusPage({ initialSnapshot }: Props) {
       {/* Schema + Sequence panels — shown when a publication is selected */}
       {schemaPub && (
         <>
-          <SchemaSyncPanel publication={schemaPub} />
-          <SequenceSyncPanel />
+          <SchemaSyncPanel publication={schemaPub.pub} />
+          <SequenceSyncPanel database={schemaPub.database} />
         </>
       )}
 
