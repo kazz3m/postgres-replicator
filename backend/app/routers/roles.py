@@ -426,7 +426,7 @@ async def _db_grant_statements(
 
         # Table / view / materialized view / sequence / foreign table owners
         obj_owners = await conn.fetch("""
-            SELECT n.nspname, c.relname, c.relkind, r.rolname AS owner
+            SELECT n.nspname, c.relname, c.relkind::text AS relkind, r.rolname AS owner
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             JOIN pg_authid r ON r.oid = c.relowner
