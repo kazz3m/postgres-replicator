@@ -2669,10 +2669,17 @@ async def list_sequences(database: Optional[str] = None):
     _require_connection()
     src_dsn = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
     dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
-    src_pool = await get_source_pool(src_dsn)
-    dest_pool = await get_dest_pool(dest_dsn)
+    # Use direct connections — pool is a singleton keyed to the initial DSN and
+    # would ignore a different database name passed here.
+    src_conn = await _asyncpg.connect(src_dsn, timeout=15)
+    dest_conn_outer = await _asyncpg.connect(dest_dsn, timeout=15)
 
-    async with src_pool.acquire() as src_conn:
+    async def _close():
+        try: await src_conn.close()
+        except Exception: pass
+        try: await dest_conn_outer.close()
+        except Exception: pass
+
         # Gather all sequences with their owning table/column if any
         seq_rows = await src_conn.fetch("""
             SELECT
@@ -2698,7 +2705,6 @@ async def list_sequences(database: Optional[str] = None):
             owner_col = row["owner_column"]
 
             if owner_table and owner_col:
-                # Most reliable: MAX of the actual data column
                 try:
                     max_val = await src_conn.fetchval(
                         f"SELECT COALESCE(MAX({owner_col}), 0) FROM {owner_table}"
@@ -2707,7 +2713,6 @@ async def list_sequences(database: Optional[str] = None):
                     table_ref = owner_table
                     col_ref = owner_col
                 except Exception:
-                    # Fall back to last_value from pg_sequences
                     lv = await src_conn.fetchval(
                         "SELECT last_value FROM pg_sequences "
                         "WHERE schemaname || '.' || sequencename = $1", seq_fqn
@@ -2716,7 +2721,6 @@ async def list_sequences(database: Optional[str] = None):
                     table_ref = seq_fqn
                     col_ref = "last_value"
             else:
-                # Plain sequence with no owning column — use last_value
                 lv = await src_conn.fetchval(
                     "SELECT last_value FROM pg_sequences "
                     "WHERE schemaname || '.' || sequencename = $1", seq_fqn
@@ -2725,15 +2729,13 @@ async def list_sequences(database: Optional[str] = None):
                 table_ref = seq_fqn
                 col_ref = "last_value (no owning column)"
 
-            # Read dest value
             dest_value: Optional[int] = None
-            async with dest_pool.acquire() as dest_conn:
-                dest_lv = await dest_conn.fetchval(
-                    "SELECT last_value FROM pg_sequences "
-                    "WHERE schemaname || '.' || sequencename = $1", seq_fqn
-                )
-                if dest_lv is not None:
-                    dest_value = int(dest_lv)
+            dest_lv = await dest_conn_outer.fetchval(
+                "SELECT last_value FROM pg_sequences "
+                "WHERE schemaname || '.' || sequencename = $1", seq_fqn
+            )
+            if dest_lv is not None:
+                dest_value = int(dest_lv)
 
             results.append(SequenceInfo(
                 sequence_name=seq_fqn,
@@ -2744,7 +2746,9 @@ async def list_sequences(database: Optional[str] = None):
                 needs_sync=dest_value is None or dest_value < source_value,
             ))
 
-    return results
+        return results
+    finally:
+        await _close()
 
 
 @router.post("/sequences/sync")
@@ -2768,11 +2772,11 @@ async def sync_sequences(body: dict):
         return {"synced": [], "message": "All sequences are already up to date."}
 
     dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
-    dest_pool = await get_dest_pool(dest_dsn)
     synced = []
     errors = []
 
-    async with dest_pool.acquire() as conn:
+    conn = await _asyncpg.connect(dest_dsn, timeout=15)
+    try:
         for seq in to_sync:
             try:
                 # setval(seq, value, true): last_value = value, is_called = TRUE
@@ -2787,6 +2791,9 @@ async def sync_sequences(body: dict):
                 })
             except Exception as e:
                 errors.append({"sequence": seq.sequence_name, "error": str(e)})
+    finally:
+        try: await conn.close()
+        except Exception: pass
 
     return {"synced": synced, "errors": errors}
 
