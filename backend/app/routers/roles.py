@@ -211,6 +211,7 @@ async def _db_grant_statements(
     src_dsn: str,
     database: str,
     non_system_roles: set,
+    dest_roles: set = frozenset(),
 ) -> List[RoleStatement]:
     stmts: List[RoleStatement] = []
 
@@ -243,6 +244,8 @@ async def _db_grant_statements(
                 grantee, privs, _ = parsed_acl
                 if grantee != "PUBLIC" and grantee not in non_system_roles:
                     continue
+                if grantee != "PUBLIC" and dest_roles and grantee not in dest_roles:
+                    continue
                 grants = [_SCHEMA_PRIV_MAP[c] for c in privs if c in _SCHEMA_PRIV_MAP]
                 if not grants:
                     continue
@@ -273,6 +276,8 @@ async def _db_grant_statements(
 
         for (grantee, schema, table), info in collapsed.items():
             if grantee not in non_system_roles and grantee != "PUBLIC":
+                continue
+            if grantee != "PUBLIC" and dest_roles and grantee not in dest_roles:
                 continue
             go = " WITH GRANT OPTION" if info["grantable"] else ""
             grantee_sql = "PUBLIC" if grantee == "PUBLIC" else _q(grantee)
@@ -312,6 +317,8 @@ async def _db_grant_statements(
                     continue
                 grantee, privs, _ = parsed_acl
                 if grantee != "PUBLIC" and grantee not in non_system_roles:
+                    continue
+                if grantee != "PUBLIC" and dest_roles and grantee not in dest_roles:
                     continue
                 if obj_type == "TABLES":
                     grants = [_TABLE_PRIV_MAP[c] for c in privs if c in _TABLE_PRIV_MAP]
@@ -423,7 +430,7 @@ async def roles_diff(include_databases: bool = True):
 
         for row in dbs:
             db_stmts = await _db_grant_statements(
-                state.source_dsn, row["datname"], non_system_roles
+                state.source_dsn, row["datname"], non_system_roles, dest_roles
             )
             stmts.extend(db_stmts)
 
