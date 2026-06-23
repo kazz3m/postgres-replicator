@@ -498,19 +498,32 @@ async def roles_apply(body: RolesApplyRequest):
 
             try:
                 if item.steps:
-                    # Execute multi-step block sequentially on the same connection.
-                    # RESET ROLE is always attempted as cleanup if a step fails.
-                    for step in item.steps:
-                        await conn.execute(step)
+                    # GRANT membership is only visible to new connections in PG.
+                    # Pattern: GRANT on current conn → new conn for SET ROLE + work → REVOKE on current conn.
+                    grant_step = item.steps[0]   # GRANT "owner" TO CURRENT_USER
+                    revoke_step = item.steps[-1]  # REVOKE "owner" FROM CURRENT_USER
+                    inner_steps = item.steps[1:-1]  # SET ROLE ... ALTER ... RESET ROLE
+                    await conn.execute(grant_step)
+                    new_conn = await asyncpg.connect(dsn)
+                    try:
+                        for step in inner_steps:
+                            await new_conn.execute(step)
+                    finally:
+                        await new_conn.close()
+                    await conn.execute(revoke_step)
                 else:
                     await conn.execute(stripped)
                 results.append(StatementResult(sql=item.sql, ok=True))
                 applied += 1
             except Exception as e:
-                # Best-effort cleanup: restore role context if we were mid-block
+                # Best-effort cleanup: ensure role is revoked on failure
                 if item.steps:
                     try:
                         await conn.execute("RESET ROLE")
+                    except Exception:
+                        pass
+                    try:
+                        await conn.execute(item.steps[-1])  # REVOKE
                     except Exception:
                         pass
                 err = str(e)
