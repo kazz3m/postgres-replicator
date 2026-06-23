@@ -340,14 +340,14 @@ async def _db_grant_statements(
 
         for owner, owner_block in owner_stmts.items():
             stmts.append(RoleStatement(
-                sql=f"GRANT {_q(owner)} TO CURRENT_USER;",
+                sql=f"SET ROLE {_q(owner)};",
                 kind="grant_role_for_default",
                 role=owner,
                 database=database,
             ))
             stmts.extend(owner_block)
             stmts.append(RoleStatement(
-                sql=f"REVOKE {_q(owner)} FROM CURRENT_USER;",
+                sql="RESET ROLE;",
                 kind="revoke_role_after_default",
                 role=owner,
                 database=database,

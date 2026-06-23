@@ -16,8 +16,8 @@ const KIND_LABEL: Record<string, string> = {
   grant_schema:             'GRANT (schema)',
   grant_table:              'GRANT (table)',
   grant_default:            'DEFAULT PRIVILEGES',
-  grant_role_for_default:   'GRANT (temp)',
-  revoke_role_after_default:'REVOKE (temp)',
+  grant_role_for_default:   'SET ROLE',
+  revoke_role_after_default:'RESET ROLE',
   comment:                  'skipped',
 }
 
