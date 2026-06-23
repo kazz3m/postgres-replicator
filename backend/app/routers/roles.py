@@ -284,16 +284,18 @@ async def _db_grant_statements(
                 parsed_acl = _unpack_acl(entry)
                 if not parsed_acl:
                     continue
-                grantee, privs, grantable = parsed_acl
+                grantee, privs, _grantor = parsed_acl
                 if grantee != "PUBLIC" and grantee not in non_system_roles:
                     continue
                 if grantee != "PUBLIC" and dest_roles and grantee not in dest_roles:
                     continue
                 key = (grantee, row["schema"], row["table"])
+                # '*' after a priv letter means WITH GRANT OPTION: e.g. "rw*a"
+                has_grant_option = "*" in privs
                 for c in privs:
                     if c in _TABLE_PRIV_MAP:
                         collapsed[key]["privs"].add(_TABLE_PRIV_MAP[c])
-                if grantable:
+                if has_grant_option:
                     collapsed[key]["grantable"] = True
 
         for (grantee, schema, table), info in collapsed.items():
