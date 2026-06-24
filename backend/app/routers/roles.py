@@ -574,11 +574,22 @@ async def roles_diff(include_databases: bool = True):
         # (current_user must be a member of the target role).
         # We read roles from destination so only already-created roles are included.
         current_user_row = await dest_conn.fetchval("SELECT current_user")
+        # Exclude roles that are already members of current_user — granting them
+        # to current_user would create a circular membership and PostgreSQL rejects it.
+        members_of_current_user = {
+            r["rolname"] for r in await dest_conn.fetch("""
+                SELECT r.rolname
+                FROM pg_auth_members m
+                JOIN pg_roles r ON r.oid = m.member
+                WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = current_user)
+            """)
+        }
         grantable_roles = sorted(
             r for r in dest_roles
             if not r.startswith("pg_")
             and not r.startswith("cloudsql")
             and r != current_user_row
+            and r not in members_of_current_user
         )
         if grantable_roles:
             grant_lines = [f"GRANT {_q(r)} TO CURRENT_USER;" for r in grantable_roles]
