@@ -573,22 +573,22 @@ async def roles_diff(include_databases: bool = True):
         # Required so that ALTER ... OWNER TO <role> succeeds on Cloud SQL
         # (current_user must be a member of the target role).
         # We read roles from destination so only already-created roles are included.
+        current_user_row = await dest_conn.fetchval("SELECT current_user")
         grantable_roles = sorted(
             r for r in dest_roles
-            if not r.startswith("pg_") and not r.startswith("cloudsql")
+            if not r.startswith("pg_")
+            and not r.startswith("cloudsql")
+            and r != current_user_row
         )
         if grantable_roles:
             grant_lines = [f"GRANT {_q(r)} TO CURRENT_USER;" for r in grantable_roles]
-            revoke_lines = [f"REVOKE {_q(r)} FROM CURRENT_USER;" for r in grantable_roles]
-            grant_sql = "\n".join(grant_lines)
-            revoke_sql = "\n".join(revoke_lines)
-            display_sql = grant_sql + "\n-- ...\n" + revoke_sql
+            display_sql = "\n".join(grant_lines)
             stmts.insert(0, RoleStatement(
                 sql=display_sql,
                 kind="grant_self_membership",
                 role="__self__",
-                steps=grant_lines + revoke_lines,
-                warning="Grants all destination roles to current user so ALTER OWNER succeeds. Revokes them at the end.",
+                steps=grant_lines,
+                warning="Grants all destination roles to current user so ALTER OWNER succeeds.",
             ))
 
     # Per-database grants — use separate connections outside the pool
