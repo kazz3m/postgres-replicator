@@ -20,6 +20,7 @@ const KIND_LABEL: Record<string, string> = {
   revoke_role_after_default:'RESET ROLE',
   alter_owner:              'ALTER OWNER',
   create_extension:         'EXTENSION',
+  grant_self_membership:    'GRANT SELF',
   comment:                  'skipped',
 }
 
@@ -35,6 +36,7 @@ const KIND_COLOR: Record<string, string> = {
   revoke_role_after_default:'text-gray-500',
   alter_owner:              'text-orange-400',
   create_extension:         'text-teal-400',
+  grant_self_membership:    'text-yellow-300',
   comment:                  'text-gray-500',
 }
 
@@ -165,7 +167,7 @@ export function RolesSyncPanel() {
   async function handleApply() {
     const stmts = filtered
       .filter((_, i) => selected.has(i))
-      .map(s => ({ sql: s.sql, database: s.database, steps: s.steps }))
+      .map(s => ({ sql: s.sql, kind: s.kind, database: s.database, steps: s.steps }))
     if (stmts.length === 0) return
     setApplying(true)
     setApplyResults(null)

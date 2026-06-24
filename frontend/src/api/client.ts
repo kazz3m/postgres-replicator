@@ -295,7 +295,7 @@ export const schemaDumpApi = {
 export const rolesApi = {
   diff: (includeDatabases = true) =>
     api.get<RolesDiffResponse>(`/roles/diff?include_databases=${includeDatabases}`),
-  apply: (statements: Array<{ sql: string; database?: string; steps?: string[] }>, stopOnError = false) =>
+  apply: (statements: Array<{ sql: string; kind?: string; database?: string; steps?: string[] }>, stopOnError = false) =>
     api.post<RolesApplyResponse>('/roles/apply', { statements, stop_on_error: stopOnError }),
 }
 

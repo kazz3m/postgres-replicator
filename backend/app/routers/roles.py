@@ -37,6 +37,7 @@ class RolesDiffResponse(BaseModel):
 
 class ApplyStatement(BaseModel):
     sql: str
+    kind: Optional[str] = None
     database: Optional[str] = None   # if set, connect to this database on dest instead of the DSN default
     steps: Optional[List[str]] = None  # if set, execute each step sequentially as one logical unit
 
@@ -537,6 +538,28 @@ async def roles_diff(include_databases: bool = True):
         )
         stmts += await _database_owner_statements(src_conn, non_system_roles, dest_roles)
 
+        # Prepend a single "grant all roles to current user" block.
+        # Required so that ALTER ... OWNER TO <role> succeeds on Cloud SQL
+        # (current_user must be a member of the target role).
+        # We read roles from destination so only already-created roles are included.
+        grantable_roles = sorted(
+            r for r in dest_roles
+            if not r.startswith("pg_") and r != "cloudsqlsuperuser"
+        )
+        if grantable_roles:
+            grant_lines = [f"GRANT {_q(r)} TO CURRENT_USER;" for r in grantable_roles]
+            revoke_lines = [f"REVOKE {_q(r)} FROM CURRENT_USER;" for r in grantable_roles]
+            grant_sql = "\n".join(grant_lines)
+            revoke_sql = "\n".join(revoke_lines)
+            display_sql = grant_sql + "\n-- ...\n" + revoke_sql
+            stmts.insert(0, RoleStatement(
+                sql=display_sql,
+                kind="grant_self_membership",
+                role="__self__",
+                steps=grant_lines + revoke_lines,
+                warning="Grants all destination roles to current user so ALTER OWNER succeeds. Revokes them at the end.",
+            ))
+
     # Per-database grants — use separate connections outside the pool
     if include_databases:
         db_conn = await asyncpg.connect(state.source_dsn)
@@ -626,6 +649,25 @@ async def roles_apply(body: RolesApplyRequest):
                 continue
 
             try:
+                if item.kind == "grant_self_membership" and item.steps:
+                    # Execute all GRANT ... TO CURRENT_USER then REVOKE ... FROM CURRENT_USER
+                    # sequentially on the same connection — no new conn needed.
+                    errors = []
+                    for step in item.steps:
+                        try:
+                            await conn.execute(step)
+                        except Exception as e:
+                            errors.append(f"{step!r}: {e}")
+                    if errors:
+                        results.append(StatementResult(
+                            sql=item.sql, ok=False, error="; ".join(errors),
+                        ))
+                        failed += 1
+                    else:
+                        results.append(StatementResult(sql=item.sql, ok=True))
+                        applied += 1
+                    continue
+
                 if item.steps:
                     # steps[0] is always: GRANT "owner" TO CURRENT_USER
                     # Extract owner name to verify it exists on dest before attempting SET ROLE.
