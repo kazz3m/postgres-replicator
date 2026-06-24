@@ -453,6 +453,37 @@ async def _db_grant_statements(
                 warning=warning,
             ))
 
+        # Function / procedure owners
+        routine_owners = await conn.fetch("""
+            SELECT n.nspname,
+                   p.proname,
+                   p.prokind::text AS prokind,
+                   pg_get_function_identity_arguments(p.oid) AS args,
+                   r.rolname AS owner
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            JOIN pg_authid r ON r.oid = p.proowner
+            WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+              AND n.nspname NOT LIKE 'pg\\_%'
+            ORDER BY n.nspname, p.proname
+        """)
+        _prokind_sql = {'f': 'FUNCTION', 'p': 'PROCEDURE', 'a': 'AGGREGATE', 'w': 'FUNCTION'}
+        for row in routine_owners:
+            owner = row["owner"]
+            if owner not in non_system_roles:
+                continue
+            warning = None
+            if dest_roles and owner not in dest_roles:
+                warning = f"Role \"{owner}\" does not exist on destination yet."
+            obj_type = _prokind_sql.get(row["prokind"], "FUNCTION")
+            stmts.append(RoleStatement(
+                sql=f"ALTER {obj_type} {_q(row['nspname'])}.{_q(row['proname'])}({row['args']}) OWNER TO {_q(owner)};",
+                kind="alter_owner",
+                role=owner,
+                database=database,
+                warning=warning,
+            ))
+
         # Extensions — create on dest if missing
         extensions = await conn.fetch("""
             SELECT e.extname, n.nspname AS schema
