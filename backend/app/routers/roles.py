@@ -575,7 +575,7 @@ async def roles_diff(include_databases: bool = True):
         # We read roles from destination so only already-created roles are included.
         grantable_roles = sorted(
             r for r in dest_roles
-            if not r.startswith("pg_") and r != "cloudsqlsuperuser"
+            if not r.startswith("pg_") and not r.startswith("cloudsql")
         )
         if grantable_roles:
             grant_lines = [f"GRANT {_q(r)} TO CURRENT_USER;" for r in grantable_roles]
