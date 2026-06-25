@@ -21,6 +21,7 @@ const KIND_LABEL: Record<string, string> = {
   alter_owner:              'ALTER OWNER',
   create_extension:         'EXTENSION',
   grant_self_membership:    'GRANT SELF',
+  create_event_trigger:     'EVENT TRIGGER',
   comment:                  'skipped',
 }
 
@@ -37,6 +38,7 @@ const KIND_COLOR: Record<string, string> = {
   alter_owner:              'text-orange-400',
   create_extension:         'text-teal-400',
   grant_self_membership:    'text-yellow-300',
+  create_event_trigger:     'text-pink-400',
   comment:                  'text-gray-500',
 }
 

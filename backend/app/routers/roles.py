@@ -484,6 +484,51 @@ async def _db_grant_statements(
                 warning=warning,
             ))
 
+        # Event triggers
+        event_triggers = await conn.fetch("""
+            SELECT e.evtname, e.evtevent, r.rolname AS owner,
+                   e.evtenabled,
+                   n.nspname AS func_schema, p.proname AS func_name
+            FROM pg_event_trigger e
+            JOIN pg_authid r ON r.oid = e.evtowner
+            JOIN pg_proc p ON p.oid = e.evtfoid
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            ORDER BY e.evtname
+        """)
+        _evtenabled = {'O': 'ENABLE', 'D': 'DISABLE', 'R': 'ENABLE REPLICA', 'A': 'ENABLE ALWAYS'}
+        for row in event_triggers:
+            owner = row["owner"]
+            warning = None
+            if dest_roles and owner not in dest_roles:
+                warning = f"Role \"{owner}\" does not exist on destination yet."
+            func_ref = f"{_q(row['func_schema'])}.{_q(row['func_name'])}"
+            stmts.append(RoleStatement(
+                sql=(
+                    f"CREATE EVENT TRIGGER {_q(row['evtname'])}\n"
+                    f"  ON {row['evtevent']}\n"
+                    f"  EXECUTE FUNCTION {func_ref}();"
+                ),
+                kind="create_event_trigger",
+                role=owner,
+                database=database,
+                warning=warning,
+            ))
+            stmts.append(RoleStatement(
+                sql=f"ALTER EVENT TRIGGER {_q(row['evtname'])} OWNER TO {_q(owner)};",
+                kind="alter_owner",
+                role=owner,
+                database=database,
+                warning=warning,
+            ))
+            enabled_clause = _evtenabled.get(row["evtenabled"], "ENABLE")
+            if enabled_clause != "ENABLE":
+                stmts.append(RoleStatement(
+                    sql=f"ALTER EVENT TRIGGER {_q(row['evtname'])} {enabled_clause};",
+                    kind="create_event_trigger",
+                    role=owner,
+                    database=database,
+                ))
+
         # Extensions — create on dest if missing
         extensions = await conn.fetch("""
             SELECT e.extname, n.nspname AS schema
