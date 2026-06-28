@@ -453,6 +453,38 @@ async def _db_grant_statements(
                 warning=warning,
             ))
 
+        # Function / procedure definitions (excluding extension-owned routines)
+        routine_defs = await conn.fetch("""
+            SELECT p.oid,
+                   n.nspname,
+                   p.proname,
+                   p.prokind::text AS prokind,
+                   pg_get_function_identity_arguments(p.oid) AS args,
+                   pg_get_functiondef(p.oid) AS definition,
+                   r.rolname AS owner
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            JOIN pg_authid r ON r.oid = p.proowner
+            WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+              AND n.nspname NOT LIKE 'pg\\_%'
+              AND p.prokind <> 'a'
+              AND NOT EXISTS (
+                SELECT 1 FROM pg_depend d
+                JOIN pg_extension e ON e.oid = d.refobjid
+                WHERE d.classid = 'pg_proc'::regclass
+                  AND d.objid = p.oid
+                  AND d.deptype = 'e'
+              )
+            ORDER BY n.nspname, p.proname
+        """)
+        for row in routine_defs:
+            stmts.append(RoleStatement(
+                sql=row["definition"].strip() + ";",
+                kind="create_routine",
+                role=row["owner"],
+                database=database,
+            ))
+
         # Function / procedure owners
         routine_owners = await conn.fetch("""
             SELECT n.nspname,
@@ -465,6 +497,13 @@ async def _db_grant_statements(
             JOIN pg_authid r ON r.oid = p.proowner
             WHERE n.nspname NOT IN ('pg_catalog','information_schema')
               AND n.nspname NOT LIKE 'pg\\_%'
+              AND NOT EXISTS (
+                SELECT 1 FROM pg_depend d
+                JOIN pg_extension e ON e.oid = d.refobjid
+                WHERE d.classid = 'pg_proc'::regclass
+                  AND d.objid = p.oid
+                  AND d.deptype = 'e'
+              )
             ORDER BY n.nspname, p.proname
         """)
         _prokind_sql = {'f': 'FUNCTION', 'p': 'PROCEDURE', 'a': 'AGGREGATE', 'w': 'FUNCTION'}
