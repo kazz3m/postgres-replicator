@@ -342,6 +342,50 @@ async def _db_grant_statements(
                 database=database,
             ))
 
+        # Sequence grants — relacl on sequences (USAGE, SELECT, UPDATE)
+        seq_acl_rows = await conn.fetch("""
+            SELECT n.nspname AS schema, c.relname AS sequence, c.relacl
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind = 'S'
+              AND n.nspname NOT IN ('pg_catalog','information_schema')
+              AND n.nspname NOT LIKE 'pg\\_toast%'
+              AND n.nspname NOT LIKE 'pg\\_temp%'
+              AND c.relacl IS NOT NULL
+            ORDER BY n.nspname, c.relname
+        """)
+        _SEQ_PRIV_MAP = {"r": "SELECT", "w": "UPDATE", "U": "USAGE"}
+        seq_collapsed: dict = defaultdict(lambda: {"privs": set(), "grantable": False})
+        for row in seq_acl_rows:
+            for entry in row["relacl"]:
+                parsed_acl = _unpack_acl(entry)
+                if not parsed_acl:
+                    continue
+                grantee, privs, _grantor = parsed_acl
+                if grantee != "PUBLIC" and grantee not in non_system_roles:
+                    continue
+                if grantee != "PUBLIC" and dest_roles and grantee not in dest_roles:
+                    continue
+                key = (grantee, row["schema"], row["sequence"])
+                has_grant_option = "*" in privs
+                for c in privs:
+                    if c in _SEQ_PRIV_MAP:
+                        seq_collapsed[key]["privs"].add(_SEQ_PRIV_MAP[c])
+                if has_grant_option:
+                    seq_collapsed[key]["grantable"] = True
+
+        for (grantee, schema, seq), info in seq_collapsed.items():
+            if not info["privs"]:
+                continue
+            go = " WITH GRANT OPTION" if info["grantable"] else ""
+            grantee_sql = "PUBLIC" if grantee == "PUBLIC" else _q(grantee)
+            stmts.append(RoleStatement(
+                sql=f"GRANT {', '.join(sorted(info['privs']))} ON SEQUENCE {_q(schema)}.{_q(seq)} TO {grantee_sql}{go};",
+                kind="grant_sequence",
+                role=grantee if grantee != "PUBLIC" else "__public__",
+                database=database,
+            ))
+
         # Default privileges — pg_default_acl
         # ALTER DEFAULT PRIVILEGES FOR ROLE X requires membership in X.
         # We wrap each owner's block with GRANT/REVOKE so the executing user
