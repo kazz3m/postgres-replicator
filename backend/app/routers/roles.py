@@ -342,6 +342,75 @@ async def _db_grant_statements(
                 database=database,
             ))
 
+        # Foreign server grants + user mappings
+        foreign_servers = await conn.fetch("""
+            SELECT s.srvname, w.fdwname, s.srvacl,
+                   s.srvtype, s.srvversion,
+                   array_to_string(s.srvoptions, ', ') AS srvoptions,
+                   r.rolname AS owner
+            FROM pg_foreign_server s
+            JOIN pg_foreign_data_wrapper w ON w.oid = s.srvfdw
+            JOIN pg_authid r ON r.oid = s.srvowner
+            ORDER BY s.srvname
+        """)
+        _FS_PRIV_MAP = {"U": "USAGE"}
+        for row in foreign_servers:
+            owner = row["owner"]
+            opts = f" OPTIONS ({row['srvoptions']})" if row["srvoptions"] else ""
+            type_clause = f" TYPE '{row['srvtype']}'" if row["srvtype"] else ""
+            ver_clause = f" VERSION '{row['srvversion']}'" if row["srvversion"] else ""
+            stmts.append(RoleStatement(
+                sql=f"CREATE SERVER IF NOT EXISTS {_q(row['srvname'])}{type_clause}{ver_clause} FOREIGN DATA WRAPPER {_q(row['fdwname'])}{opts};",
+                kind="create_foreign_server",
+                role=owner,
+                database=database,
+            ))
+            stmts.append(RoleStatement(
+                sql=f"ALTER SERVER {_q(row['srvname'])} OWNER TO {_q(owner)};",
+                kind="alter_owner",
+                role=owner,
+                database=database,
+            ))
+            if row["srvacl"]:
+                for entry in row["srvacl"]:
+                    parsed_acl = _unpack_acl(entry)
+                    if not parsed_acl:
+                        continue
+                    grantee, privs, _grantor = parsed_acl
+                    if grantee != "PUBLIC" and grantee not in non_system_roles:
+                        continue
+                    if grantee != "PUBLIC" and dest_roles and grantee not in dest_roles:
+                        continue
+                    grants = [_FS_PRIV_MAP[c] for c in privs if c in _FS_PRIV_MAP]
+                    if not grants:
+                        continue
+                    grantee_sql = "PUBLIC" if grantee == "PUBLIC" else _q(grantee)
+                    stmts.append(RoleStatement(
+                        sql=f"GRANT {', '.join(grants)} ON FOREIGN SERVER {_q(row['srvname'])} TO {grantee_sql};",
+                        kind="grant_foreign_server",
+                        role=grantee if grantee != "PUBLIC" else "__public__",
+                        database=database,
+                    ))
+
+        user_mappings = await conn.fetch("""
+            SELECT s.srvname,
+                   CASE WHEN um.umuser = 0 THEN 'PUBLIC'
+                        ELSE r.rolname END AS username,
+                   array_to_string(um.umoptions, ', ') AS umoptions
+            FROM pg_user_mapping um
+            JOIN pg_foreign_server s ON s.oid = um.umserver
+            LEFT JOIN pg_authid r ON r.oid = um.umuser
+            ORDER BY s.srvname, username
+        """)
+        for row in user_mappings:
+            opts = f" OPTIONS ({row['umoptions']})" if row["umoptions"] else ""
+            stmts.append(RoleStatement(
+                sql=f"CREATE USER MAPPING IF NOT EXISTS FOR {_q(row['username'])} SERVER {_q(row['srvname'])}{opts};",
+                kind="create_user_mapping",
+                role=row["username"],
+                database=database,
+            ))
+
         # Sequence grants — relacl on sequences (USAGE, SELECT, UPDATE)
         seq_acl_rows = await conn.fetch("""
             SELECT n.nspname AS schema, c.relname AS sequence, c.relacl
