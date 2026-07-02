@@ -145,6 +145,7 @@ export function RolesSyncPanel() {
   const [showSkipped, setShowSkipped] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [filterKind, setFilterKind] = useState<string>('all')
+  const [onlyDiffs, setOnlyDiffs] = useState(false)
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['roles-diff', includeDatabases],
@@ -154,9 +155,9 @@ export function RolesSyncPanel() {
   })
 
   const statements = data?.statements ?? []
-  const filtered = filterKind === 'all'
-    ? statements
-    : statements.filter(s => s.kind === filterKind)
+  const filtered = statements
+    .filter(s => filterKind === 'all' || s.kind === filterKind)
+    .filter(s => !onlyDiffs || s.differs)
 
   // Auto-select all non-comment on first load
   const prevLen = filtered.length
@@ -250,6 +251,15 @@ export function RolesSyncPanel() {
                 className="accent-blue-500"
               />
               Stop on first error
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer text-yellow-400 font-medium">
+              <input
+                type="checkbox"
+                checked={onlyDiffs}
+                onChange={e => { setOnlyDiffs(e.target.checked); setSelected(new Set()) }}
+                className="accent-yellow-500"
+              />
+              Show only differences
             </label>
             <button
               onClick={() => refetch()}

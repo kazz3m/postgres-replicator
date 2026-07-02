@@ -92,6 +92,7 @@ export interface IndexDiff {
   columns: string[]
   is_unique: boolean
   exists_on_dest: boolean
+  differs: boolean
   dest_columns: string[] | null
   columns_match: boolean
 }
@@ -100,6 +101,7 @@ export interface SequenceDiff {
   sequence_name: string
   column_name: string
   exists_on_dest: boolean
+  differs: boolean
 }
 
 export interface TriggerDiff {
@@ -107,6 +109,7 @@ export interface TriggerDiff {
   event: string
   timing: string
   exists_on_dest: boolean
+  differs: boolean
 }
 
 export interface ConstraintDiff {
@@ -114,6 +117,7 @@ export interface ConstraintDiff {
   constraint_type: string
   definition: string
   exists_on_dest: boolean
+  differs: boolean
   dest_definition: string | null
   definition_match: boolean
 }
@@ -121,6 +125,7 @@ export interface ConstraintDiff {
 export interface TableSchemaDiff {
   table: string
   exists_on_dest: boolean
+  differs: boolean
   columns: ColumnDiff[]
   indexes: IndexDiff[]
   sequences: SequenceDiff[]
@@ -169,6 +174,7 @@ export interface DatabaseInfo {
   size_pretty: string
   size_bytes: number
   exists_on_dest: boolean
+  differs: boolean
 }
 
 export interface SchemaListItem {
@@ -230,6 +236,7 @@ export interface RoleStatement {
   kind: 'create_role' | 'alter_role' | 'alter_role_set' | 'grant_membership' | 'grant_schema' | 'grant_table' | 'grant_default' | 'grant_role_for_default' | 'revoke_role_after_default' | 'comment'
   role: string
   exists_on_dest: boolean
+  differs: boolean
   warning?: string
   database?: string   // for per-db grants: which database to execute against on dest
   steps?: string[]    // if set, execute each step sequentially as one logical unit

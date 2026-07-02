@@ -23,6 +23,7 @@ class RoleStatement(BaseModel):
     kind: str                       # create_role | alter_role | alter_role_set | grant_membership | grant_schema | grant_table | grant_default | alter_owner | create_extension | comment
     role: str                       # primary role name this statement concerns
     exists_on_dest: bool = False    # True → role already present; statement is ALTER, not CREATE
+    differs: bool = True            # False → destination already matches source; safe to skip
     warning: Optional[str] = None   # e.g. "password unavailable on Cloud SQL"
     database: Optional[str] = None  # for per-db grants: which database to connect to on dest
     steps: Optional[List[str]] = None  # if set, execute each step in order as one logical unit
@@ -115,13 +116,43 @@ _TABLE_PRIV_MAP  = {
 
 async def _globals_statements(
     src_conn: asyncpg.Connection,
+    dest_conn: asyncpg.Connection,
     dest_roles: set,
     password_available: bool,
     dest_is_cloudsql: bool = False,
 ) -> List[RoleStatement]:
     stmts: List[RoleStatement] = []
 
-    # --- Role definitions (mirrors pg_dumpall globals section) ---
+    # --- Snapshot dest role attributes for comparison ---
+    dest_role_attrs: dict = {}
+    for r in await dest_conn.fetch("""
+        SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb,
+               rolcanlogin, rolreplication, rolbypassrls, rolconnlimit, rolvaliduntil
+        FROM pg_authid WHERE LEFT(rolname, 3) <> 'pg_'
+    """):
+        dest_role_attrs[r["rolname"]] = dict(r)
+
+    # --- Snapshot dest memberships ---
+    dest_memberships: set = set()
+    for r in await dest_conn.fetch("""
+        SELECT ur.rolname AS role, um.rolname AS member, m.admin_option
+        FROM pg_auth_members m
+        JOIN pg_authid ur ON ur.oid = m.roleid
+        JOIN pg_authid um ON um.oid = m.member
+    """):
+        dest_memberships.add((r["role"], r["member"], r["admin_option"]))
+
+    # --- Snapshot dest GUC settings ---
+    dest_settings: set = set()
+    for r in await dest_conn.fetch("""
+        SELECT r.rolname, d.datname, unnest(s.setconfig) AS cfg
+        FROM pg_db_role_setting s
+        JOIN pg_authid r ON r.oid = s.setrole
+        LEFT JOIN pg_database d ON d.oid = s.setdatabase
+    """):
+        dest_settings.add((r["rolname"], r["datname"], r["cfg"]))
+
+    # --- Role definitions ---
     rows = await src_conn.fetch("""
         SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb,
                rolcanlogin, rolreplication, rolbypassrls, rolconnlimit,
@@ -132,6 +163,9 @@ async def _globals_statements(
         ORDER BY rolname
     """)
 
+    _COMPARE_ATTRS = ["rolsuper","rolinherit","rolcreaterole","rolcreatedb",
+                      "rolcanlogin","rolreplication","rolbypassrls","rolconnlimit"]
+
     for row in rows:
         name = row["rolname"]
         exists = name in dest_roles
@@ -140,33 +174,36 @@ async def _globals_statements(
         if not exists:
             stmts.append(RoleStatement(
                 sql=f"CREATE ROLE {_q(name)};",
-                kind="create_role", role=name, exists_on_dest=False,
+                kind="create_role", role=name, exists_on_dest=False, differs=True,
             ))
 
+        # Compare attributes to detect if ALTER is needed
+        dest_attrs = dest_role_attrs.get(name)
+        attrs_differ = (not dest_attrs) or any(
+            row[a] != dest_attrs[a] for a in _COMPARE_ATTRS
+        )
         stmts.append(RoleStatement(
             sql=f"ALTER ROLE {_q(name)} WITH {options};",
-            kind="alter_role", role=name, exists_on_dest=exists,
+            kind="alter_role", role=name, exists_on_dest=exists, differs=attrs_differ,
         ))
 
-        # Password — only if available and role can login
         pwd = row["rolpassword"]
         if pwd and row["rolcanlogin"]:
             if password_available:
                 stmts.append(RoleStatement(
                     sql=f"ALTER ROLE {_q(name)} WITH PASSWORD '{pwd}';",
-                    kind="alter_role", role=name, exists_on_dest=exists,
+                    kind="alter_role", role=name, exists_on_dest=exists, differs=True,
                 ))
             else:
                 stmts.append(RoleStatement(
                     sql=f"-- ALTER ROLE {_q(name)} WITH PASSWORD '...';  -- password hash unavailable",
-                    kind="comment", role=name, exists_on_dest=exists,
+                    kind="comment", role=name, exists_on_dest=exists, differs=False,
                     warning="Password hash not readable (Cloud SQL / RDS). Set password manually.",
                 ))
 
     # --- Role memberships ---
     members = await src_conn.fetch("""
-        SELECT ur.rolname AS role, um.rolname AS member,
-               m.admin_option
+        SELECT ur.rolname AS role, um.rolname AS member, m.admin_option
         FROM pg_auth_members m
         JOIN pg_authid ur ON ur.oid = m.roleid
         JOIN pg_authid um ON um.oid = m.member
@@ -175,14 +212,16 @@ async def _globals_statements(
     """)
     for row in members:
         admin = " WITH ADMIN OPTION" if row["admin_option"] else ""
+        already = (row["role"], row["member"], row["admin_option"]) in dest_memberships
         stmts.append(RoleStatement(
             sql=f"GRANT {_q(row['role'])} TO {_q(row['member'])}{admin};",
             kind="grant_membership",
             role=row["role"],
             exists_on_dest=row["role"] in dest_roles,
+            differs=not already,
         ))
 
-    # --- Per-role GUC settings (ALTER ROLE ... SET ...) ---
+    # --- Per-role GUC settings ---
     settings = await src_conn.fetch("""
         SELECT r.rolname, d.datname, s.setconfig
         FROM pg_db_role_setting s
@@ -199,11 +238,13 @@ async def _globals_statements(
             if "=" not in setting:
                 continue
             key, val = setting.split("=", 1)
+            already = (name, row["datname"], setting) in dest_settings
             stmts.append(RoleStatement(
                 sql=f"ALTER ROLE {_q(name)}{db_clause} SET {key} = '{val}';",
                 kind="alter_role_set",
                 role=name,
                 exists_on_dest=name in dest_roles,
+                differs=not already,
             ))
 
     return stmts
@@ -244,6 +285,7 @@ async def _database_owner_statements(
 
 async def _db_grant_statements(
     src_dsn: str,
+    dest_dsn: str,
     database: str,
     non_system_roles: set,
     dest_roles: set = frozenset(),
@@ -251,13 +293,96 @@ async def _db_grant_statements(
     stmts: List[RoleStatement] = []
 
     import urllib.parse
-    parsed = urllib.parse.urlparse(src_dsn)
-    db_dsn = urllib.parse.urlunparse(parsed._replace(path="/" + urllib.parse.quote(database, safe="")))
+
+    def _db_url(base: str) -> str:
+        p = urllib.parse.urlparse(base)
+        return urllib.parse.urlunparse(p._replace(path="/" + urllib.parse.quote(database, safe="")))
 
     try:
-        conn = await asyncpg.connect(db_dsn)
+        conn = await asyncpg.connect(_db_url(src_dsn))
     except Exception:
         return stmts  # skip unreachable databases silently
+
+    try:
+        dest_conn_db = await asyncpg.connect(_db_url(dest_dsn))
+    except Exception:
+        dest_conn_db = None
+
+    # --- Snapshot dest state for diff ---
+    dest_nspacl: dict = {}       # nspname -> set of acl strings
+    dest_relacl: dict = {}       # (schema, relname) -> set of acl strings
+    dest_seqacl: dict = {}       # (schema, seqname) -> set of acl strings
+    dest_defacl: set = set()     # (owner, schema, objtype, grantee, privs)
+    dest_owners: dict = {}       # (objtype, schema, name) -> owner rolname
+    dest_proc_defs: dict = {}    # (schema, name, args) -> definition text
+    dest_fs_acl: dict = {}       # srvname -> set of acl strings
+    dest_user_mappings: set = set()  # (srvname, username)
+    dest_event_triggers: set = set() # evtname
+
+    if dest_conn_db:
+        try:
+            for r in await dest_conn_db.fetch("SELECT nspname, nspacl FROM pg_namespace WHERE nspacl IS NOT NULL"):
+                dest_nspacl[r["nspname"]] = set(r["nspacl"] or [])
+            for r in await dest_conn_db.fetch("""
+                SELECT n.nspname, c.relname, c.relkind::text, c.relacl,
+                       ra.rolname AS owner
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_authid ra ON ra.oid = c.relowner
+                WHERE c.relkind IN ('r','v','m','S','f','p')
+                  AND n.nspname NOT IN ('pg_catalog','information_schema')
+            """):
+                key = (r["nspname"], r["relname"])
+                if r["relkind"] == "S":
+                    dest_seqacl[key] = set(r["relacl"] or [])
+                else:
+                    dest_relacl[key] = set(r["relacl"] or [])
+                dest_owners[("rel", r["nspname"], r["relname"])] = r["owner"]
+            for r in await dest_conn_db.fetch("""
+                SELECT n.nspname, c.relname AS rname
+                FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            """):
+                pass  # already covered above
+            for r in await dest_conn_db.fetch("""
+                SELECT r.rolname AS owner, n.nspname, d.defaclobjtype::text AS objtype,
+                       unnest(d.defaclacl)::text AS entry
+                FROM pg_default_acl d
+                JOIN pg_authid r ON r.oid = d.defaclrole
+                LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace
+            """):
+                dest_defacl.add((r["owner"], r["nspname"], r["objtype"], r["entry"]))
+            for r in await dest_conn_db.fetch("""
+                SELECT n.nspname, p.proname,
+                       pg_get_function_identity_arguments(p.oid) AS args,
+                       pg_get_functiondef(p.oid) AS def
+                FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE p.prokind <> 'a'
+                  AND n.nspname NOT IN ('pg_catalog','information_schema')
+            """):
+                dest_proc_defs[(r["nspname"], r["proname"], r["args"])] = r["def"]
+            for r in await dest_conn_db.fetch("""
+                SELECT s.srvname, s.srvacl FROM pg_foreign_server s WHERE s.srvacl IS NOT NULL
+            """):
+                dest_fs_acl[r["srvname"]] = set(r["srvacl"] or [])
+            for r in await dest_conn_db.fetch("""
+                SELECT s.srvname,
+                       CASE WHEN um.umuser = 0 THEN 'PUBLIC' ELSE ra.rolname END AS username
+                FROM pg_user_mapping um
+                JOIN pg_foreign_server s ON s.oid = um.umserver
+                LEFT JOIN pg_authid ra ON ra.oid = um.umuser
+            """):
+                dest_user_mappings.add((r["srvname"], r["username"]))
+            for r in await dest_conn_db.fetch("SELECT evtname FROM pg_event_trigger"):
+                dest_event_triggers.add(r["evtname"])
+            for r in await dest_conn_db.fetch("""
+                SELECT n.nspname, n.nspowner, ra.rolname AS owner
+                FROM pg_namespace n JOIN pg_authid ra ON ra.oid = n.nspowner
+            """):
+                dest_owners[("schema", r["nspname"], "")] = r["owner"]
+        except Exception:
+            pass
+        finally:
+            await dest_conn_db.close()
 
     try:
         # Schema grants — unpack nspacl
@@ -285,11 +410,14 @@ async def _db_grant_statements(
                 if not grants:
                     continue
                 grantee_sql = "PUBLIC" if grantee == "PUBLIC" else _q(grantee)
+                dest_ns_acl = dest_nspacl.get(row["nspname"], set())
+                already = any(_unpack_acl(e) and _unpack_acl(e)[0] == grantee for e in dest_ns_acl)
                 stmts.append(RoleStatement(
                     sql=f"GRANT {', '.join(grants)} ON SCHEMA {_q(row['nspname'])} TO {grantee_sql};",
                     kind="grant_schema",
                     role=grantee if grantee != "PUBLIC" else "__public__",
                     database=database,
+                    differs=not already,
                 ))
 
         # Table grants — read relacl directly to avoid information_schema visibility
@@ -335,11 +463,14 @@ async def _db_grant_statements(
                 continue
             go = " WITH GRANT OPTION" if info["grantable"] else ""
             grantee_sql = "PUBLIC" if grantee == "PUBLIC" else _q(grantee)
+            dest_acl_set = dest_relacl.get((schema, table), set())
+            already = any(_unpack_acl(e) and _unpack_acl(e)[0] == grantee for e in dest_acl_set)
             stmts.append(RoleStatement(
                 sql=f"GRANT {', '.join(sorted(info['privs']))} ON TABLE {_q(schema)}.{_q(table)} TO {grantee_sql}{go};",
                 kind="grant_table",
                 role=grantee if grantee != "PUBLIC" else "__public__",
                 database=database,
+                differs=not already,
             ))
 
         # Foreign server grants + user mappings
@@ -359,17 +490,20 @@ async def _db_grant_statements(
             opts = f" OPTIONS ({row['srvoptions']})" if row["srvoptions"] else ""
             type_clause = f" TYPE '{row['srvtype']}'" if row["srvtype"] else ""
             ver_clause = f" VERSION '{row['srvversion']}'" if row["srvversion"] else ""
+            srv_exists_on_dest = row["srvname"] in dest_fs_acl or row["srvname"] in {s for s, _ in dest_user_mappings}
             stmts.append(RoleStatement(
                 sql=f"CREATE SERVER IF NOT EXISTS {_q(row['srvname'])}{type_clause}{ver_clause} FOREIGN DATA WRAPPER {_q(row['fdwname'])}{opts};",
                 kind="create_foreign_server",
                 role=owner,
                 database=database,
+                differs=not srv_exists_on_dest,
             ))
             stmts.append(RoleStatement(
                 sql=f"ALTER SERVER {_q(row['srvname'])} OWNER TO {_q(owner)};",
                 kind="alter_owner",
                 role=owner,
                 database=database,
+                differs=True,  # can't easily compare without connecting
             ))
             if row["srvacl"]:
                 for entry in row["srvacl"]:
@@ -385,11 +519,14 @@ async def _db_grant_statements(
                     if not grants:
                         continue
                     grantee_sql = "PUBLIC" if grantee == "PUBLIC" else _q(grantee)
+                    dest_srv_acl = dest_fs_acl.get(row["srvname"], set())
+                    already = any(_unpack_acl(e) and _unpack_acl(e)[0] == grantee for e in dest_srv_acl)
                     stmts.append(RoleStatement(
                         sql=f"GRANT {', '.join(grants)} ON FOREIGN SERVER {_q(row['srvname'])} TO {grantee_sql};",
                         kind="grant_foreign_server",
                         role=grantee if grantee != "PUBLIC" else "__public__",
                         database=database,
+                        differs=not already,
                     ))
 
         user_mappings = await conn.fetch("""
@@ -404,11 +541,13 @@ async def _db_grant_statements(
         """)
         for row in user_mappings:
             opts = f" OPTIONS ({row['umoptions']})" if row["umoptions"] else ""
+            already = (row["srvname"], row["username"]) in dest_user_mappings
             stmts.append(RoleStatement(
                 sql=f"CREATE USER MAPPING IF NOT EXISTS FOR {_q(row['username'])} SERVER {_q(row['srvname'])}{opts};",
                 kind="create_user_mapping",
                 role=row["username"],
                 database=database,
+                differs=not already,
             ))
 
         # Sequence grants — relacl on sequences (USAGE, SELECT, UPDATE)
@@ -448,11 +587,14 @@ async def _db_grant_statements(
                 continue
             go = " WITH GRANT OPTION" if info["grantable"] else ""
             grantee_sql = "PUBLIC" if grantee == "PUBLIC" else _q(grantee)
+            dest_seq_acl_set = dest_seqacl.get((schema, seq), set())
+            already = any(_unpack_acl(e) and _unpack_acl(e)[0] == grantee for e in dest_seq_acl_set)
             stmts.append(RoleStatement(
                 sql=f"GRANT {', '.join(sorted(info['privs']))} ON SEQUENCE {_q(schema)}.{_q(seq)} TO {grantee_sql}{go};",
                 kind="grant_sequence",
                 role=grantee if grantee != "PUBLIC" else "__public__",
                 database=database,
+                differs=not already,
             ))
 
         # Default privileges — pg_default_acl
@@ -506,12 +648,15 @@ async def _db_grant_statements(
                 if not grants:
                     continue
                 grantee_sql = "PUBLIC" if grantee == "PUBLIC" else _q(grantee)
+                entry_str = f"{grantee}={privs}/{_}"  # reconstruct for set lookup
+                already = (row["owner"], row["schema"], row["defaclobjtype"], entry) in dest_defacl
                 owner_stmts[row["owner"]].append(RoleStatement(
                     sql=(f"ALTER DEFAULT PRIVILEGES FOR ROLE {_q(row['owner'])}"
                          f"{schema_clause} GRANT {', '.join(grants)} ON {obj_type} TO {grantee_sql};"),
                     kind="grant_default",
                     role=grantee if grantee != "PUBLIC" else "__public__",
                     database=database,
+                    differs=not already,
                 ))
 
         # Schema owners
@@ -530,12 +675,14 @@ async def _db_grant_statements(
             warning = None
             if dest_roles and owner not in dest_roles:
                 warning = f"Role \"{owner}\" does not exist on destination yet."
+            dest_schema_owner = dest_owners.get(("schema", row["nspname"], ""))
             stmts.append(RoleStatement(
                 sql=f"ALTER SCHEMA {_q(row['nspname'])} OWNER TO {_q(owner)};",
                 kind="alter_owner",
                 role=owner,
                 database=database,
                 warning=warning,
+                differs=dest_schema_owner != owner,
             ))
 
         # Table / view / materialized view / sequence / foreign table owners
@@ -558,12 +705,14 @@ async def _db_grant_statements(
             if dest_roles and owner not in dest_roles:
                 warning = f"Role \"{owner}\" does not exist on destination yet."
             obj_type = _relkind_sql.get(row["relkind"], "TABLE")
+            dest_rel_owner = dest_owners.get(("rel", row["nspname"], row["relname"]))
             stmts.append(RoleStatement(
                 sql=f"ALTER {obj_type} {_q(row['nspname'])}.{_q(row['relname'])} OWNER TO {_q(owner)};",
                 kind="alter_owner",
                 role=owner,
                 database=database,
                 warning=warning,
+                differs=dest_rel_owner != owner,
             ))
 
         # Function / procedure definitions (excluding extension-owned routines)
@@ -591,11 +740,14 @@ async def _db_grant_statements(
             ORDER BY n.nspname, p.proname
         """)
         for row in routine_defs:
+            dest_def = dest_proc_defs.get((row["nspname"], row["proname"], row["args"]))
+            src_def = row["definition"].strip()
             stmts.append(RoleStatement(
-                sql=row["definition"].strip() + ";",
+                sql=src_def + ";",
                 kind="create_routine",
                 role=row["owner"],
                 database=database,
+                differs=dest_def is None or dest_def.strip() != src_def,
             ))
 
         # Function / procedure owners
@@ -634,6 +786,7 @@ async def _db_grant_statements(
                 role=owner,
                 database=database,
                 warning=warning,
+                differs=True,  # would need dest proc owner snapshot to compare precisely
             ))
 
         # Event triggers
@@ -654,6 +807,7 @@ async def _db_grant_statements(
             if dest_roles and owner not in dest_roles:
                 warning = f"Role \"{owner}\" does not exist on destination yet."
             func_ref = f"{_q(row['func_schema'])}.{_q(row['func_name'])}"
+            evt_exists = row["evtname"] in dest_event_triggers
             stmts.append(RoleStatement(
                 sql=(
                     f"CREATE EVENT TRIGGER {_q(row['evtname'])}\n"
@@ -664,6 +818,7 @@ async def _db_grant_statements(
                 role=owner,
                 database=database,
                 warning=warning,
+                differs=not evt_exists,
             ))
             stmts.append(RoleStatement(
                 sql=f"ALTER EVENT TRIGGER {_q(row['evtname'])} OWNER TO {_q(owner)};",
@@ -762,7 +917,7 @@ async def roles_diff(include_databases: bool = True):
         skipped = [r for r in dest_roles if r.startswith("pg_")]
 
         stmts = await _globals_statements(
-            src_conn, dest_roles, password_available, dest_is_cloudsql=dest_is_cloudsql
+            src_conn, dest_conn, dest_roles, password_available, dest_is_cloudsql=dest_is_cloudsql
         )
         stmts += await _database_owner_statements(src_conn, non_system_roles, dest_roles)
 
@@ -813,7 +968,7 @@ async def roles_diff(include_databases: bool = True):
 
         for row in dbs:
             db_stmts = await _db_grant_statements(
-                state.source_dsn, row["datname"], non_system_roles, dest_roles
+                state.source_dsn, state.dest_dsn, row["datname"], non_system_roles, dest_roles
             )
             stmts.extend(db_stmts)
 
