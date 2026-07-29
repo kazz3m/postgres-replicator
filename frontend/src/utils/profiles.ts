@@ -5,6 +5,7 @@ export interface ReplicationConfig {
   sub_name: string
   copy_data: boolean
   database?: string        // source database name
+  dest_database?: string   // destination database name, if different from source
   tables?: string[]        // "schema.table" — without db prefix
   schemas?: string[]       // schema names (PG15+)
   last_applied?: string    // ISO timestamp

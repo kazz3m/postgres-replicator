@@ -95,17 +95,19 @@ async def drop_publication(name: str, database: str | None = None):
 
 
 @router.get("/publication-config")
-async def get_publication_config(name: str, database: str | None = None):
+async def get_publication_config(name: str, database: str | None = None, dest_database: str | None = None):
     """
     Load full configuration for an existing publication: tables/schemas it covers,
     plus all linked subscriptions on destination. Used by UI to pre-fill Setup page.
     database: source database where the publication lives (required for non-default databases).
+    dest_database: destination database, if it differs from `database`.
     """
     _require_connection()
     import asyncpg as _asyncpg
 
+    dest_database = dest_database or database
     src_dsn  = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
-    dest_dsn = dsn_for_database(state.dest_dsn,   database) if database else state.dest_dsn
+    dest_dsn = dsn_for_database(state.dest_dsn,   dest_database) if dest_database else state.dest_dsn
 
     src_conn  = await _asyncpg.connect(src_dsn,  timeout=15)
     dest_conn = await _asyncpg.connect(dest_dsn, timeout=15)
@@ -171,6 +173,7 @@ async def get_publication_config(name: str, database: str | None = None):
         result = {
             "pub_name": name,
             "database": database,
+            "dest_database": dest_database,
             "puballtables": pub["puballtables"],
             "tables": [f"{r['schemaname']}.{r['tablename']}" for r in tables],
             "schemas": schemas,
@@ -329,8 +332,9 @@ async def create_or_update_subscription(config: SubscriptionConfig):
         raise HTTPException(400, "Connection DSN contains an illegal sequence.")
 
     import asyncpg as _asyncpg_sub
+    dest_database = config.dest_database or config.database
     src_dsn_db  = dsn_for_database(state.source_dsn, config.database) if config.database else state.source_dsn
-    dest_dsn_db = dsn_for_database(state.dest_dsn,   config.database) if config.database else state.dest_dsn
+    dest_dsn_db = dsn_for_database(state.dest_dsn,   dest_database) if dest_database else state.dest_dsn
 
     # Fix #1: hard-block when wal_level != logical on source
     src_pool = await get_source_pool(state.source_dsn)
@@ -532,6 +536,7 @@ async def drop_subscription(
     database: str | None = None,
     preserve_slot: bool = False,
 ):
+    """database: the destination database the subscription lives in."""
     _require_connection()
     import asyncpg as _asyncpg
     dest_dsn = dsn_for_database(state.dest_dsn, database) if database else state.dest_dsn
@@ -2803,14 +2808,19 @@ async def sync_sequences(body: dict):
 
 # ── Schema DDL sync ───────────────────────────────────────────────────────────
 
-async def _diff_table_list(table_pairs: list[tuple[str, str]], database: str | None = None) -> list[TableSchemaDiff]:
+async def _diff_table_list(
+    table_pairs: list[tuple[str, str]],
+    database: str | None = None,
+    dest_database: str | None = None,
+) -> list[TableSchemaDiff]:
     """Core diff logic — accepts list of (schema, table) pairs.
-    database: if provided, connects to that specific database on BOTH source and destination.
-    Logical replication requires matching database names on both sides.
+    database: if provided, connects to that database on source (and on dest, unless dest_database is set).
+    dest_database: if provided, overrides the destination database name (it need not match source).
     """
     import asyncpg as _asyncpg
+    dest_database = dest_database or database
     src_dsn  = dsn_for_database(state.source_dsn, database) if database else state.source_dsn
-    dest_dsn = dsn_for_database(state.dest_dsn,   database) if database else state.dest_dsn
+    dest_dsn = dsn_for_database(state.dest_dsn,   dest_database) if dest_database else state.dest_dsn
     src_conn  = await _asyncpg.connect(src_dsn,  timeout=15)
     dest_conn = await _asyncpg.connect(dest_dsn, timeout=15)
     results = []
@@ -3042,6 +3052,7 @@ async def schema_check(body: dict):
     _require_connection()
     raw_tables: list[str] = body.get("tables", [])
     database: str | None = body.get("database")
+    dest_database: str | None = body.get("dest_database")
     if not raw_tables:
         return []
     pairs = []
@@ -3050,7 +3061,7 @@ async def schema_check(body: dict):
             continue
         schema, table = t.split(".", 1)
         pairs.append((schema, table))
-    return await _diff_table_list(pairs, database=database)
+    return await _diff_table_list(pairs, database=database, dest_database=dest_database)
 
 
 async def _get_table_indexes(src_conn, schema_name: str, table_name: str) -> list[IndexInfo]:

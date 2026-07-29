@@ -212,11 +212,12 @@ function ApplyModal({ pubName, subName, steps, done, onClose, onConfirm }: Apply
 interface SchemaCheckPanelProps {
   tables: string[]        // "schema.table" — already stripped of db prefix
   database?: string       // primary database (single-db mode)
+  destDatabase?: string   // destination database, if different from source (single-db mode)
   tablesByDb?: Record<string, string[]>  // db → ["schema.table", ...] for multi-db
   onAllOk: (ok: boolean) => void
 }
 
-function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheckPanelProps) {
+function SchemaCheckPanel({ tables, database, destDatabase, tablesByDb, onAllOk }: SchemaCheckPanelProps) {
   const [diffs, setDiffs] = useState<TableSchemaDiff[] | null>(null)
   const [checking, setChecking] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -245,7 +246,7 @@ function SchemaCheckPanel({ tables, database, tablesByDb, onAllOk }: SchemaCheck
         )
         allDiffs = results.flatMap(r => r.data)
       } else {
-        const { data } = await replicationApi.schemaCheck(tables, database)
+        const { data } = await replicationApi.schemaCheck(tables, database, destDatabase)
         allDiffs = data
       }
       setDiffs(allDiffs)
@@ -853,6 +854,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
   const [label, setLabel] = useState(initParsed.label)
   const [copyData, setCopyData] = useState(activeConfig.copy_data)
   const [truncateDest, setTruncateDest] = useState(false)
+  const [destDatabase, setDestDatabase] = useState(activeConfig.dest_database ?? '')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState('')
   const [error, setError] = useState('')
@@ -880,9 +882,11 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       setPrefix(p?.prefix ?? randomPrefix())
       setLabel(p?.label ?? '')
       setCopyData(cfg.copy_data)
+      setDestDatabase(cfg.dest_database ?? '')
     } else {
       setPrefix(randomPrefix())
       setLabel('')
+      setDestDatabase('')
     }
     setResult(''); setError('')
   }, [activeSetupPub, replConfigs])
@@ -999,6 +1003,9 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
     const database = replConfigs[pubName]?.database
       ?? (selectedTables.size > 0 ? [...selectedTables][0].split('.')[0] : undefined)
       ?? (selectedSchemas.size > 0 ? [...selectedSchemas][0].split('.')[0] : undefined)
+    // Destination database can differ from source; falls back to `database` when left blank
+    const destDatabaseTrimmed = destDatabase.trim()
+    const effectiveDestDatabase = destDatabaseTrimmed || database
 
     // Step 1 — create publication
     if (startFromStep <= 0) {
@@ -1019,7 +1026,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
       setStep(1, { state: 'running' })
       try {
         if (selectedTables.size > 0) {
-          const { data: diffs } = await replicationApi.schemaCheck(Array.from(selectedTables).map(toSchemaTable), database)
+          const { data: diffs } = await replicationApi.schemaCheck(Array.from(selectedTables).map(toSchemaTable), database, effectiveDestDatabase)
           const missing = diffs.filter(d => !d.exists_on_dest)
           if (missing.length > 0) {
             setStep(1, { state: 'error', detail: `Missing on destination: ${missing.map(d => d.table).join(', ')}` })
@@ -1046,6 +1053,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
         truncate_dest: truncateDest,
         slot_name: useExistingSlot ? selectedSlot : undefined,
         database,
+        dest_database: destDatabaseTrimmed || undefined,
       })
       setStep(2, { state: 'ok', detail: copyData ? 'Initial data copy will begin shortly' : 'Replication active (no initial copy)' })
       setResult(`Publication "${pubName}" and subscription "${subName}" created successfully.`)
@@ -1054,6 +1062,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
         tables: tablesToCheck,
         schemas: Array.from(selectedSchemas).map(toSchema),
         database,
+        dest_database: destDatabaseTrimmed || undefined,
         last_applied: new Date().toISOString(), last_status: 'ok', last_error: undefined,
       })
     } catch (e: any) {
@@ -1065,6 +1074,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
         tables: tablesToCheck,
         schemas: Array.from(selectedSchemas).map(toSchema),
         database,
+        dest_database: destDatabaseTrimmed || undefined,
         last_applied: new Date().toISOString(), last_status: 'error', last_error: msg,
       })
     } finally {
@@ -1087,7 +1097,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
     try {
       const { data } = await replicationApi.dropSubscription(
         subName,
-        replConfigs[pubName]?.database ?? [...selectedDbs][0],
+        replConfigs[pubName]?.dest_database ?? replConfigs[pubName]?.database ?? [...selectedDbs][0],
         preserveSlotOnDrop,
       )
       setResult(
@@ -1170,6 +1180,7 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
         <SchemaCheckPanel
           tables={tablesToCheck}
           database={replConfigs[pubName]?.database ?? [...selectedDbs][0]}
+          destDatabase={destDatabase.trim() || replConfigs[pubName]?.dest_database}
           tablesByDb={[...selectedTables].reduce<Record<string, string[]>>((acc, k) => {
             const [db, ...rest] = k.split('.')
             const schemaTable = rest.join('.')
@@ -1321,6 +1332,19 @@ export function ReplicationSetupPage({ selectedTables, selectedSchemas, sourceDs
             <span className="text-gray-500 w-24 shrink-0">Subscription:</span>
             <span className="text-green-300">{subName}</span>
           </div>
+        </div>
+
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">
+            Destination database <span className="text-gray-600">(optional — defaults to source database name)</span>
+          </label>
+          <input
+            type="text"
+            className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:border-blue-500"
+            value={destDatabase}
+            placeholder={selectedDatabase || 'same as source'}
+            onChange={e => setDestDatabase(e.target.value)}
+          />
         </div>
 
         <label className="flex items-center gap-2 cursor-pointer text-sm">

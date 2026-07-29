@@ -40,6 +40,7 @@ export interface SubscriptionConfig {
   source_dsn: string; copy_data: boolean
   slot_name?: string
   database?: string
+  dest_database?: string
   truncate_dest?: boolean
 }
 export interface ReplicationSlotInfo {
@@ -330,9 +331,9 @@ export const replicationApi = {
     api.delete(`/replication/publication/${name}${database ? `?database=${encodeURIComponent(database)}` : ''}`),
   listPublications: () => api.get('/replication/publications'),
   createSubscription: (cfg: SubscriptionConfig) => api.post('/replication/subscription', cfg),
-  dropSubscription: (name: string, database?: string, preserveSlot = false) => {
+  dropSubscription: (name: string, destDatabase?: string, preserveSlot = false) => {
     const params = new URLSearchParams()
-    if (database) params.set('database', database)
+    if (destDatabase) params.set('database', destDatabase)
     if (preserveSlot) params.set('preserve_slot', 'true')
     const query = params.toString()
     return api.delete(`/replication/subscription/${name}${query ? `?${query}` : ''}`)
@@ -387,8 +388,8 @@ export const replicationApi = {
     api.post('/replication/sequences/sync', { sequences: sequences ?? [], database }),
   schemaDiff: (publication: string) =>
     api.get<TableSchemaDiff[]>(`/replication/schema-diff?publication=${encodeURIComponent(publication)}`),
-  schemaCheck: (tables: string[], database?: string) =>
-    api.post<TableSchemaDiff[]>('/replication/schema-check', { tables, database }),
+  schemaCheck: (tables: string[], database?: string, destDatabase?: string) =>
+    api.post<TableSchemaDiff[]>('/replication/schema-check', { tables, database, dest_database: destDatabase }),
   schemaSync: (publication: string, createIndexes: 'before' | 'after' = 'after') =>
     api.post<SchemaSyncResult[]>('/replication/schema-sync', { publication, create_indexes: createIndexes }),
   schemaSyncByTables: (tables: string[], createIndexes: 'before' | 'after' = 'after', database?: string) =>
